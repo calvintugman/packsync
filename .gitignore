@@ -1,0 +1,35 @@
+# build output
+/target/
+**/target/
+node_modules/
+dist/
+.vite/
+apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/target/
+
+# secrets / local configuration (never commit)
+.env
+.env.*
+!.env.example
+google-oauth.json
+client_secret*.json
+*.pem
+*.key
+credentials*.json
+token*.json
+packsync-local.toml
+
+# generated fixtures, benchmark data and test output
+/bench-data/
+/.fixtures/
+*.fixture
+playwright-report/
+test-results/
+coverage/
+
+# editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

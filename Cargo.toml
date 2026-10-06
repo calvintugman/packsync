@@ -1,0 +1,88 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/packsync-core",
+    "crates/packsync-drive",
+    "crates/packsync-prism",
+    "crates/packsync-app",
+    "crates/packsync-cli",
+    "crates/packsync-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+authors = ["PackSync contributors"]
+repository = ""          # intentionally blank: set when you publish the repository
+publish = false
+
+[workspace.dependencies]
+# --- shared sync-domain dependencies -------------------------------------
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+time = { version = "0.3", features = ["formatting", "parsing", "serde", "macros"] }
+blake3 = "1"
+zstd = "0.14"
+fastcdc = "5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+globset = "0.4"
+walkdir = "2"
+rayon = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+tempfile = "3"
+fs4 = "1"
+filetime = "0.2"
+file-id = "0.2"
+unicode-normalization = "0.1"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+notify = "9.0.0-rc.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+fastrand = "2"
+dunce = "1"
+hex = "0.4"
+# --- cli ------------------------------------------------------------------
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+# --- drive / network -------------------------------------------------------
+ureq = { version = "3", features = ["json"] }
+tiny_http = "0.12"
+md-5 = "0.11"
+sha2 = "0.11"
+base64 = "0.23"
+keyring = "4"
+oauth2 = "5"
+webbrowser = "1"
+
+# workspace-internal crates
+packsync-core = { path = "crates/packsync-core" }
+packsync-drive = { path = "crates/packsync-drive" }
+packsync-prism = { path = "crates/packsync-prism" }
+packsync-app = { path = "crates/packsync-app" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "allow"      # tests use unwrap; library code is reviewed for panics instead
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+panic = "unwind"           # the engine relies on catching panics at job boundaries
+
+[profile.dev.package."*"]
+opt-level = 1              # hashing/compression are unusably slow at opt-level 0
+
+[profile.test.package."*"]
+opt-level = 2
