@@ -6,6 +6,7 @@
 //! decision is pending, or while a restore transaction needs recovery.
 
 mod conflict;
+mod gc;
 mod instances;
 mod lifecycle;
 mod sync;

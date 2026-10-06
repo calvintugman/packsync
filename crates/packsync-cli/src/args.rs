@@ -395,25 +395,42 @@ pub struct DoctorArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum GcCmd {
-    /// Show what could be deleted from the cloud. Changes nothing.
-    Plan {
-        instance: Option<String>,
-        /// Keep the newest N normal snapshots and everything younger than --keep-days.
-        #[arg(long, default_value_t = 20)]
-        keep_snapshots: usize,
-        #[arg(long, default_value_t = 30)]
-        keep_days: u32,
-    },
-    /// Delete exactly what a previous plan listed (give the plan's hash).
+    /// Show what a cleanup would do. Changes nothing.
+    Plan(GcOpts),
+    /// Carry out a cleanup: give the plan id that `gc plan` printed. The plan is recomputed first and
+    /// refused if the cloud changed since you looked at it.
     Run {
-        /// The plan hash printed by `gc plan`.
+        /// The plan id printed by `gc plan` (with the same options).
         plan: String,
-        instance: Option<String>,
-        #[arg(long, default_value_t = 20)]
-        keep_snapshots: usize,
-        #[arg(long, default_value_t = 30)]
-        keep_days: u32,
+        #[command(flatten)]
+        opts: GcOpts,
     },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct GcOpts {
+    /// Also release the content of old snapshots (retention). Without this only objects that nothing
+    /// needs are removed.
+    #[arg(long)]
+    pub retain: bool,
+    /// With --retain: keep the content of the newest N snapshots.
+    #[arg(long, default_value_t = 20)]
+    pub keep_snapshots: usize,
+    /// With --retain: and of every snapshot younger than this many days.
+    #[arg(long, default_value_t = 30)]
+    pub keep_days: u32,
+    /// With --retain: keep crash saves (and the snapshot before them) this many days.
+    #[arg(long, default_value_t = 90)]
+    pub keep_crash_days: u32,
+    /// With --retain: limit it to one instance (ID or name).
+    #[arg(long)]
+    pub instance: Option<String>,
+    /// Never touch objects younger than this (at least 24): they may belong to an upload in progress.
+    #[arg(long, default_value_t = 48)]
+    pub grace_hours: u32,
+    /// Do not merge small index objects.
+    #[arg(long)]
+    pub no_consolidate: bool,
 }
 
 #[derive(Args, Debug)]

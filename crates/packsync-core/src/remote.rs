@@ -66,6 +66,12 @@ pub fn leases_prefix(inst: InstanceId) -> String {
 pub fn lease_key(inst: InstanceId, dev: DeviceId) -> String {
     format!("instances/{inst}/leases/{dev}.json")
 }
+pub fn expired_prefix(inst: InstanceId) -> String {
+    format!("instances/{inst}/expired/")
+}
+pub fn expired_key(inst: InstanceId, id: SnapshotId) -> String {
+    format!("instances/{inst}/expired/{}.json", id.to_hex())
+}
 
 fn parse_name<'a>(key: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     key.strip_prefix(prefix)?.strip_suffix(suffix)
@@ -320,6 +326,54 @@ impl Remote {
         self.call(ctx, "upload index", |_| self.storage.put(&key, PutSource::Bytes(&stored), &opts, ctx))?;
         ctx.add_up(stored.len() as u64);
         Ok(id)
+    }
+
+    /// Index objects with their provider metadata (age, tags) for cleanup decisions.
+    pub fn list_index_infos(&self, ctx: &OpCtx) -> Result<Vec<(Hash, ObjectInfo)>> {
+        let items = self.call(ctx, "list indexes", |_| self.storage.list("index/", ctx))?;
+        let mut out: Vec<(Hash, ObjectInfo)> = items
+            .into_iter()
+            .filter(|i| !i.is_dir)
+            .filter_map(|i| Some((Hash::from_hex(parse_name(&i.key, "index/", ".idx")?).ok()?, i)))
+            .collect();
+        out.sort_by_key(|(h, _)| *h);
+        out.dedup_by_key(|(h, _)| *h);
+        Ok(out)
+    }
+
+    /// Keys directly under `prefix` (`packs/`, `index/`) that are not objects PackSync names itself.
+    pub fn list_unrecognised(&self, prefix: &str, suffix: &str, ctx: &OpCtx) -> Result<Vec<String>> {
+        let items = self.call(ctx, "list objects", |_| self.storage.list(prefix, ctx))?;
+        Ok(items
+            .into_iter()
+            .filter(|i| !i.is_dir)
+            .filter(|i| parse_name(&i.key, prefix, suffix).and_then(|h| Hash::from_hex(h).ok()).is_none())
+            .map(|i| i.key)
+            .collect())
+    }
+
+    /// Delete one object PackSync created (the provider's trash is used when it has one).
+    pub fn delete_object(&self, key: &str, ctx: &OpCtx) -> Result<()> {
+        self.call(ctx, "delete object", |_| self.storage.delete(key, DeleteMode::Trash, ctx))
+    }
+
+    pub fn put_expired(&self, rec: &crate::gc::ExpiredRecord, ctx: &OpCtx) -> Result<()> {
+        let key = expired_key(rec.instance, rec.snapshot);
+        let bytes = serde_json::to_vec(rec)?;
+        let opts = PutOptions::replace().with_tag("ps", "1").with_tag("kind", "expired");
+        self.call(ctx, "mark snapshot as released", |_| self.storage.put(&key, PutSource::Bytes(&bytes), &opts, ctx))?;
+        Ok(())
+    }
+
+    /// Snapshots of `inst` whose content was released by a cleanup.
+    pub fn list_expired(&self, inst: InstanceId, ctx: &OpCtx) -> Result<HashSet<SnapshotId>> {
+        let prefix = expired_prefix(inst);
+        let items = self.call(ctx, "list released snapshots", |_| self.storage.list(&prefix, ctx))?;
+        Ok(items
+            .iter()
+            .filter(|i| !i.is_dir)
+            .filter_map(|i| parse_name(&i.key, &prefix, ".json")?.parse::<SnapshotId>().ok())
+            .collect())
     }
 
     pub fn list_index_ids(&self, ctx: &OpCtx) -> Result<Vec<Hash>> {

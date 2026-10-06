@@ -59,9 +59,24 @@ impl Engine {
 
     /// What restoring `snapshot` over this instance would change. Reads the cloud only for the
     /// manifest; touches nothing.
+    /// Content released by a cloud cleanup (retention) cannot be restored any more.
+    fn require_not_expired(&self, id: InstanceId, snapshot: SnapshotId, ctx: &OpCtx) -> Result<()> {
+        if let Ok(remote) = self.remote()
+            && let Ok(expired) = remote.list_expired(id, ctx)
+            && expired.contains(&snapshot)
+        {
+            return Err(Error::Unsupported(format!(
+                "the data of snapshot {} was released by a cloud cleanup (retention), so it can no longer be restored. Newer snapshots are not affected",
+                snapshot.short()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn restore_preview(&self, id: InstanceId, snapshot: SnapshotId, ctx: &OpCtx) -> Result<RestorePreview> {
         let inst = self.instance(id)?;
         self.require_uploaded(id, snapshot)?;
+        self.require_not_expired(id, snapshot, ctx)?;
         let target = self.manifest(id, snapshot, ctx)?;
         let rules = RuleSet::compile(&target.rules.text, &inst.game_root)?;
         let policies = self.policies_for(&inst);
@@ -139,6 +154,7 @@ impl Engine {
         self.guard_provider(&inst)?;
         self.require_state(&inst, &[InstanceState::Ok])?;
         self.require_uploaded(id, snapshot)?;
+        self.require_not_expired(id, snapshot, ctx)?;
         let ctx = &ctx.clone().with_instance(id);
         let remote = self.remote()?;
         // The history must not have moved on without us.

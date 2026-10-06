@@ -277,6 +277,11 @@ impl Engine {
         let rows = self.db.snapshots(id)?;
         let graph = Graph::from_rows(&rows);
         let heads = graph.cloud_heads();
+        let expired = if online && self.has_storage() {
+            self.remote().and_then(|r| r.list_expired(id, ctx)).unwrap_or_default()
+        } else {
+            Default::default()
+        };
         Ok(rows
             .into_iter()
             .map(|r| HistoryEntry {
@@ -293,6 +298,7 @@ impl Engine {
                 state: r.state,
                 is_base: inst.base_snapshot == Some(r.id),
                 is_cloud_head: heads.contains(&r.id),
+                expired: expired.contains(&r.id),
             })
             .collect())
     }

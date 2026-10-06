@@ -1690,6 +1690,7 @@ dependencies = [
  "crossbeam-channel",
  "ctrlc",
  "dunce",
+ "filetime",
  "packsync-app",
  "packsync-core",
  "packsync-drive",

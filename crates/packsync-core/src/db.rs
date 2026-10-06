@@ -678,6 +678,17 @@ impl Db {
         self.with(|c| Ok(c.query_row("SELECT COUNT(*) FROM remote_blobs", [], |r| r.get::<_, i64>(0))? as u64))
     }
 
+    /// `(hash, stored length)` of every blob the cached indexes place in `pack`.
+    pub fn pack_blobs(&self, pack: Hash) -> Result<Vec<(Hash, u32)>> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT hash,stored_len FROM remote_blobs WHERE pack=?1")?;
+            let rows = st
+                .query_map([pack.0.to_vec()], |r| Ok((blob_hash(r.get(0)?)?, r.get::<_, i64>(1)? as u32)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
     /// Forget every cached blob location that points into `pack` (the pack vanished remotely).
     pub fn blobs_forget_pack(&self, pack: Hash) -> Result<()> {
         self.with(|c| {

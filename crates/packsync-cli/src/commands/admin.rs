@@ -3,8 +3,9 @@ use packsync_core::redact::redact;
 use serde::Serialize;
 
 use super::Cx;
-use crate::args::{BridgeArgs, DoctorArgs, GcCmd};
-use crate::render::bytes;
+use crate::args::{BridgeArgs, DoctorArgs, GcCmd, GcOpts};
+use crate::render::{bytes, short};
+use packsync_core::gc::{GcParams, RetentionPolicy};
 
 #[derive(Serialize)]
 struct Check {
@@ -109,8 +110,128 @@ pub fn doctor(cx: &Cx, a: DoctorArgs) -> Result<()> {
     })
 }
 
-pub fn gc(_cx: &Cx, _g: GcCmd) -> Result<()> {
-    Err(Error::Unsupported("cloud cleanup is not available in this build".into()))
+fn gc_params(cx: &Cx, o: &GcOpts) -> Result<GcParams> {
+    let instance = match (&o.instance, o.retain) {
+        (Some(t), true) => Some(match crate::resolve::instance(&cx.app, t) {
+            Ok(id) => id,
+            // an instance that is only in the cloud (not registered here): accept its ID
+            Err(_) => packsync_core::ids::InstanceId::parse(t)
+                .map_err(|_| Error::NotFound(format!("no instance matches {t:?}")))?,
+        }),
+        (Some(_), false) => return Err(Error::invalid("gc", "--instance only makes sense together with --retain")),
+        _ => None,
+    };
+    Ok(GcParams {
+        grace_hours: o.grace_hours,
+        retention: o.retain.then_some(RetentionPolicy {
+            keep_snapshots: o.keep_snapshots,
+            keep_days: o.keep_days,
+            keep_crash_days: o.keep_crash_days,
+        }),
+        instance,
+        consolidate_indexes: !o.no_consolidate,
+    })
+}
+
+fn print_gc_plan(w: &mut dyn std::io::Write, p: &packsync_core::gc::GcPlan) -> std::io::Result<()> {
+    if p.is_empty() {
+        writeln!(w, "Nothing to clean up.")?;
+    }
+    if !p.expire.is_empty() {
+        writeln!(
+            w,
+            "Release the content of {} old snapshot(s) (they stay in the history but can no longer be restored):",
+            p.expire.len()
+        )?;
+        for e in p.expire.iter().take(10) {
+            writeln!(w, "  {}  {}", short(&e.snapshot), e.created.as_deref().unwrap_or("?"))?;
+        }
+        if p.expire.len() > 10 {
+            writeln!(w, "  … and {} more", p.expire.len() - 10)?;
+        }
+    }
+    let packs = p.delete.iter().filter(|d| d.kind == "pack").count();
+    let idx = p.delete.iter().filter(|d| d.kind == "index").count();
+    if !p.delete.is_empty() {
+        writeln!(w, "Delete {packs} pack(s) and {idx} index object(s), freeing {}:", bytes(p.total_delete_bytes))?;
+        for d in p.delete.iter().take(12) {
+            writeln!(w, "  {:<6} {}  {}  — {}", d.kind, d.key, bytes(d.size), d.reason)?;
+        }
+        if p.delete.len() > 12 {
+            writeln!(w, "  … and {} more", p.delete.len() - 12)?;
+        }
+    }
+    if p.partially_live.packs > 0 {
+        writeln!(
+            w,
+            "{} pack(s) are only partly needed; {} inside them is unused but can only be reclaimed by repacking (not done by this version).",
+            p.partially_live.packs,
+            bytes(p.partially_live.reclaimable_bytes)
+        )?;
+    }
+    for n in &p.notes {
+        writeln!(w, "note: {n}")?;
+    }
+    if !p.kept_unknown.is_empty() {
+        writeln!(w, "Left alone (not created by PackSync or not understood): {}", p.kept_unknown.len())?;
+        for k in p.kept_unknown.iter().take(5) {
+            writeln!(w, "  {k}")?;
+        }
+    }
+    Ok(())
+}
+
+pub fn gc(cx: &Cx, g: GcCmd) -> Result<()> {
+    let ctx = cx.out.ctx();
+    match g {
+        GcCmd::Plan(o) => {
+            let params = gc_params(cx, &o)?;
+            let plan = cx.app.engine().gc_plan(&params, &ctx)?;
+            cx.out.emit(&plan, |w| {
+                print_gc_plan(w, &plan)?;
+                if !plan.is_empty() {
+                    writeln!(w, "\nTo carry this out exactly: packsync gc run {} <the same options>", plan.id)?;
+                }
+                Ok(())
+            })
+        }
+        GcCmd::Run { plan: plan_id, opts } => {
+            let params = gc_params(cx, &opts)?;
+            let plan = cx.app.engine().gc_plan(&params, &ctx)?;
+            if plan.id != plan_id {
+                return Err(Error::Conflict(format!(
+                    "the cloud (or the options) changed since the preview: plan {plan_id} is now {}. Run `packsync gc plan` again",
+                    plan.id
+                )));
+            }
+            if !cx.out.json && !cx.out.quiet {
+                print_gc_plan(&mut std::io::stderr(), &plan).map_err(|e| Error::io("printing the plan", e))?;
+            }
+            if plan.is_empty() {
+                return cx.out.emit(&plan, |w| writeln!(w, "Nothing to clean up."));
+            }
+            if !cx.out.confirm(
+                "Delete these objects from your cloud storage now? (Google Drive keeps them in its trash for a while.)",
+            )? {
+                return Err(Error::Cancelled);
+            }
+            let rep = cx.app.engine().gc_run(&plan_id, &params, &ctx)?;
+            cx.out.emit(&rep, |w| {
+                writeln!(
+                    w,
+                    "Removed {} pack(s) and {} index object(s), freed {}; released {} snapshot(s).",
+                    rep.deleted_packs,
+                    rep.deleted_indexes,
+                    bytes(rep.bytes_freed),
+                    rep.expired
+                )?;
+                for n in &rep.notes {
+                    writeln!(w, "note: {n}")?;
+                }
+                Ok(())
+            })
+        }
+    }
 }
 
 pub fn dev_bridge(_cx: &Cx, _b: BridgeArgs) -> Result<()> {

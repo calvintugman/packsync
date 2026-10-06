@@ -51,7 +51,8 @@ impl LocalDirStorage {
         };
         let _ = path;
         let mut info = ObjectInfo::file(key, meta.len());
-        info.created_ms = ms(meta.created());
+        // Birth time is not portable (and cannot be set); objects are immutable, so mtime is their age.
+        info.created_ms = ms(meta.modified());
         info.modified_ms = ms(meta.modified());
         info.tags = self.load_tags(key);
         info

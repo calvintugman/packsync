@@ -176,3 +176,53 @@ fn secrets_never_appear_in_json_output_or_diagnostics() {
     let settings = std::fs::read_to_string(a.config.join("settings.json")).unwrap();
     assert!(!settings.contains("GOCSPX"), "{settings}");
 }
+
+#[test]
+fn cleanup_shows_a_plan_first_and_only_runs_exactly_that_plan() {
+    use packsync_core::hash::Hash;
+    use packsync_core::storage::{PutOptions, PutSource, Storage};
+    let w = World::new();
+    let a = w.dev("desktop");
+    let (id, _root) = a.enabled_instance("Pack One");
+    // an abandoned upload's pack, old enough; and a file somebody else put into the same folder
+    let junk = b"left behind by an abandoned upload".to_vec();
+    let key = format!("packs/{}.pack", Hash::of(&junk).to_hex());
+    let st = packsync_core::storage_local::LocalDirStorage::new(&w.cloud).unwrap();
+    let ctx = packsync_core::progress::OpCtx::detached();
+    st.put(
+        &key,
+        PutSource::Bytes(&junk),
+        &PutOptions::create_only(None).with_tag("ps", "1").with_tag("kind", "pack"),
+        &ctx,
+    )
+    .unwrap();
+    st.put("packs/mine.txt", PutSource::Bytes(b"not PackSync's"), &PutOptions::create_only(None), &ctx).unwrap();
+    for f in [key.as_str(), "packs/mine.txt"] {
+        filetime::set_file_mtime(w.cloud.join(f), filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+    }
+    // plan: informative and harmless
+    let plan = a.ok(&["gc", "plan"]);
+    assert_eq!(plan["delete"].as_array().unwrap().len(), 1, "{plan}");
+    assert!(plan["kept_unknown"].as_array().unwrap().iter().any(|k| k.as_str().unwrap().contains("mine.txt")));
+    assert!(w.cloud.join(&key).exists());
+    let human = a.run(&["gc", "plan"]);
+    assert!(human.stdout.contains("gc run"), "{}", human.stdout);
+    // a plan id that does not match is refused (exit 12) and nothing happens
+    let bad = a.run(&["--json", "--yes", "gc", "run", "0000000000000000"]);
+    assert_eq!(bad.code, 12, "{}", bad.stderr);
+    assert!(w.cloud.join(&key).exists());
+    // without --yes and without a terminal it does not guess
+    let id_str = plan["id"].as_str().unwrap().to_string();
+    let no_yes = a.run(&["--json", "gc", "run", &id_str]);
+    assert_ne!(no_yes.code, 0);
+    assert!(w.cloud.join(&key).exists());
+    // the real run deletes exactly that and nothing else
+    let rep = a.ok(&["gc", "run", &id_str]);
+    assert_eq!(rep["deleted_packs"], 1);
+    assert!(!w.cloud.join(&key).exists() && w.cloud.join("packs/mine.txt").exists());
+    assert_eq!(a.ok(&["gc", "plan"])["delete"].as_array().unwrap().len(), 0);
+    // options are validated
+    assert_ne!(a.run(&["--json", "gc", "plan", "--instance", &id]).code, 0, "--instance needs --retain");
+    // the instance still verifies against the cloud
+    assert_eq!(a.ok(&["verify", &id, "--remote", "--deep"])["remote"]["damaged_blobs"].as_array().unwrap().len(), 0);
+}

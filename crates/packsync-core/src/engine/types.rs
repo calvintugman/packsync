@@ -197,6 +197,10 @@ pub struct HistoryEntry {
     pub state: SnapshotState,
     pub is_base: bool,
     pub is_cloud_head: bool,
+    /// The content was released by a cloud cleanup (retention): the entry stays in the history but
+    /// cannot be restored.
+    #[serde(default)]
+    pub expired: bool,
 }
 
 /// Where the instance stands, in words the UI can show without interpretation.

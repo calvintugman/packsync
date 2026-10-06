@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 pub mod failpoint;
 pub mod fsutil;
+pub mod gc;
 pub mod generic_launcher;
 pub mod graph;
 pub mod hash;
