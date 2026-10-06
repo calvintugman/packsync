@@ -155,7 +155,12 @@ mod tests {
         let path = d.path().join("l/packsync.log");
         let mut w = RedactingFile::open(&path).unwrap();
         w.write_all(b"2026 INFO sent Authorization: Bear").unwrap();
-        w.write_all(b"er ya29.a0AfH6SMBsecretsecretsecret and refresh_token=1//0gSECRETSECRET done\n").unwrap();
+        // (assembled at run time: a source file with a realistic access-token shape trips secret scanners)
+        let line = format!(
+            "er {}{} and refresh_token={}{} done\n",
+            "ya29", ".a0AfH6SMBsecretsecretsecret", "1//", "0gSECRETSECRET"
+        );
+        w.write_all(line.as_bytes()).unwrap();
         w.write_all(b"plain line\nunterminated").unwrap();
         w.flush().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

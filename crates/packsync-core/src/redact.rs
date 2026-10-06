@@ -195,7 +195,9 @@ mod tests {
         assert!(!r.contains("AEnB2Uo123"), "{r}");
         assert!(r.contains("uploadType=resumable"), "non-secret params stay: {r}");
 
-        let r = redact("Authorization: Bearer ya29.a0AfH6SMBx-secret_value\nnext line");
+        // (assembled at run time: a source file with a realistic access-token shape trips secret scanners)
+        let leaky = format!("Authorization: Bearer {}{}\nnext line", "ya29", ".a0AfH6SMBx-secret_value");
+        let r = redact(&leaky);
         assert!(!r.contains("ya29"), "{r}");
         assert!(r.contains("next line"));
 
