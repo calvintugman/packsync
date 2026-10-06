@@ -49,16 +49,16 @@ the real-Prism smoke test and the real OS keyring round trip.
 | 10 | Live-world writers, duplicate jobs, stale leases, game crashes and watcher overflow never produce a claimed clean handoff | `sessions::nothing_mutates_an_instance_while_a_game_process_is_using_it`, `duplicate_hook_and_app_jobs_are_idempotent`, `a_stale_lease_is_ignored_while_a_fresh_one_only_warns`, `a_crashed_session_is_quarantined_never_promoted_automatically`, `a_session_killed_without_any_signal_is_found_after_restart_and_treated_as_unclean`; app `launch.rs` (12); Playwright *crash*. **Watcher overflow does not apply: v1 has no filesystem watcher** (`docs/architecture.md`); its safeguard — cached metadata is never trusted over a full hash when it could be stale — is the scan policy tested in scenario 3 |
 | 11 | Retention keeps every reachable object, respects in-flight uploads, never deletes unrelated Drive files | `gc.rs` (8 tests); Drive `cleanup_works_on_drive_objects_tags_ages_and_trash`; CLI `cleanup_shows_a_plan_first_and_only_runs_exactly_that_plan` |
 | 12 | Token redaction, path traversal, symlink escape, oversized manifests, decompression limits, malicious reconstruction mappings | Drive `oauth::no_secret_ever_appears_in_logs_errors_or_debug_output`; CLI `secrets_never_appear_in_json_output_or_diagnostics`; `hostile.rs` (8: traversal, symlinks, bombs, absurd sizes, credentials never uploaded); manifest and pack unit tests (overlapping/overflowing ranges) |
-| 13 | The UI exposes real engine state: errors, cancel/retry, offline choice, conflicts; core journeys exercised through automated UI tests | Playwright (38 tests) against the real engine; Vitest (119) |
+| 13 | The UI exposes real engine state: errors, cancel/retry, offline choice, conflicts; core journeys exercised through automated UI tests | Playwright (38 tests) against the real engine; Vitest (122) |
 
 ### Counts when this was written (Linux, one machine)
 
 | Suite | Result |
 |---|---|
-| `cargo test --workspace` | **358 passed, 0 failed, 2 ignored** |
+| `cargo test --workspace` | **365 passed, 0 failed, 2 ignored** |
 | `cargo test -p packsync-cli --features failpoints --test killed` | 4 passed |
-| UI unit and component tests | **108 passed** (14 files) |
-| Playwright (Chromium) | **33 passed** (+7 screenshot generators that run only with `SCREENSHOTS=1`) |
+| UI unit and component tests | **122 passed** (16 files) |
+| Playwright (Chromium) | **38 passed** (+7 screenshot generators that run only with `SCREENSHOTS=1`) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean (also with `--features packsync-cli/failpoints`) |
 | `cargo deny check` (engine workspace and desktop shell) | advisories, bans, licences and sources pass; one documented advisory exception in the shell (`docs/dependencies.md`) |
 | `npm audit` | 0 vulnerabilities |

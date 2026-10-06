@@ -66,6 +66,25 @@ fn authentication_failure_is_surfaced_and_nothing_is_marked_synced() {
 }
 
 #[test]
+fn a_cancel_that_surfaces_from_inside_a_storage_call_is_not_recorded_as_a_failure() {
+    let (_w, a, _root, inst) = setup();
+    // what a cancelled request looks like to the engine: the storage layer reports it, the engine did not
+    a.plan.add(FaultRule::new(OpKind::Put, When::Nth(1), Fault::Error(StorageError::Cancelled)).on_key("packs/"));
+    let err = a.engine.upload_pending(inst, false, &a.ctx()).unwrap_err();
+    assert!(err.is_cancelled(), "{err:?}");
+    assert_eq!(err.exit_code(), exit::CANCELLED);
+
+    // a cancel is not an error to back off from: nothing is recorded, so the next attempt starts at once
+    let st = a.engine.status(inst, false, &a.ctx()).unwrap();
+    assert_eq!((st.next_retry_ms, st.last_error.as_deref()), (None, None), "{st:?}");
+    assert_ne!(st.base_state, Some(SnapshotState::Visible), "a cancelled upload is not shown as synced");
+    a.plan.clear();
+    a.engine.upload_pending(inst, false, &a.ctx()).unwrap();
+    let st = a.engine.status(inst, false, &a.ctx()).unwrap();
+    assert_eq!(st.phase, SyncPhase::ReadyOnOtherDevices);
+}
+
+#[test]
 fn quota_exhaustion_is_not_retried_and_reported_with_advice() {
     let (_w, a, _root, inst) = setup();
     a.plan.add(

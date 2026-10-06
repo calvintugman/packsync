@@ -281,7 +281,7 @@ impl Uploader<'_> {
                                 }
                             }
                             Err(e) => {
-                                if !crate::failpoint::is_crash(&e) && !matches!(e, Error::Cancelled) {
+                                if !crate::failpoint::is_crash(&e) && !e.is_cancelled() {
                                     let attempts = self
                                         .db
                                         .staged_for(id)

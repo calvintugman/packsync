@@ -92,8 +92,10 @@ test("a slow upload can be cancelled and nothing half-finished is shown as synce
   await c.getByRole("button", { name: "Sync now" }).click();
   const cancel = c.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeVisible();
+  // cancel while the data is on its way — not before the snapshot exists, when there is nothing to upload yet
+  await expect(c).toHaveAttribute("data-phase", "upload_pending");
   await cancel.click();
-  await expect(cancel).toBeHidden();
+  await expect(cancel).toBeHidden({ timeout: 15_000 });
   await expect(c).toHaveAttribute("data-phase", /upload_pending|local_snapshot_complete/);
   await expect(c.getByRole("button", { name: "Sync now" })).toBeEnabled();
 

@@ -81,7 +81,7 @@ impl JobRunner {
     fn finish(&self, id: JobId, outcome: Result<serde_json::Value>) {
         let (state, error, result) = match &outcome {
             Ok(v) => (JobState::Succeeded, None, Some(v.clone())),
-            Err(Error::Cancelled) => (JobState::Cancelled, None, None),
+            Err(e) if e.is_cancelled() => (JobState::Cancelled, None, None),
             Err(e) => (JobState::Failed, Some(ErrorView::from(e)), None),
         };
         let db_state = match state {
@@ -192,6 +192,13 @@ mod tests {
         assert!(jobs.cancel(slow));
         assert_eq!(jobs.wait(slow, Duration::from_secs(5)).unwrap().state, JobState::Cancelled);
         assert!(!jobs.cancel(slow), "finished jobs cannot be cancelled");
+
+        // a cancel that surfaces from inside a storage call is still "cancelled", not "failed"
+        let in_storage = jobs
+            .start("t.storage-cancel", None, |_| Err(packsync_core::storage::StorageError::Cancelled.into()))
+            .unwrap();
+        let j = jobs.wait(in_storage, Duration::from_secs(5)).unwrap();
+        assert_eq!((j.state, j.error.is_none()), (JobState::Cancelled, true), "{j:?}");
 
         let panicky = jobs.start("t.panic", None, |_| panic!("boom")).unwrap();
         let j = jobs.wait(panicky, Duration::from_secs(5)).unwrap();

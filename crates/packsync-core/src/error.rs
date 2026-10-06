@@ -167,6 +167,12 @@ impl Error {
         Error::Other(msg.into())
     }
 
+    /// The operation stopped because the person cancelled it. A cancel can surface from the engine
+    /// (`Error::Cancelled`) or from inside a storage call (`StorageError::Cancelled`); both mean the same.
+    pub fn is_cancelled(&self) -> bool {
+        self.code() == ErrorCode::Cancelled
+    }
+
     pub fn code(&self) -> ErrorCode {
         match self {
             Error::Io { .. } => ErrorCode::Io,
@@ -300,6 +306,9 @@ mod tests {
         assert_eq!(e.exit_code(), exit::QUOTA);
         assert!(e.advice().unwrap().contains("full"));
         assert_eq!(Error::Cancelled.exit_code(), exit::CANCELLED);
+        assert!(Error::Cancelled.is_cancelled());
+        assert!(Error::from(StorageError::Cancelled).is_cancelled(), "a cancel from inside a storage call");
+        assert!(!Error::from(StorageError::Transient("x".into())).is_cancelled());
         assert_eq!(Error::Conflict("x".into()).exit_code(), exit::CONFLICT);
     }
 }
