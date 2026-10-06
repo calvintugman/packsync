@@ -316,6 +316,20 @@ impl Remote {
         Ok(out)
     }
 
+    /// A pack's own table of contents (its footer), read with two small ranged reads and verified. Packs
+    /// are self-describing: this works when no index object describes the pack.
+    pub fn read_pack_footer(&self, id: Hash, size: u64, ctx: &OpCtx) -> Result<Vec<crate::pack::BlobEntry>> {
+        let key = pack_key(id);
+        crate::pack::read_footer(size, |off, len| {
+            self.call(ctx, "read pack footer", |_| {
+                let r = self.storage.get(&key, Some((off, len)), ctx)?;
+                let mut buf = Vec::with_capacity(len as usize);
+                r.take(len).read_to_end(&mut buf).map_err(StorageError::io)?;
+                Ok(buf)
+            })
+        })
+    }
+
     pub fn stat_pack(&self, id: Hash, ctx: &OpCtx) -> Result<Option<ObjectInfo>> {
         let key = pack_key(id);
         self.call(ctx, "check pack", |_| self.storage.stat(&key, ctx))

@@ -152,8 +152,28 @@ impl Engine {
         let mut partial = PartialSummary::default();
         let mut deleted_pack_ids: HashSet<Hash> = HashSet::new();
         let mut young = 0u64;
+        let mut unindexed_needed = 0u64;
         for (id, info) in &packs {
-            let blobs = self.db.pack_blobs(*id)?;
+            let mut blobs = self.db.pack_blobs(*id)?;
+            let mut unindexed = false;
+            if blobs.is_empty()
+                && Self::is_ours(info)
+                && Self::age_hours(info, now).is_some_and(|a| a * 3_600_000 >= grace_ms)
+            {
+                // No index describes this pack: an abandoned upload — or a pack whose index object was lost.
+                // Its own footer says what it holds; never delete it on the absence of an index alone.
+                unindexed = true;
+                match remote.read_pack_footer(*id, info.size, ctx) {
+                    Ok(entries) => blobs = entries.iter().map(|e| (e.hash, e.stored_len)).collect(),
+                    // not a readable pack at all: nothing in it can be found or verified by anyone
+                    Err(e)
+                        if matches!(
+                            e.code(),
+                            crate::error::ErrorCode::CorruptRemote | crate::error::ErrorCode::Invalid
+                        ) => {}
+                    Err(e) => return Err(e),
+                }
+            }
             let (mut live_n, mut dead_bytes) = (0u64, 0u64);
             for (h, len) in &blobs {
                 if live.blobs.contains(h) {
@@ -163,6 +183,9 @@ impl Engine {
                 }
             }
             if live_n > 0 {
+                if unindexed {
+                    unindexed_needed += 1;
+                }
                 if dead_bytes > 0 {
                     partial.packs += 1;
                     partial.reclaimable_bytes += dead_bytes;
@@ -187,12 +210,19 @@ impl Engine {
                 kind: "pack".into(),
                 size: info.size,
                 age_hours: age,
-                reason: if blobs.is_empty() {
-                    "no index describes it (abandoned upload)".into()
+                reason: if unindexed {
+                    "no index describes it and no kept snapshot needs what it holds (abandoned upload)".into()
                 } else {
                     "no kept snapshot needs any of its content".into()
                 },
             });
+        }
+        if unindexed_needed > 0 {
+            notes.push(format!(
+                "{unindexed_needed} pack(s) are described by no index object but hold data that kept snapshots need: they were kept. \
+                 Other computers cannot find that data until it is described again; `packsync verify INSTANCE --remote --repair` \
+                 on a computer that has the files uploads it again."
+            ));
         }
         if young > 0 {
             notes.push(format!("{young} unused object(s) are younger than the {}-hour grace period and were left alone (they may belong to an upload in progress).", grace_ms / 3_600_000));

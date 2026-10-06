@@ -541,3 +541,28 @@ fn a_cleanup_killed_at_any_step_leaves_everything_restorable_and_can_simply_be_r
         assert!(v.missing_packs.is_empty() && v.damaged_blobs.is_empty(), "{point}@{nth}: {v:?}");
     }
 }
+
+/// When the index objects are lost (a Drive hiccup, someone tidying up the folder), every pack looks like
+/// an abandoned upload to a computer whose cache is empty. Cleanup used to plan to delete the packs that
+/// hold the only copy of the head's data; it now reads each such pack's own table of contents first.
+#[test]
+fn packs_whose_index_was_lost_are_kept_when_a_kept_snapshot_needs_them() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let mut spec = packsync_core::testkit::fixtures::FixtureSpec::tiny();
+    spec.worlds = 0; // only whole-file blobs: no chunk lists that would make the cleanup stop on its own
+    let (_root, _info, en) = a.new_instance("pack", &spec);
+    a.upload(en.instance);
+    for e in walkdir::WalkDir::new(w.remote_dir.join("index")).into_iter().flatten().filter(|e| e.file_type().is_file())
+    {
+        fs::remove_file(e.path()).unwrap();
+    }
+    age_everything(&w, 100);
+    let b = w.device("laptop"); // an empty cache: it knows the packs only from the listing
+    let plan = b.engine.gc_plan(&GcParams::default(), &b.ctx()).unwrap();
+    let doomed: Vec<_> = plan.delete.iter().filter(|d| d.kind == "pack").collect();
+    assert!(doomed.is_empty(), "{doomed:#?}");
+    assert!(plan.notes.iter().any(|n| n.contains("described by no index")), "{:?}", plan.notes);
+    let rep = b.engine.gc_run(&plan.id, &GcParams::default(), &b.ctx()).unwrap();
+    assert_eq!(rep.deleted_packs, 0);
+}
