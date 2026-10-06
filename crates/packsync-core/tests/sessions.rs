@@ -274,6 +274,8 @@ fn a_passive_observer_closes_a_dead_session_only_after_the_grace_period_or_a_reb
         result_snapshot: None,
         note: None,
         dead_seen_ms: None,
+        owner_pid: None,
+        owner_start_ms: None,
     };
     // a session that began after this boot: first sighting only records the time …
     let fresh = mk("fresh", packsync_core::db::now_ms());

@@ -137,9 +137,13 @@ CREATE TABLE sessions (
   offline INTEGER NOT NULL DEFAULT 0,
   result_snapshot TEXT,
   note TEXT,
-  dead_seen_ms INTEGER
+  dead_seen_ms INTEGER,
+  owner_pid INTEGER,
+  owner_start_ms INTEGER
 );
 CREATE INDEX sessions_by_instance ON sessions(instance_id, started_ms);
+-- one open session per launch token: concurrent requests (hook + app) for the same launch resolve to one
+CREATE UNIQUE INDEX sessions_open_token ON sessions(instance_id, token) WHERE state IN ('starting','running');
 
 CREATE TABLE jobs (
   id TEXT PRIMARY KEY,
@@ -806,8 +810,8 @@ impl Db {
     pub fn session_insert(&self, s: &SessionRow) -> Result<()> {
         self.with(|c| {
             c.execute(
-                "INSERT INTO sessions(id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                "INSERT INTO sessions(id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note,dead_seen_ms,owner_pid,owner_start_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 params![
                     s.id.to_string(),
                     s.instance_id.to_string(),
@@ -823,9 +827,43 @@ impl Db {
                     s.offline,
                     s.result_snapshot.map(|b| b.to_hex()),
                     s.note,
+                    s.dead_seen_ms,
+                    s.owner_pid,
+                    s.owner_start_ms,
                 ],
             )?;
             Ok(())
+        })
+    }
+
+    /// Insert unless an open session with the same (instance, token) exists. `true` = inserted.
+    pub fn session_insert_if_absent(&self, s: &SessionRow) -> Result<bool> {
+        self.with(|c| {
+            let n = c.execute(
+                "INSERT INTO sessions(id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note,dead_seen_ms,owner_pid,owner_start_ms)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                 ON CONFLICT DO NOTHING",
+                params![
+                    s.id.to_string(),
+                    s.instance_id.to_string(),
+                    s.owner.as_str(),
+                    s.token,
+                    s.base_snapshot.map(|b| b.to_hex()),
+                    s.started_ms,
+                    s.ended_ms,
+                    s.state.as_str(),
+                    s.outcome.map(outcome_str),
+                    s.game_pid,
+                    s.game_start_ms,
+                    s.offline,
+                    s.result_snapshot.map(|b| b.to_hex()),
+                    s.note,
+                    s.dead_seen_ms,
+                    s.owner_pid,
+                    s.owner_start_ms,
+                ],
+            )?;
+            Ok(n == 1)
         })
     }
 
@@ -834,7 +872,7 @@ impl Db {
         f(&mut s);
         self.with(|c| {
             c.execute(
-                "UPDATE sessions SET ended_ms=?2,state=?3,outcome=?4,game_pid=?5,game_start_ms=?6,offline=?7,result_snapshot=?8,note=?9,base_snapshot=?10,owner=?11,dead_seen_ms=?12 WHERE id=?1",
+                "UPDATE sessions SET ended_ms=?2,state=?3,outcome=?4,game_pid=?5,game_start_ms=?6,offline=?7,result_snapshot=?8,note=?9,base_snapshot=?10,owner=?11,dead_seen_ms=?12,owner_pid=?13,owner_start_ms=?14 WHERE id=?1",
                 params![
                     s.id.to_string(),
                     s.ended_ms,
@@ -848,6 +886,8 @@ impl Db {
                     s.base_snapshot.map(|b| b.to_hex()),
                     s.owner.as_str(),
                     s.dead_seen_ms,
+                    s.owner_pid,
+                    s.owner_start_ms,
                 ],
             )?;
             Ok(())
@@ -1335,9 +1375,13 @@ pub struct SessionRow {
     /// interrupted after a grace period, so that the launcher's own post-exit hook can still end it
     /// cleanly (see `SessionMgr::stale_open_sessions`).
     pub dead_seen_ms: Option<i64>,
+    /// The process that started an app-owned session (and start time, against pid reuse). A session
+    /// whose owner is gone is not "owned" any more: launcher hooks take over.
+    pub owner_pid: Option<u32>,
+    pub owner_start_ms: Option<i64>,
 }
 
-const SESSION_COLS: &str = "id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note,dead_seen_ms";
+const SESSION_COLS: &str = "id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note,dead_seen_ms,owner_pid,owner_start_ms";
 
 fn session_from_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
     let bad = |i: usize| rusqlite::Error::InvalidColumnType(i, "session".into(), rusqlite::types::Type::Text);
@@ -1357,6 +1401,8 @@ fn session_from_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
         result_snapshot: r.get::<_, Option<String>>(12)?.map(|s| s.parse().map_err(|_| bad(12))).transpose()?,
         note: r.get(13)?,
         dead_seen_ms: r.get(14)?,
+        owner_pid: r.get(15)?,
+        owner_start_ms: r.get(16)?,
     })
 }
 

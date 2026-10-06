@@ -80,8 +80,16 @@ impl SessionMgr<'_> {
             result_snapshot: None,
             note: None,
             dead_seen_ms: None,
+            owner_pid: (owner == SessionOwner::App).then(std::process::id),
+            owner_start_ms: (owner == SessionOwner::App).then(|| crate::proc::process_start_ms(std::process::id())).flatten(),
         };
-        self.db.session_insert(&row)?;
+        if !self.db.session_insert_if_absent(&row)? {
+            // a concurrent request for the same launch got there first: that is the session
+            if let Some(existing) = self.db.sessions_open(inst.id)?.into_iter().find(|s| s.token == token) {
+                return Ok((existing, Begin::AlreadyOwned));
+            }
+            return Err(Error::Busy("another play session of this instance was just started".into()));
+        }
         Ok((row, Begin::Created))
     }
 

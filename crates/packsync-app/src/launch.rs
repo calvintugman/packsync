@@ -46,7 +46,7 @@ impl Default for LaunchTiming {
         Self {
             poll: Duration::from_millis(poll_ms),
             start_timeout: Duration::from_secs(15 * 60),
-            exit_grace: Duration::from_secs(60),
+            exit_grace: Duration::from_secs(30),
             signal_wait: Duration::from_secs(15),
         }
     }
@@ -190,7 +190,10 @@ impl App {
         let patterns = self.engine().launcher(&inst.launcher).game_process_patterns(&inst.root);
         let mgr = packsync_core::session::SessionMgr { db: self.engine().db() };
         Ok(self.engine().db().sessions_open(inst.id)?.into_iter().find(|s| {
+            // an app that was killed or crashed no longer owns its session: the hooks must take over
+            let owner_alive = s.owner_pid.is_none_or(|p| pid_alive(p, s.owner_start_ms));
             s.owner == SessionOwner::App
+                && owner_alive
                 && (mgr.is_alive(s, &inst.root, &patterns)
                     || (s.state == SessionState::Starting && s.started_ms > now_ms() - 30 * 60_000))
         }))

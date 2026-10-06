@@ -355,3 +355,27 @@ fn a_clean_exit_signal_nobody_collected_closes_the_session_as_clean_later() {
     assert_eq!(st.state, InstanceState::Ok, "closed as a normal session, not quarantined");
     assert!(!signal.exists());
 }
+
+#[test]
+fn a_session_whose_app_was_killed_no_longer_makes_the_hooks_stand_aside() {
+    // The app started a session and was killed (or crashed) before the game ran. Treating that session as
+    // "owned" for half an hour would leave the next launch from the launcher without any syncing.
+    use packsync_core::engine::BeginSession;
+    let w = World::new();
+    let a = w.device("desktop");
+    let (inst, _root) = a.new_synced_instance("Pack One");
+    let begun = a.app.engine().begin_session(inst, BeginSession { owner: SessionOwner::App, token: "app-killed".into(), offline: false }, &a.ctx()).unwrap();
+    // while its owner (this test process) lives, the hooks stay out of the way
+    let pre = a.app.hook_pre_launch(inst, &a.ctx());
+    let HookOutcome::Proceed { messages, .. } = pre else { panic!("{pre:?}") };
+    assert!(messages.iter().any(|m| m.contains("PackSync started this game")), "{messages:?}");
+    // the owner dies
+    a.app.engine().db().session_update(begun.session, |r| r.owner_pid = Some(4_000_000)).unwrap();
+    let pre = a.app.hook_pre_launch(inst, &a.ctx());
+    let HookOutcome::Proceed { messages, .. } = pre else { panic!("{pre:?}") };
+    assert!(!messages.iter().any(|m| m.contains("PackSync started this game")), "{messages:?}");
+    let open = a.app.engine().db().sessions_open(inst).unwrap();
+    assert_eq!(open.len(), 1, "the abandoned session was closed and the hook's own session is the only open one");
+    assert_eq!(open[0].owner, SessionOwner::Hook);
+    assert_ne!(open[0].id, begun.session);
+}
