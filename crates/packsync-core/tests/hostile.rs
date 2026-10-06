@@ -186,6 +186,80 @@ fn malicious_manifests_cannot_write_outside_the_instance_or_pass_without_data() 
     assert!(!rb.join("config/ghost.toml").exists());
 }
 
+/// A snapshot used to be able to carry `.packsync/tx/<x>/journal.jsonl` (plus the files it names): the next
+/// startup recovery then executed the forged journal, with `..` in its paths, outside the instance.
+#[test]
+fn a_snapshot_cannot_carry_pack_sync_s_own_bookkeeping_and_a_forged_journal_is_never_executed() {
+    use packsync_core::ids::{InstanceId, SnapshotId, TxId};
+    use packsync_core::journal::{JOp, Rec};
+
+    let (w, a, b, inst, _ra, rb) = b_behind();
+    let head = a.engine.cloud_instances(&a.ctx()).unwrap()[0].heads[0].id;
+    let good = a.engine.manifest(inst, head, &a.ctx()).unwrap();
+    let outside = rb.parent().unwrap().join("escaped/payload.txt");
+
+    // 1. the manifests are refused by validation — also when planted without going through `finalize`
+    for planted in [".packsync/tx/evil/journal.jsonl", ".packsync/marker", "minecraft/.PackSync/tx/x", ".PACKSYNC/x"] {
+        let mut m = good.clone();
+        m.parents = vec![head];
+        m.created = "2099-01-01T00:00:00Z".into();
+        m.entries.push(Entry {
+            p: planted.into(),
+            t: EntryType::File,
+            s: 1,
+            m: 0,
+            x: false,
+            h: Some(Hash::of(b"x")),
+            r: None,
+            mx: None,
+        });
+        m.entries.sort_by(|x, y| x.p.as_bytes().cmp(y.p.as_bytes()));
+        let err = m.finalize().unwrap_err();
+        assert!(err.to_string().contains("bookkeeping"), "{planted}: {err}");
+        m.stats = Default::default();
+        let json = serde_json::to_vec(&m).unwrap();
+        plant_raw_commit(&w, inst, &Hash::of(&json).to_hex(), &packsync_core::codec::compress_doc(&json));
+    }
+    let before = digest(&rb);
+    let _ = b.engine.reconcile(inst, ReconcileOpts::default(), &b.ctx());
+    assert!(!rb.join(".packsync/tx/evil").exists() && !outside.exists());
+    no_leftovers(&rb);
+    let _ = before;
+
+    // 2. whatever got into the instance folder by other means: a journal with an escaping path is not run
+    let tx = TxId::new();
+    let txd = rb.join(".packsync/tx/evil");
+    std::fs::create_dir_all(txd.join("stage/escaped")).unwrap();
+    std::fs::write(txd.join("stage/escaped/payload.txt"), "forged").unwrap();
+    let journal: String = [
+        Rec::Begin {
+            tx,
+            target: SnapshotId(Hash::of(b"t")),
+            base: None,
+            instance: InstanceId::new(),
+            created: "2026-01-01T00:00:00Z".into(),
+            derive_note: None,
+        },
+        Rec::Ops { ops: vec![JOp::Write { p: "../escaped/payload.txt".into(), existed: false }] },
+        Rec::Staged,
+        Rec::BatchBegin { upto: 1 },
+    ]
+    .iter()
+    .map(|r| serde_json::to_string(r).unwrap() + "\n")
+    .collect();
+    std::fs::write(txd.join("journal.jsonl"), journal).unwrap();
+    // …next to a second, ordinary instance whose own (empty) interrupted transaction must still be cleaned up
+    let (root2, _info2, en2) = b.new_instance("second", &spec(2));
+    std::fs::create_dir_all(root2.join(".packsync/tx/old")).unwrap();
+
+    let report = b.engine.recover(&b.ctx()).expect("one damaged journal does not abort recovery");
+    assert!(!outside.exists(), "nothing was written outside the instance");
+    assert_eq!(report.could_not_recover.len(), 1, "{report:?}");
+    assert!(report.could_not_recover[0].1.contains("unsafe path"), "{report:?}");
+    assert!(txd.exists(), "the forged transaction is left alone");
+    assert!(!root2.join(".packsync/tx/old").exists(), "the other instance was still recovered ({})", en2.instance);
+}
+
 #[test]
 fn an_absurd_declared_size_fails_the_disk_space_check_before_anything_changes() {
     let (w, a, b, inst, _ra, rb) = b_behind();

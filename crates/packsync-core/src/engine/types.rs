@@ -403,4 +403,9 @@ pub struct RecoveryReport {
     pub removed_partial_restores: Vec<PathBuf>,
     pub interrupted_sessions: Vec<SessionId>,
     pub orphan_staging_removed: u32,
+    /// Interrupted restores that could not be recovered (a damaged or forged journal): the instance and
+    /// the transaction folder were left untouched for a person to look at. One bad journal never stops
+    /// the recovery of other instances.
+    #[serde(default)]
+    pub could_not_recover: Vec<(InstanceId, String)>,
 }

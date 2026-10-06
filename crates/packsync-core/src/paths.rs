@@ -29,6 +29,9 @@ pub enum PathIssue {
     TooDeep,
     /// Windows drive prefix like `C:` in the first component.
     DrivePrefix,
+    /// PackSync's own bookkeeping folder (`.packsync`): never part of a snapshot. A snapshot that
+    /// carries it could plant a forged restore journal or replace the instance's ownership marker.
+    Reserved,
 }
 
 impl std::fmt::Display for PathIssue {
@@ -46,6 +49,7 @@ impl std::fmt::Display for PathIssue {
             PathIssue::TooLong => "path longer than 1024 bytes",
             PathIssue::TooDeep => "path nested deeper than 64 levels",
             PathIssue::DrivePrefix => "Windows drive prefix",
+            PathIssue::Reserved => "PackSync's own bookkeeping folder (.packsync) cannot be part of a snapshot",
         };
         f.write_str(s)
     }
@@ -86,6 +90,10 @@ pub fn validate_relpath(p: &str) -> std::result::Result<(), PathIssue> {
         }
         if c.chars().any(|ch| ch.is_control()) {
             return Err(PathIssue::Control);
+        }
+        // case-insensitive: on a case-insensitive file system `.PackSync` IS the bookkeeping folder
+        if c.eq_ignore_ascii_case(crate::brand::LOCAL_MARKER_DIR) {
+            return Err(PathIssue::Reserved);
         }
         if i == 0 && c.len() >= 2 && c.as_bytes()[1] == b':' && c.as_bytes()[0].is_ascii_alphabetic() {
             return Err(PathIssue::DrivePrefix);
@@ -289,9 +297,17 @@ mod tests {
             "c:evil",
             "a/b\0c",
             "tab\there",
+            // PackSync's bookkeeping folder, at any depth and in any case
+            ".packsync",
+            ".packsync/marker",
+            ".packsync/tx/evil/journal.jsonl",
+            ".PACKSYNC/marker",
+            "minecraft/.PackSync/x",
         ] {
             assert!(validate_relpath(bad).is_err(), "{bad:?} must be rejected");
         }
+        assert_eq!(validate_relpath(".packsync/marker"), Err(PathIssue::Reserved));
+        assert!(validate_relpath("minecraft/.packsyncfoo/x").is_ok(), "only the exact name is reserved");
         assert!(validate_relpath("a/".repeat(65).trim_end_matches('/')).is_err(), "too deep");
         assert!(validate_relpath(&"x".repeat(256)).is_err(), "component too long");
         assert!(validate_relpath(&format!("{}/{}", "d".repeat(250), "e".repeat(250))).is_ok());

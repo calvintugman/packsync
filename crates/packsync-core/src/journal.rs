@@ -26,6 +26,7 @@ use crate::brand::LOCAL_MARKER_DIR;
 use crate::error::{Error, IoContext, Result};
 use crate::fsutil::{fsync_dir, long_path};
 use crate::ids::{InstanceId, SnapshotId, TxId};
+use crate::paths::validate_relpath;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
@@ -320,6 +321,18 @@ pub fn recover_tx(root: &Path, txd: &Path) -> Result<RecoveryAction> {
         let _ = fs::remove_dir_all(long_path(txd));
         return Ok(RecoveryAction::Nothing);
     }
+    // The journal is a file inside the instance: treat it as untrusted. Our own journals only ever name
+    // paths that passed `validate_relpath`; anything else (`..`, an absolute path, the bookkeeping
+    // folder) was not written by PackSync and must never be turned into file-system moves.
+    for op in &st.ops {
+        if let Err(issue) = validate_relpath(op.path()) {
+            return Err(Error::Corrupt(format!(
+                "restore journal {} names an unsafe path {:?} ({issue}); nothing was changed",
+                jp.display(),
+                op.path()
+            )));
+        }
+    }
     if st.applied {
         return match (st.target(), st.tx()) {
             (Some(target), Some(tx)) => {
@@ -521,6 +534,41 @@ mod tests {
         );
         assert!(matches!(recover_tx(root, &t3).unwrap(), RecoveryAction::RollForward { .. }));
         assert!(t3.exists(), "roll-forward keeps the tx until the caller finalises it");
+    }
+
+    /// A journal found in an instance is untrusted input (a snapshot used to be able to plant one):
+    /// operations naming `..`, absolute paths or the bookkeeping folder are refused before any rename.
+    #[test]
+    fn recovery_refuses_a_journal_that_names_paths_outside_the_instance() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("inst");
+        fs::create_dir_all(&root).unwrap();
+        let outside = d.path().join("escaped.txt");
+        let victim = d.path().join("victim.txt");
+        fs::write(&victim, "precious").unwrap();
+        for evil in ["../escaped.txt", "../victim.txt", "/etc/passwd", ".packsync/marker", "a/../../victim.txt"] {
+            for existed in [true, false] {
+                let txd = tx_root(&root).join("evil");
+                let _ = fs::remove_dir_all(&txd);
+                let mut j = Journal::create(&txd.join("journal.jsonl")).unwrap();
+                for r in [
+                    rec_begin(),
+                    Rec::Ops { ops: vec![JOp::Write { p: evil.into(), existed }, JOp::Delete { p: evil.into() }] },
+                    Rec::Staged,
+                    Rec::BatchBegin { upto: 2 },
+                ] {
+                    j.append(&r, true).unwrap();
+                }
+                // what a forged transaction would move: staged content and a trashed original
+                fs::create_dir_all(txd.join("stage")).unwrap();
+                fs::write(txd.join("stage/escaped.txt"), "forged").unwrap();
+                let err = recover_tx(&root, &txd).unwrap_err();
+                assert!(matches!(err, Error::Corrupt(_)), "{evil:?}: {err:?}");
+                assert!(txd.exists(), "the forged transaction is left for a person to look at, not acted on");
+                assert!(!outside.exists(), "{evil:?}: nothing was written outside the instance");
+                assert_eq!(fs::read_to_string(&victim).unwrap(), "precious", "{evil:?}");
+            }
+        }
     }
 
     #[test]

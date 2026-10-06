@@ -247,7 +247,17 @@ impl Engine {
             // Another process may be working on this very instance right now: never recover under it.
             let Ok(busy_guard) = self.lock(inst.id, "recover") else { continue };
             for txd in journal::pending_txs(&inst.root) {
-                match journal::recover_tx(&inst.root, &txd)? {
+                let action = match journal::recover_tx(&inst.root, &txd) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        // a damaged or forged journal: leave it, say so, and carry on with everything else
+                        let msg = format!("an interrupted restore could not be recovered ({e}); nothing was changed");
+                        self.db.event(Some(inst.id), "error", "restore_recovery_failed", &msg);
+                        rep.could_not_recover.push((inst.id, msg));
+                        continue;
+                    }
+                };
+                match action {
                     RecoveryAction::RolledBack => {
                         rep.rolled_back.push(inst.id);
                         self.db.event(
