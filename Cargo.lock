@@ -1658,6 +1658,20 @@ dependencies = [
 [[package]]
 name = "packsync-prism"
 version = "0.1.0"
+dependencies = [
+ "dunce",
+ "fastrand",
+ "packsync-core",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "time",
+ "toml",
+ "tracing",
+ "unicode-normalization",
+ "uuid",
+]
 
 [[package]]
 name = "parking"
