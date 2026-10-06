@@ -22,6 +22,8 @@ dunce.workspace = true
 time.workspace = true
 
 [dev-dependencies]
+# the crate's own tests use its testkit, which builds on core's fixtures
+packsync-core = { workspace = true, features = ["testkit"] }
 tempfile.workspace = true
 toml.workspace = true
 fastrand.workspace = true

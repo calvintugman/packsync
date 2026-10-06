@@ -166,6 +166,10 @@ pub struct HookState {
     pub installed: bool,
     /// Whether the installed commands still match what PackSync would write.
     pub intact: bool,
+    /// Only one of the two commands is PackSync's (someone changed the other): installing again repairs
+    /// it, removing takes out what is left. `installed` is `false` in this state.
+    #[serde(default)]
+    pub partial: bool,
     pub pre_launch: Option<String>,
     pub post_exit: Option<String>,
 }

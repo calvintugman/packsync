@@ -97,7 +97,7 @@ export function PreviewView({ report }: { report: PreviewReport }) {
 
       <div>
         <h3 style={{ marginBottom: 6 }}>Not synced</h3>
-        {excluded.length === 0 && unmatched.length === 0 ? (
+        {excluded.length === 0 && unmatched.length === 0 && report.excluded.pruned_dirs.length === 0 ? (
           <p className="muted">Nothing is excluded.</p>
         ) : (
           <table className="table">
@@ -114,6 +114,15 @@ export function PreviewView({ report }: { report: PreviewReport }) {
                   <td>{categoryLabel(g.category)}</td>
                   <td className="muted">{g.reason}</td>
                   <td className="num">{formatBytes(g.bytes)}</td>
+                </tr>
+              ))}
+              {report.excluded.pruned_dirs.slice(0, 12).map(([path, id, reason]) => (
+                <tr key={`${id}:${path}`}>
+                  <td>
+                    <code>{baseName(path)}/</code>
+                  </td>
+                  <td className="muted">{reason}</td>
+                  <td className="num faint">skipped</td>
                 </tr>
               ))}
               {excluded.length > 10 ? (

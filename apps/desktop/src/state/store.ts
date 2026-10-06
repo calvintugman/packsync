@@ -186,7 +186,12 @@ export class AppStore {
     const list = await this.call("jobs.list");
     this.set((s) => {
       const jobs = { ...s.jobs };
-      for (const j of list) jobs[j.id] = j;
+      for (const j of list) {
+        // a listing that was requested before the job finished must not bring a finished job back to life
+        const known = jobs[j.id];
+        if (known && FINISHED(known) && !FINISHED(j)) continue;
+        jobs[j.id] = j;
+      }
       return { jobs: this.trimJobs(jobs) };
     });
     for (const j of list) if (FINISHED(j)) this.settle(j);
@@ -262,7 +267,9 @@ export class AppStore {
 
   private trimJobs(jobs: Record<JobId, JobInfo>): Record<JobId, JobInfo> {
     const all = Object.values(jobs);
-    const finished = all.filter(FINISHED).sort((a, b) => (b.finished_ms ?? 0) - (a.finished_ms ?? 0));
+    const finished = all
+      .filter(FINISHED)
+      .sort((a, b) => (b.finished_ms ?? 0) - (a.finished_ms ?? 0) || b.started_ms - a.started_ms || b.id.localeCompare(a.id));
     const drop = new Set(finished.slice(this.keepJobs).map((j) => j.id));
     if (drop.size === 0) return jobs;
     return Object.fromEntries(Object.entries(jobs).filter(([id]) => !drop.has(id)));

@@ -4,7 +4,7 @@ import { formatBytes, formatDateTime, formatRelative, plural, worldName } from "
 /** One version of an instance (this computer's, or one the cloud has) for side-by-side comparison. */
 export function VersionCard({ title, v, note }: { title: string; v: SnapshotSummary | null; note?: string }) {
   return (
-    <div className="card col" style={{ gap: 8 }} aria-label={title}>
+    <section className="card col" style={{ gap: 8 }} aria-label={title}>
       <h3>{title}</h3>
       {v ? (
         <>
@@ -32,6 +32,6 @@ export function VersionCard({ title, v, note }: { title: string; v: SnapshotSumm
         <span className="muted">No saved version yet.</span>
       )}
       {note ? <div className="banner info">{note}</div> : null}
-    </div>
+    </section>
   );
 }

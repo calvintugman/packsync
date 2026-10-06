@@ -158,9 +158,20 @@ function LauncherSection({ settings }: { settings: Settings }) {
 
 function PlaySection({ settings }: { settings: Settings }) {
   const store = useStore();
+  // shown at once, saved in the background; the engine's answer wins if it disagrees
+  const [policy, setPolicy] = useState<OfflinePolicy>(settings.hook_offline_policy);
+  const [block, setBlock] = useState(settings.hook_block_on_problem);
   const update = useAction(async (patch: Partial<Settings>) => {
-    await store.call("settings.update", { patch });
-    await store.refreshSettings();
+    try {
+      await store.call("settings.update", { patch });
+    } finally {
+      await store.refreshSettings();
+      const s = store.getState().settings;
+      if (s) {
+        setPolicy(s.hook_offline_policy);
+        setBlock(s.hook_block_on_problem);
+      }
+    }
   });
   return (
     <Section id="s-play" title="Starting from Prism (launcher hooks)">
@@ -174,12 +185,29 @@ function PlaySection({ settings }: { settings: Settings }) {
             ["block", "Don't start the game", "Safer if you often play on several computers: you never play an out-of-date copy."],
           ] as [OfflinePolicy, string, string][]
         ).map(([v, t, d]) => (
-          <Choice key={v} name="offline" value={v} selected={settings.hook_offline_policy === v} onSelect={() => void update.run({ hook_offline_policy: v })} title={t}>
+          <Choice
+            key={v}
+            name="offline"
+            value={v}
+            selected={policy === v}
+            onSelect={() => {
+              setPolicy(v);
+              void update.run({ hook_offline_policy: v });
+            }}
+            title={t}
+          >
             {d}
           </Choice>
         ))}
       </fieldset>
-      <Checkbox checked={settings.hook_block_on_problem} onChange={(v) => void update.run({ hook_block_on_problem: v })} hint="Recommended. Otherwise the game starts without syncing that instance.">
+      <Checkbox
+        checked={block}
+        onChange={(v) => {
+          setBlock(v);
+          void update.run({ hook_block_on_problem: v });
+        }}
+        hint="Recommended. Otherwise the game starts without syncing that instance."
+      >
         Don't start the game while a conflict or crash save is waiting for a decision
       </Checkbox>
       {update.error ? <ErrorNote error={update.error} /> : null}

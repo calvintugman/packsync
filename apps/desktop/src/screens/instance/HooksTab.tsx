@@ -11,6 +11,10 @@ export function HooksTab({ inst }: { inst: InstanceStatus }) {
   const state = useLoad(() => store.call("hooks.state", { instance: inst.id }), inst.id);
   const [dialog, setDialog] = useState<"install" | "remove" | null>(null);
   const s = state.data;
+  const label = !s ? null : s.installed ? (s.intact ? "Installed" : "Changed since installed") : s.partial ? "Partly installed" : "Not installed";
+  const tone = !s ? "neutral" : s.installed ? (s.intact ? "ok" : "warn") : s.partial ? "warn" : "neutral";
+  const needsRepair = Boolean(s && ((s.installed && !s.intact) || s.partial));
+  const present = Boolean(s && (s.installed || s.partial));
   return (
     <div className="col">
       <p className="muted">
@@ -21,30 +25,31 @@ export function HooksTab({ inst }: { inst: InstanceStatus }) {
       <div className="card col">
         <div className="row">
           <h3 className="grow">Launcher hooks</h3>
-          {s ? <Pill tone={s.installed ? (s.intact ? "ok" : "warn") : "neutral"}>{s.installed ? (s.intact ? "Installed" : "Changed since installed") : "Not installed"}</Pill> : null}
+          {label ? <Pill tone={tone}>{label}</Pill> : null}
         </div>
-        {s?.installed && !s.intact ? (
+        {needsRepair ? (
           <Banner tone="warn" title="Prism's settings for this instance no longer match what PackSync wrote">
-            Something changed the commands after PackSync installed them. Reinstall to repair, or remove them.
+            {s?.partial
+              ? "Only one of PackSync's two commands is still in place — the other was replaced. Starting from Prism would not sync correctly."
+              : "Something changed the commands after PackSync installed them."}{" "}
+            Repair them, or remove what is left.
           </Banner>
         ) : null}
-        {s?.installed ? (
+        {present ? (
           <Kv
             rows={[
-              ["Before the game starts", <code key="p">{s.pre_launch ?? "—"}</code>],
-              ["After the game closes", <code key="e">{s.post_exit ?? "—"}</code>],
+              ["Before the game starts", <code key="p">{s?.pre_launch ?? "—"}</code>],
+              ["After the game closes", <code key="e">{s?.post_exit ?? "—"}</code>],
             ]}
           />
         ) : null}
         <div className="row">
-          {!s?.installed || !s.intact ? (
+          {!present || needsRepair ? (
             <Button variant="primary" onClick={() => setDialog("install")}>
-              {s?.installed ? "Repair hooks…" : "Install hooks…"}
+              {needsRepair ? "Repair hooks…" : "Install hooks…"}
             </Button>
           ) : null}
-          {s?.installed ? (
-            <Button onClick={() => setDialog("remove")}>Remove hooks…</Button>
-          ) : null}
+          {present ? <Button onClick={() => setDialog("remove")}>Remove hooks…</Button> : null}
         </div>
       </div>
       <div className="card col">

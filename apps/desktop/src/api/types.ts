@@ -448,6 +448,8 @@ export interface LaunchOutcome {
 export interface HookState {
   installed: boolean;
   intact: boolean;
+  /** Only one of the two commands is PackSync's: install again to repair, or remove what is left. */
+  partial: boolean;
   pre_launch: string | null;
   post_exit: string | null;
 }

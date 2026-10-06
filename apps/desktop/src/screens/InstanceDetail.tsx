@@ -109,7 +109,7 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
   return (
     <div className="page">
       <a href={href({ name: "instances" })}>← Instances</a>
-      <div className="page-head">
+      <div className="page-head" data-phase={inst.phase}>
         <h1>{inst.name}</h1>
         <Pill tone={info.tone}>{info.label}</Pill>
       </div>

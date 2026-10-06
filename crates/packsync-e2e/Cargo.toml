@@ -1,0 +1,21 @@
+[package]
+name = "packsync-e2e"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "A self-contained world (two computers, a shared cloud folder, a fake Prism and game) for the browser end-to-end tests of the desktop UI"
+
+[lints]
+workspace = true
+
+[dependencies]
+packsync-core = { workspace = true, features = ["testkit"] }
+packsync-app.workspace = true
+packsync-prism = { workspace = true, features = ["testkit"] }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+parking_lot.workspace = true

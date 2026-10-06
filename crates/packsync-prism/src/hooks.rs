@@ -168,7 +168,8 @@ pub fn state(root: &Path) -> Result<HookState> {
     let intact = installed
         && override_on(&view)
         && p.as_ref().zip(q.as_ref()).is_some_and(|(a, b)| a.instance == b.instance && a.exe == b.exe);
-    Ok(HookState { installed, intact, pre_launch: pre, post_exit: post })
+    let partial = !installed && (p.is_some() || q.is_some());
+    Ok(HookState { installed, intact, partial, pre_launch: pre, post_exit: post })
 }
 
 fn change(file: &Path, key: &str, before: Option<String>, after: Option<String>) -> Option<HookChange> {
@@ -414,6 +415,36 @@ mod tests {
         apply(&rm, false).unwrap();
         assert_eq!(std::fs::read_to_string(root.join("instance.cfg")).unwrap(), PLAIN);
         assert!(!state(&root).unwrap().installed);
+    }
+
+    #[test]
+    fn a_half_changed_installation_is_reported_as_partial_and_repaired_by_installing_again() {
+        let (_d, root) = instance(PLAIN);
+        let s = spec("/opt/packsync");
+        apply(&plan_install(&root, &s, false, &GlobalCommands::default()).unwrap(), false).unwrap();
+        let st = state(&root).unwrap();
+        assert!(st.installed && st.intact && !st.partial, "{st:?}");
+        // something replaces the pre-launch command; PackSync's post-exit command is still there
+        let cfg = std::fs::read_to_string(root.join("instance.cfg")).unwrap();
+        let broken: String = cfg
+            .lines()
+            .map(|l| if l.starts_with("PreLaunchCommand=") { "PreLaunchCommand=echo something-else" } else { l })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(root.join("instance.cfg"), broken).unwrap();
+        let st = state(&root).unwrap();
+        assert!(!st.installed && !st.intact && st.partial, "{st:?}");
+        // installing again puts both back and keeps the user's own new command running
+        let plan = plan_install(&root, &s, false, &GlobalCommands::default()).unwrap();
+        assert!(plan.preserved_commands.iter().any(|c| c.contains("echo something-else")), "{plan:?}");
+        apply(&plan, false).unwrap();
+        let st = state(&root).unwrap();
+        assert!(st.installed && st.intact && !st.partial, "{st:?}");
+        // nothing installed: nothing partial either
+        apply(&plan_remove(&root, false).unwrap(), false).unwrap();
+        let st = state(&root).unwrap();
+        assert!(!st.installed && !st.partial, "{st:?}");
     }
 
     #[test]
