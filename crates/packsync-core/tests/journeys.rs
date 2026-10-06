@@ -439,3 +439,63 @@ fn the_index_a_computer_uploaded_itself_is_not_downloaded_again() {
     let spent = b.meter.snapshot().since(&before);
     assert!(spent.by_prefix.get("index").map(|p| p.gets).unwrap_or(0) >= 1, "another computer must read the index");
 }
+
+#[test]
+fn restoring_reads_each_pack_about_once_even_though_files_are_hashed_in_parallel() {
+    // Files are hashed by several threads at once. If their blocks were interleaved in the packs, reading one
+    // file back would take a request per block, and a restore that works through the files in batches would
+    // read every pack over and over, in scraps (measured on a 4.3 GB instance: 34,000 requests and 6.7 GB
+    // read to restore 4.3 GB). Each file's blocks must sit next to each other.
+    let w = TestWorld::new();
+    let a = w.device_with("desktop", |c| {
+        c.snapshot.scan.threads = 8;
+        c.snapshot.pack_target = 2 * 1024 * 1024;
+    });
+    let mut spec = FixtureSpec::small();
+    spec.regions_per_world = 8;
+    let (root, _info, en) = a.new_instance("pack", &spec);
+    a.upload(en.instance);
+    let before = tree(&root);
+
+    let b = w.device_with("laptop", |c| {
+        c.restore.batch_bytes = 6 * 1024 * 1024; // many small batches: the worst case for scattered data
+        c.restore.concurrency = 4;
+    });
+    let meter_before = b.meter.snapshot();
+    let rb = b
+        .engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: en.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    assert_eq!(tree(&rb.root), before, "the restore is byte for byte the same");
+
+    let spent = b.meter.snapshot().since(&meter_before);
+    let packs = spent.by_prefix.get("packs").cloned().unwrap_or_default();
+    let useful = rb.report.bytes_downloaded;
+    let blocks = useful / 16_384;
+    eprintln!(
+        "useful {useful} B ({blocks} blocks of 16 KiB); read from packs {} B in {} requests",
+        packs.get_bytes, packs.gets
+    );
+    assert!(
+        packs.get_bytes as f64 <= useful as f64 * 1.3,
+        "read {} B from the packs to obtain {useful} B: scattered data is read over and over",
+        packs.get_bytes
+    );
+    assert!(
+        packs.gets * 10 <= blocks,
+        "{} requests for {blocks} blocks: a request per few blocks means the blocks of a file are not contiguous",
+        packs.gets
+    );
+}

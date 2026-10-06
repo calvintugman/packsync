@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { baseTransport, instance, summary, withPhase } from "../test/fixtures";
@@ -81,5 +81,48 @@ describe("InstanceCard", () => {
     await u.click(screen.getByRole("button", { name: "Sync now" }));
     expect(await screen.findByText("Can't reach the cloud")).toBeInTheDocument();
     expect(screen.getByText(/The network is down/)).toBeInTheDocument();
+  });
+
+  it("shows what is waiting to upload, and Upload now bypasses a recorded back-off", async () => {
+    const u = userEvent.setup();
+    const inst = withPhase("upload_pending", { pending_snapshots: 2, pending_pack_bytes: 3_400_000, last_error: "Google Drive is full" });
+    const t = baseTransport({ instances: [inst] });
+    t.on("instance.upload", () => ({ snapshots: [{}], bytes_uploaded: 3_400_000, deferred_until_ms: null, remaining: 0 }));
+    await renderWithStore(<InstanceCard inst={inst} />, t);
+    expect(screen.getByTestId("pending")).toHaveTextContent("2 snapshots (3.4 MB) waiting to upload.");
+    await u.click(screen.getByRole("button", { name: "Upload now" }));
+    await waitFor(() => expect(t.count("instance.upload")).toBe(1));
+    expect(t.calls.find((c) => c.method === "instance.upload")?.params).toEqual({ instance: inst.id, force: true });
+  });
+
+  it("does not offer Upload now when nothing is waiting", async () => {
+    const inst = instance();
+    await renderWithStore(<InstanceCard inst={inst} />, baseTransport({ instances: [inst] }));
+    expect(screen.queryByRole("button", { name: "Upload now" })).toBeNull();
+    expect(screen.queryByTestId("pending")).toBeNull();
+  });
+
+  it("when the cloud can't be reached, Play offers the explicit choice to play the local copy", async () => {
+    const u = userEvent.setup();
+    const inst = instance();
+    const t = baseTransport({ instances: [inst] });
+    let first = true;
+    t.on("launch.start", (params) => {
+      const p = params as { options?: { skip_sync?: boolean } };
+      if (first && !p.options?.skip_sync) {
+        first = false;
+        throw Object.assign(new Error("x"), { code: "offline", message: "storage is unreachable", advice: "Check your connection.", exit_code: 10 });
+      }
+      return { session: "s", pre_sync: null, offline: true, playing_elsewhere: [], game_started: true, launcher_exit_code: 0, clean_signal: false, end: { outcome: "clean", snapshot: "x", kind: "normal", crash_artifacts: [], uploaded: false, upload_error: null }, warnings: [] };
+    });
+    const { store } = await renderWithStore(<InstanceCard inst={inst} />, t);
+    await u.click(screen.getByRole("button", { name: "Play" }));
+    expect(await screen.findByText("Can't reach the cloud")).toBeInTheDocument();
+    // nothing started yet: the person decides
+    expect(t.calls.filter((c) => c.method === "launch.start")).toHaveLength(1);
+    await u.click(screen.getByRole("button", { name: "Play from this computer anyway" }));
+    await waitFor(() => expect(t.calls.filter((c) => c.method === "launch.start")).toHaveLength(2));
+    expect(t.calls.filter((c) => c.method === "launch.start")[1]?.params).toEqual({ instance: inst.id, options: { skip_sync: true } });
+    await waitFor(() => expect(store.getState().toasts.some((x) => x.message.includes("Played offline"))).toBe(true));
   });
 });

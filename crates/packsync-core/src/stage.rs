@@ -7,10 +7,11 @@
 //! snapshot already staged are *not* staged again: that is how unchanged mod JARs, packs and world
 //! data are deduplicated across snapshots **and instances**.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread::ThreadId;
 
 use parking_lot::Mutex;
 
@@ -34,6 +35,33 @@ pub trait BlobSink: Sync {
     /// Offer one blob. Returns `true` when it was newly staged, `false` when it is already known
     /// (cloud, an earlier local snapshot, or earlier in this run).
     fn offer(&self, hash: Hash, raw: &[u8], kind: u8, path_hint: &str, compress: Compress) -> Result<bool>;
+
+    /// The calling thread has offered every blob of one file (or given up on it). A sink that can keeps
+    /// the blobs of one file next to each other in its packs: files are hashed in parallel, and without
+    /// this their blocks would be interleaved, so reading one file back would take a request per block.
+    fn end_of_file(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A file's blobs are written to the pack in one piece up to this many stored bytes; a bigger file is
+/// written in pieces of this size. It bounds the memory held per hashing thread.
+const RUN_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// One staged blob waiting to be appended to the open pack.
+struct Pending {
+    hash: Hash,
+    codec: Codec,
+    stored: Vec<u8>,
+    raw_len: usize,
+    kind: u8,
+}
+
+/// The blobs one thread has produced for the file it is working on.
+#[derive(Default)]
+struct Run {
+    blobs: Vec<Pending>,
+    bytes: u64,
 }
 
 pub struct StagingSink {
@@ -45,6 +73,8 @@ pub struct StagingSink {
     known_local: HashSet<Hash>,
     seen: Mutex<HashSet<Hash>>,
     writer: Mutex<Option<PackWriter>>,
+    /// Per hashing thread: the blobs of the file in progress, not yet in the pack.
+    runs: Mutex<HashMap<ThreadId, Run>>,
     finished: Mutex<Vec<FinishedPack>>,
     reused_packs: Mutex<HashSet<Hash>>,
     blobs_new: AtomicU64,
@@ -72,6 +102,7 @@ impl StagingSink {
             known_local,
             seen: Mutex::new(HashSet::new()),
             writer: Mutex::new(None),
+            runs: Mutex::new(HashMap::new()),
             finished: Mutex::new(vec![]),
             reused_packs: Mutex::new(HashSet::new()),
             blobs_new: AtomicU64::new(0),
@@ -86,8 +117,34 @@ impl StagingSink {
         &self.dir
     }
 
+    /// Append a run's blobs to the open pack, back to back, starting a new pack whenever one is full.
+    fn append(&self, run: Run) -> Result<()> {
+        if run.blobs.is_empty() {
+            return Ok(());
+        }
+        let mut g = self.writer.lock();
+        for p in run.blobs {
+            if g.is_none() {
+                *g = Some(PackWriter::create(&self.dir, self.target)?);
+            }
+            let w = g.as_mut().expect("writer was just created");
+            w.push(p.hash, p.codec, &p.stored, p.raw_len, p.kind)?;
+            if w.is_full() {
+                let full = g.take().expect("writer present");
+                self.finished.lock().push(full.finish()?);
+            }
+        }
+        Ok(())
+    }
+
     /// Flush the open pack and return everything staged.
     pub fn finish(self) -> Result<StagedOutput> {
+        // blobs of files whose thread never said it was done (it cannot happen through the scanner, but
+        // dropping them would leave blobs that were marked as staged out of every pack)
+        let leftovers: Vec<Run> = std::mem::take(&mut *self.runs.lock()).into_values().collect();
+        for run in leftovers {
+            self.append(run)?;
+        }
         if let Some(w) = self.writer.lock().take() {
             if w.is_empty() {
                 w.discard();
@@ -110,6 +167,7 @@ impl StagingSink {
 
     /// Abandon everything staged so far (failed or cancelled snapshot).
     pub fn discard(self) {
+        self.runs.lock().clear();
         if let Some(w) = self.writer.lock().take() {
             w.discard();
         }
@@ -132,26 +190,34 @@ impl BlobSink for StagingSink {
             self.blobs_reused.fetch_add(1, Ordering::Relaxed);
             return Ok(false);
         }
-        // Compression is CPU-heavy: do it outside the writer lock.
+        // Compression is CPU-heavy: do it outside any lock.
         let (codec, stored) = encode_blob(raw, compress, path_hint, self.level);
-        let mut g = self.writer.lock();
-        if g.is_none() {
-            *g = Some(PackWriter::create(&self.dir, self.target)?);
-        }
-        let w = g.as_mut().expect("writer was just created");
-        w.push(hash, codec, &stored, raw.len(), kind)?;
-        if w.is_full() {
-            let full = g.take().expect("writer present");
-            self.finished.lock().push(full.finish()?);
-        }
-        drop(g);
         self.blobs_new.fetch_add(1, Ordering::Relaxed);
         self.raw_new.fetch_add(raw.len() as u64, Ordering::Relaxed);
         self.stored_new.fetch_add(stored.len() as u64, Ordering::Relaxed);
         if codec == Codec::Zstd {
             self.compressed.fetch_add(1, Ordering::Relaxed);
         }
+        // Queue it with the other blobs of this thread's file; the run goes into the pack in one piece.
+        let full_run = {
+            let mut runs = self.runs.lock();
+            let run = runs.entry(std::thread::current().id()).or_default();
+            run.bytes += stored.len() as u64;
+            run.blobs.push(Pending { hash, codec, stored, raw_len: raw.len(), kind });
+            (run.bytes >= RUN_MAX_BYTES).then(|| std::mem::take(run))
+        };
+        if let Some(run) = full_run {
+            self.append(run)?;
+        }
         Ok(true)
+    }
+
+    fn end_of_file(&self) -> Result<()> {
+        let run = self.runs.lock().remove(&std::thread::current().id());
+        match run {
+            Some(run) => self.append(run),
+            None => Ok(()),
+        }
     }
 }
 

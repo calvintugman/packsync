@@ -19,7 +19,7 @@ pub mod provider;
 pub mod rpc;
 pub mod settings;
 
-pub use app::{App, AppOptions, DiscoveredView, RestoreCloudRequest, SettingsUpdate};
+pub use app::{App, AppOptions, DiscoveredView, RestoreCloudRequest, SettingsUpdate, StorageWrapper};
 pub use events::{AppEvent, ErrorView, EventBus, JobInfo, JobState};
 pub use launch::{HookOutcome, LaunchOptions, LaunchOutcome, LaunchTiming};
 pub use paths::AppPaths;

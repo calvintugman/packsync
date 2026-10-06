@@ -16,6 +16,8 @@ export function CloudScreen() {
   const connected = storage?.connected ?? false;
   const list = useLoad(() => (connected ? store.runJob("cloud.instances", undefined) : Promise.resolve([] as CloudInstance[])), `${connected}:${instances.length}`);
   const items = list.data ?? [];
+  const usage = useLoad(() => (connected ? store.call("storage.usage") : Promise.resolve(null)), `${connected}:${items.length}`);
+  const logical = items.reduce((n, c) => n + c.bytes, 0);
 
   return (
     <div className="page">
@@ -28,6 +30,23 @@ export function CloudScreen() {
       <p className="muted">
         Everything PackSync keeps for you. Bring an instance to this computer to continue where another computer left off.
       </p>
+      {connected && items.length > 0 ? (
+        <div className="card row wrap" aria-label="Storage usage">
+          <div className="stat">
+            <div className="num">{formatBytes(logical)}</div>
+            <div className="label">current size of {plural(items.length, "instance")} in the cloud</div>
+          </div>
+          {usage.data?.quota ? (
+            <div className="stat">
+              <div className="num">
+                {formatBytes(usage.data.quota.used)}
+                {usage.data.quota.total ? ` of ${formatBytes(usage.data.quota.total)}` : ""}
+              </div>
+              <div className="label">used in your Google Drive (all files, history included)</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {!connected ? (
         <Banner tone="info" title="No cloud is connected">
           Connect Google Drive in Settings to see your instances here.

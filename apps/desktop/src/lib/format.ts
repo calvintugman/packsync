@@ -109,6 +109,12 @@ export function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+/** Make a message read as a sentence: engine messages are fragments, and are followed by advice. */
+export function sentence(s: string): string {
+  const t = s.trim();
+  return /[.!?…]$/.test(t) ? t : `${t}.`;
+}
+
 export function clamp01(x: number): number {
   return Math.min(1, Math.max(0, x));
 }

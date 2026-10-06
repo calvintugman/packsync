@@ -21,6 +21,7 @@ use crate::lab::{Backend, Device, Lab, Metrics};
 pub enum Size {
     Tiny,
     Small,
+    Medium,
     Large,
 }
 
@@ -29,14 +30,16 @@ impl Size {
         match s {
             "tiny" => Ok(Size::Tiny),
             "small" => Ok(Size::Small),
+            "medium" => Ok(Size::Medium),
             "large" => Ok(Size::Large),
-            other => Err(format!("unknown size {other:?}: use tiny, small or large")),
+            other => Err(format!("unknown size {other:?}: use tiny, small, medium or large")),
         }
     }
     pub fn spec(&self) -> FixtureSpec {
         match self {
             Size::Tiny => FixtureSpec::tiny(),
             Size::Small => FixtureSpec::small(),
+            Size::Medium => FixtureSpec::medium(),
             Size::Large => FixtureSpec::large(),
         }
     }
@@ -44,6 +47,7 @@ impl Size {
         match self {
             Size::Tiny => "tiny",
             Size::Small => "small",
+            Size::Medium => "medium",
             Size::Large => "large",
         }
     }

@@ -17,8 +17,13 @@
 //!    the work is spread out) — this bounds how long a modification that evaded 2–3 (e.g. on a file
 //!    system without change times) can stay undetected.
 //!
-//! Full hashing/reconciliation happens: on the first scan, after a restore, watcher overflow, an
-//! unclean session, a changed volume/instance path, on `verify --full`, and per (4).
+//! Full hashing/reconciliation happens: on the first scan, after a restore, an unclean session, a changed
+//! volume/instance path, on `verify --full`, and per (4).
+//!
+//! There is deliberately **no filesystem watcher**: a snapshot is taken at defined moments (the game has
+//! exited, "Sync now", enabling sync), and the cached metadata makes a scan with nothing changed cost
+//! milliseconds (`docs/performance.md`). Events could only ever *mark paths dirty*; they would never be the
+//! source of truth (the cases above would still need full hashing), so they are left out of v1.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -468,11 +473,15 @@ pub fn hash_candidate(
         if before.kind != FileKind::File {
             return Err(Error::Busy(format!("{} changed type while being scanned", c.path)));
         }
-        let (content, read_bytes) = match read_content(&abs, c, &before, sink, cfg, policies) {
+        let read = read_content(&abs, c, &before, sink, cfg, policies);
+        // whatever happened, the blobs offered for this file go into the pack together (see `BlobSink`)
+        let flushed = sink.end_of_file();
+        let (content, read_bytes) = match read {
             Ok(v) => v,
             Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
+        flushed?;
         let after = match stat_nofollow(&abs) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

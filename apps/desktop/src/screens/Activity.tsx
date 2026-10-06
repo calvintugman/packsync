@@ -23,6 +23,11 @@ function JobRow({ job, name }: { job: JobInfo; name: string }) {
             Cancel
           </Button>
         ) : null}
+        {(job.state === "failed" || job.state === "cancelled") && store.canRetry(job.id) ? (
+          <Button size="sm" onClick={() => void store.retryJob(job.id)}>
+            Try again
+          </Button>
+        ) : null}
       </div>
       <div className="meta" title={formatDateTime(job.started_ms)}>
         Started {formatRelative(job.started_ms)}

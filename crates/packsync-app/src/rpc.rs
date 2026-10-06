@@ -45,6 +45,7 @@ pub const METHODS: &[MethodInfo] = &[
     m("storage.google_login", true, "Sign in with Google in the system browser."),
     m("storage.disconnect", false, "{revoke}: forget the connection (cloud data is not touched)."),
     m("storage.test", true, "Check that the connection works."),
+    m("storage.usage", false, "How much of the account's storage is used (one cheap request)."),
     m("launcher.discover", false, "Prism instances found on this computer."),
     m("launcher.describe", false, "{launcher, path}: validate a manually selected folder."),
     m("instances.list", false, "{online?}: status of every synced instance."),
@@ -220,6 +221,10 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             ser(&app.storage_status())
         }
         "storage.test" => app.test_storage(ctx),
+        "storage.usage" => {
+            let st = e.storage()?;
+            Ok(json!({ "provider": st.provider_id(), "quota": st.quota(ctx)? }))
+        }
         "launcher.discover" => ser(&app.discover()?),
         "launcher.describe" => {
             #[derive(Deserialize)]

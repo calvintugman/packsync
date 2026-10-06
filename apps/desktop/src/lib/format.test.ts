@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { baseName, clamp01, formatBytes, formatDuration, formatRelative, packLine, plural, worldName, worldsLine } from "./format";
+import { baseName, clamp01, formatBytes, formatDuration, formatRelative, packLine, plural, sentence, worldName, worldsLine } from "./format";
 
 describe("formatBytes", () => {
   it("uses decimal units like the CLI and Google Drive", () => {
@@ -77,5 +77,13 @@ describe("small helpers", () => {
     expect(clamp01(-1)).toBe(0);
     expect(clamp01(2)).toBe(1);
     expect(clamp01(0.4)).toBe(0.4);
+  });
+});
+
+describe("sentence", () => {
+  it("turns a message fragment into a sentence, once", () => {
+    expect(sentence("storage quota exceeded: your Google Drive is full")).toBe("storage quota exceeded: your Google Drive is full.");
+    expect(sentence("Already a sentence.")).toBe("Already a sentence.");
+    expect(sentence("Really?  ")).toBe("Really?");
   });
 });

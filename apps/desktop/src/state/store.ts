@@ -76,6 +76,8 @@ export class AppStore {
   private state: AppState = INITIAL_STATE;
   private readonly listeners = new Set<() => void>();
   private waiters = new Map<JobId, ((j: JobInfo) => void)[]>();
+  /** How each job of this session was started, so a failed one can be run again from the activity list. */
+  private readonly jobArgs = new Map<JobId, { method: LongMethodName; params: unknown }>();
   private unsubscribe: (() => void) | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
   private jobPoll: ReturnType<typeof setInterval> | null = null;
@@ -310,11 +312,30 @@ export class AppStore {
     opts: { onStart?: (id: JobId) => void } = {},
   ): Promise<Result<K>> {
     const id = await this.transport.startJob(method, params);
+    this.jobArgs.set(id, { method, params });
     opts.onStart?.(id);
     const job = await this.waitFor(id);
     if (job.state === "succeeded") return job.result as Result<K>;
     if (job.state === "cancelled") throw new ApiError({ code: "cancelled", message: "Cancelled." });
     throw ApiError.from(job.error ?? { code: "internal", message: "The operation failed." });
+  }
+
+  /** Can this job be started again (it was started from this window)? */
+  canRetry(id: JobId): boolean {
+    return this.jobArgs.has(id);
+  }
+
+  /** Run a finished job again with the same arguments, reporting the outcome as a notification. */
+  async retryJob(id: JobId): Promise<void> {
+    const a = this.jobArgs.get(id);
+    if (!a) return;
+    try {
+      await this.runJob(a.method, a.params as never);
+      this.toast("success", "Done.");
+    } catch (e) {
+      const err = ApiError.from(e);
+      if (err.code !== "cancelled") this.toast("error", err.message, "It failed again");
+    }
   }
 
   async cancelJob(id: JobId): Promise<void> {

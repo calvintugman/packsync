@@ -28,7 +28,7 @@ enum Cmd {
     Hardware,
     /// Initial sync, no-change, small edit, region edit, mod replacement, restore — with bytes, requests, memory.
     Run {
-        /// tiny (≈2 MB, smoke), small (≈40 MB) or large (≈2 GB).
+        /// tiny (≈2 MB, smoke), small (≈50 MB), medium (≈0.75 GB) or large (≈4 GB).
         #[arg(long, default_value = "small")]
         size: String,
         /// local (a directory) or mock-drive (the in-process Drive mock: counts real Drive HTTP requests).

@@ -37,6 +37,9 @@ pub struct RestoreConfig {
     /// File bytes fetched and staged per batch (bounds temporary disk use beyond the staged files).
     pub batch_bytes: u64,
     pub concurrency: usize,
+    /// Files assembled (hashed, written, flushed to disk) at the same time. Flushing a file to disk waits
+    /// for the drive, so doing it for many files at once is what makes a restore of thousands of files fast.
+    pub assemble_threads: usize,
     /// Skip entries whose names cannot exist on this platform instead of refusing the restore.
     pub skip_incompatible: bool,
     pub space_margin: u64,
@@ -54,6 +57,7 @@ impl Default for RestoreConfig {
         Self {
             batch_bytes: 512 * 1024 * 1024,
             concurrency: 4,
+            assemble_threads: 8,
             skip_incompatible: false,
             space_margin: 64 * 1024 * 1024,
             apply_batch: 64,
@@ -515,6 +519,7 @@ fn assemble(
     out: &Path,
     policy: Option<&MixedPolicy>,
     local_current: Option<Vec<u8>>,
+    flush_file: bool,
 ) -> Result<u64> {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(lp(parent)).io_ctx(|| format!("creating {}", parent.display()))?;
@@ -572,8 +577,17 @@ fn assemble(
         if let (Some(pol), Some(projection)) = (policy, mixed_buf.take()) {
             let merged = mixed::merge(pol, &projection, local_current.as_deref())?;
             fs::write(lp(&part), &merged).io_ctx(|| format!("writing {}", part.display()))?;
+            if flush_file {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(lp(&part))
+                    .and_then(|f| f.sync_all())
+                    .io_ctx(|| format!("syncing {}", part.display()))?;
+            }
             size = merged.len() as u64;
-        } else if let Some(f) = file.take() {
+        } else if let Some(f) = file.take()
+            && flush_file
+        {
             f.sync_all().io_ctx(|| format!("syncing {}", part.display()))?;
         }
         Ok(size)
@@ -608,23 +622,76 @@ fn apply_metadata(path: &Path, e: &Entry) {
     }
 }
 
+/// Run `f` for every item on up to `threads` threads. The first error wins: no new item is started after it.
+/// Cancellation is checked before each item.
+fn for_each_parallel<T: Sync>(
+    items: &[T],
+    threads: usize,
+    ctx: &OpCtx,
+    f: impl Fn(&T) -> Result<()> + Sync,
+) -> Result<()> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let first_err: parking_lot::Mutex<Option<Error>> = parking_lot::Mutex::new(None);
+    std::thread::scope(|s| {
+        for _ in 0..threads.clamp(1, items.len().max(1)) {
+            s.spawn(|| {
+                loop {
+                    if first_err.lock().is_some() {
+                        return;
+                    }
+                    let Some(item) = items.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) else {
+                        return;
+                    };
+                    if let Err(e) = ctx.check().and_then(|_| f(item)) {
+                        first_err.lock().get_or_insert(e);
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    match first_err.into_inner() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// The files of a restore in the order their data is stored in the cloud (by pack, then offset), so that
+/// each batch of files reads whole stretches of a few packs instead of scattered pieces of many.
+fn download_order<'a>(env: &RestoreEnv<'_>, writes: &'a [Entry]) -> Vec<&'a Entry> {
+    let mut keyed: Vec<(Option<(Hash, u64)>, &Entry)> = writes
+        .iter()
+        .map(|e| {
+            let at = e.r.or(e.h).filter(|_| e.s > 0).and_then(|h| env.remote.blob_location(h).ok().flatten());
+            (at, e)
+        })
+        .collect();
+    keyed.sort_by_key(|k| k.0); // stable: files without a location keep their order, first
+    keyed.into_iter().map(|(_, e)| e).collect()
+}
+
 /// Download, verify and stage every file in `plan.writes` under `stage_dir`.
 fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<(u64, u64)> {
     let blob_dir = txd.join("blobs");
     let mut downloaded = 0;
     let mut reused = 0;
     let total = plan.bytes_to_write;
-    let mut done_bytes = 0u64;
-    let mut done_files = 0u64;
+    let done_bytes = std::sync::atomic::AtomicU64::new(0);
+    let done_files = std::sync::atomic::AtomicU64::new(0);
+    let order = download_order(env, &plan.writes);
+    // Staged files must be on disk before any of them is renamed over a live file. One flush of the whole
+    // file system per batch is far cheaper than one per file; where that is not available each file flushes itself.
+    let one_flush = crate::fsutil::syncfs(txd).unwrap_or(false);
+    let flush_each = !one_flush;
     let mut i = 0;
-    while i < plan.writes.len() {
+    while i < order.len() {
         ctx.check()?;
         // one batch
         let mut batch: Vec<&Entry> = vec![];
         let mut bytes = 0u64;
-        while i < plan.writes.len() && (batch.is_empty() || bytes + plan.writes[i].s <= env.cfg.batch_bytes) {
-            bytes += plan.writes[i].s;
-            batch.push(&plan.writes[i]);
+        while i < order.len() && (batch.is_empty() || bytes + order[i].s <= env.cfg.batch_bytes) {
+            bytes += order[i].s;
+            batch.push(order[i]);
             i += 1;
         }
         ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
@@ -633,8 +700,7 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
         reused += fetched.reused;
         let recipes = fetched.recipes;
         crate::failpoint!("restore.after_fetch_batch")?;
-        for e in batch {
-            ctx.check()?;
+        for_each_parallel(&batch, env.cfg.assemble_threads, ctx, |e| {
             let out = stage_path(txd, &e.p);
             let policy =
                 e.mx.as_ref()
@@ -649,16 +715,20 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
             } else {
                 None
             };
-            assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, local_current)?;
+            assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, local_current, flush_each)?;
             apply_metadata(&out, e);
-            done_bytes += e.s;
-            done_files += 1;
+            let files = done_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            let bytes = done_bytes.fetch_add(e.s, std::sync::atomic::Ordering::Relaxed) + e.s;
             ctx.progress(
                 Phase::Validate,
-                (done_files, plan.writes.len() as u64),
-                (done_bytes, total),
+                (files, plan.writes.len() as u64),
+                (bytes, total),
                 format!("verified {}", e.p),
             );
+            Ok(())
+        })?;
+        if one_flush {
+            crate::fsutil::syncfs(txd).io_ctx(|| "flushing the staged files to disk".to_string())?;
         }
         let _ = fs::remove_dir_all(lp(&blob_dir));
     }
@@ -1057,22 +1127,27 @@ pub fn restore_new(
             }
         }
         let mut downloaded = 0;
-        let (mut i, total) = (0usize, plan.writes.len());
+        let restored = std::sync::atomic::AtomicU64::new(0);
+        let order = download_order(env, &plan.writes);
+        // the files must be on disk before the folder becomes an instance: one flush per batch where the
+        // platform allows it, otherwise each file flushes itself
+        let one_flush = crate::fsutil::syncfs(dir).unwrap_or(false);
+        let flush_each = !one_flush;
+        let (mut i, total) = (0usize, order.len());
         while i < total {
             ctx.check()?;
             let mut batch: Vec<&Entry> = vec![];
             let mut bytes = 0;
-            while i < total && (batch.is_empty() || bytes + plan.writes[i].s <= env.cfg.batch_bytes) {
-                bytes += plan.writes[i].s;
-                batch.push(&plan.writes[i]);
+            while i < total && (batch.is_empty() || bytes + order[i].s <= env.cfg.batch_bytes) {
+                bytes += order[i].s;
+                batch.push(order[i]);
                 i += 1;
             }
             ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
             let fetched = fetch_batch(env, &batch, &blob_dir, None, ctx)?;
             downloaded += fetched.downloaded;
             let recipes = fetched.recipes;
-            for e in batch {
-                ctx.check()?;
+            for_each_parallel(&batch, env.cfg.assemble_threads, ctx, |e| {
                 let out = local_path(dir, &e.p);
                 let policy = e
                     .mx
@@ -1081,10 +1156,15 @@ pub fn restore_new(
                         env.policies.get(id).ok_or_else(|| Error::Config(format!("unknown mixed-file policy {id:?}")))
                     })
                     .transpose()?;
-                assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, None)?;
+                assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, None, flush_each)?;
                 apply_metadata(&out, e);
                 crate::failpoint!("restore_new.after_file")?;
-                ctx.progress(Phase::Validate, (i as u64, total as u64), (0, 0), format!("restored {}", e.p));
+                let n = restored.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                ctx.progress(Phase::Validate, (n, total as u64), (0, 0), format!("restored {}", e.p));
+                Ok(())
+            })?;
+            if one_flush {
+                crate::fsutil::syncfs(dir).io_ctx(|| "flushing the restored files to disk".to_string())?;
             }
             let _ = fs::remove_dir_all(lp(&blob_dir));
         }
@@ -1159,3 +1239,61 @@ fn _assert_send_sync() {
 
 #[allow(unused_imports)]
 use Read as _;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn parallel_work_runs_every_item_exactly_once() {
+        let items: Vec<usize> = (0..200).collect();
+        let seen = AtomicUsize::new(0);
+        let sum = AtomicUsize::new(0);
+        for_each_parallel(&items, 8, &OpCtx::detached(), |i| {
+            seen.fetch_add(1, Ordering::Relaxed);
+            sum.fetch_add(*i, Ordering::Relaxed);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!((seen.load(Ordering::Relaxed), sum.load(Ordering::Relaxed)), (200, 199 * 200 / 2));
+        // nothing to do is fine
+        for_each_parallel::<usize>(&[], 8, &OpCtx::detached(), |_| unreachable!()).unwrap();
+    }
+
+    #[test]
+    fn the_first_error_wins_and_stops_new_work() {
+        let items: Vec<usize> = (0..100).collect();
+        let started = AtomicUsize::new(0);
+        let r = for_each_parallel(&items, 1, &OpCtx::detached(), |i| {
+            started.fetch_add(1, Ordering::Relaxed);
+            if *i == 10 { Err(Error::other("boom at ten")) } else { Ok(()) }
+        });
+        assert!(matches!(r, Err(e) if e.to_string().contains("boom at ten")));
+        assert_eq!(started.load(Ordering::Relaxed), 11, "no item after the failing one was started");
+        // with several threads at least the failure is reported and work stops well short of everything
+        let started = AtomicUsize::new(0);
+        let r = for_each_parallel(&items, 4, &OpCtx::detached(), |i| {
+            started.fetch_add(1, Ordering::Relaxed);
+            if *i == 3 { Err(Error::other("early failure")) } else { Ok(()) }
+        });
+        assert!(r.is_err());
+        assert!(started.load(Ordering::Relaxed) < 100);
+    }
+
+    #[test]
+    fn cancellation_is_honoured_between_items() {
+        let items: Vec<usize> = (0..50).collect();
+        let token = crate::progress::CancelToken::new();
+        let ctx = OpCtx::new(std::sync::Arc::new(crate::progress::NullSink), token.clone());
+        let done = AtomicUsize::new(0);
+        let r = for_each_parallel(&items, 1, &ctx, |_| {
+            if done.fetch_add(1, Ordering::Relaxed) == 4 {
+                token.cancel();
+            }
+            Ok(())
+        });
+        assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
+        assert_eq!(done.load(Ordering::Relaxed), 5);
+    }
+}

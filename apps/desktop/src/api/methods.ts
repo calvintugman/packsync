@@ -40,6 +40,7 @@ import type {
   SnapshotReport,
   StorageStatus,
   StorageTest,
+  StorageUsage,
   SyncResult,
   UploadSummary,
   VerifyReport,
@@ -65,6 +66,7 @@ export interface Methods {
   "storage.google_login": M<void, { account: AccountInfo; status: StorageStatus }, true>;
   "storage.disconnect": M<{ revoke?: boolean }, StorageStatus>;
   "storage.test": M<void, StorageTest, true>;
+  "storage.usage": M<void, StorageUsage>;
   "launcher.discover": M<void, DiscoveredView[]>;
   "launcher.describe": M<{ launcher?: string; path: string }, DiscoveredInstance>;
   "instances.list": M<{ online?: boolean } | void, InstanceStatus[]>;
@@ -154,6 +156,7 @@ export const ALL_METHODS: readonly MethodName[] = [
   "storage.google_login",
   "storage.disconnect",
   "storage.test",
+  "storage.usage",
   "launcher.discover",
   "launcher.describe",
   "instances.list",

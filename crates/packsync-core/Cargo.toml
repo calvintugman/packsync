@@ -41,7 +41,6 @@ filetime.workspace = true
 file-id.workspace = true
 unicode-normalization.workspace = true
 sysinfo.workspace = true
-notify.workspace = true
 tracing.workspace = true
 fastrand.workspace = true
 dunce.workspace = true

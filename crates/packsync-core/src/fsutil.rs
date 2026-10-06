@@ -206,6 +206,31 @@ pub fn long_path(p: &Path) -> PathBuf {
     }
 }
 
+/// Flush everything written to the file system that holds `path` — data and directory entries — in one
+/// go (Linux `syncfs`). `Ok(false)` when the platform or the file system cannot do it; the caller then
+/// has to flush file by file. Far cheaper than a flush per file when thousands of files were just written.
+pub fn syncfs(path: &Path) -> io::Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let f = File::open(path)?;
+        // SAFETY: `f` is a valid open descriptor for the duration of the call.
+        if unsafe { libc::syncfs(f.as_raw_fd()) } == 0 {
+            return Ok(true);
+        }
+        let e = io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::ENOSYS | libc::EINVAL | libc::EOPNOTSUPP) => Ok(false),
+            _ => Err(e),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Ok(false)
+    }
+}
+
 /// Flush a directory's metadata (new/renamed entries) to disk. No-op where unsupported.
 pub fn fsync_dir(dir: &Path) {
     #[cfg(unix)]
@@ -271,6 +296,24 @@ pub fn set_mtime_ms(path: &Path, ms: i64) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_flush_of_the_file_system_works_where_it_exists_and_says_so_where_it_does_not() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("f"), b"data").unwrap();
+        // never an error for a perfectly good directory; `true` on Linux (tmpfs and ext4/btrfs/xfs all support it)
+        let r = syncfs(d.path());
+        assert!(r.is_ok(), "{r:?}");
+        if cfg!(target_os = "linux") {
+            assert!(matches!(r, Ok(true) | Ok(false)));
+        } else {
+            assert!(matches!(r, Ok(false)));
+        }
+        assert!(
+            syncfs(&d.path().join("missing")).is_err(),
+            "a path that does not exist is an error, not 'unsupported'"
+        );
+    }
 
     #[test]
     fn atomic_write_replaces_content_and_leaves_no_temp_files() {

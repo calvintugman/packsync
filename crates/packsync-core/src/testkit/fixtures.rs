@@ -58,7 +58,22 @@ impl FixtureSpec {
             dot_minecraft: false,
         }
     }
-    /// ~2 GB: benchmarks only.
+    /// ~0.75 GB: a quicker benchmark and profiling size.
+    pub fn medium() -> Self {
+        Self {
+            seed: 21,
+            mods: 100,
+            mod_size: (100_000, 6_000_000),
+            configs: 800,
+            worlds: 2,
+            regions_per_world: 20,
+            chunks_per_region: 800,
+            chunk_sectors: (1, 6),
+            junk: true,
+            dot_minecraft: false,
+        }
+    }
+    /// ~4 GB: benchmarks only.
     pub fn large() -> Self {
         Self {
             seed: 42,

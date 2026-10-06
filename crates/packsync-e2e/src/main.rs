@@ -14,9 +14,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use packsync_app::bridge::{self, BridgeConfig};
-use packsync_app::{App, AppOptions, AppPaths, RestoreCloudRequest};
+use packsync_app::{App, AppOptions, AppPaths, RestoreCloudRequest, StorageWrapper};
 use packsync_core::credentials::MemoryCredentialStore;
 use packsync_core::progress::OpCtx;
+use packsync_core::retry::{RecordingSleeper, Sleeper};
+use packsync_core::storage::{AuthProblem, Storage, StorageError};
+use packsync_core::storage_fault::{Fault, FaultPlan, FaultRule, FaultyStorage, OpKind, When};
 use packsync_core::testkit::fixtures::FixtureSpec;
 use packsync_prism::PrismLauncher;
 use packsync_prism::testkit::{FakeGame, FakePrism, make_instance};
@@ -66,6 +69,8 @@ struct World {
     cloud: PathBuf,
     desktop: Device,
     laptop: Device,
+    /// What the desktop's cloud does to it: nothing, until a test says otherwise.
+    faults: Arc<FaultPlan>,
 }
 
 fn spec(mods: usize) -> FixtureSpec {
@@ -76,16 +81,25 @@ fn spec(mods: usize) -> FixtureSpec {
     s
 }
 
-fn device(base: &Path, name: &str, cli: Option<&Path>) -> Device {
+fn device(base: &Path, name: &str, cli: Option<&Path>, faults: Option<Arc<FaultPlan>>) -> Device {
     let data_dir = base.join("prism");
     std::fs::create_dir_all(data_dir.join("instances")).expect("create the Prism data folder");
     let fake = FakePrism::install(&base.join("bin"), &data_dir);
     let prism = PrismLauncher::new().with_data_dirs(vec![data_dir.clone()]).with_executable(fake.exe.clone());
+    let storage_wrapper: Option<StorageWrapper> = faults.map(|plan| {
+        let wrap: StorageWrapper =
+            Arc::new(move |s: Arc<dyn Storage>| FaultyStorage::new(s, plan.clone()) as Arc<dyn Storage>);
+        wrap
+    });
+    // with faults in play, retries back off without really waiting: a simulated outage is reported at once
+    let sleeper = storage_wrapper.as_ref().map(|_| Arc::new(RecordingSleeper::default()) as Arc<dyn Sleeper>);
     let app = App::open(
         AppPaths::under(&base.join("app")),
         AppOptions {
             credentials: Some(Arc::new(MemoryCredentialStore::default())),
             prism: Some(prism),
+            sleeper,
+            storage_wrapper,
             ..Default::default()
         },
     )
@@ -162,6 +176,47 @@ impl World {
                 std::fs::write(&path, str_arg(cmd, "content")?).map_err(|e| e.to_string())?;
                 Ok(json!({ "written": path }))
             }
+            // what the desktop's cloud does: {mode: "ok" | "offline" | "quota" | "auth" | "rate_limited" | "slow", ms?}
+            "cloud_mode" => {
+                let mode = str_arg(cmd, "mode")?;
+                self.faults.clear();
+                self.faults.set_offline(false);
+                match mode {
+                    "ok" => {}
+                    "offline" => self.faults.set_offline(true),
+                    "quota" => {
+                        self.faults.add(FaultRule::new(
+                            OpKind::Put,
+                            When::Always,
+                            Fault::Error(StorageError::QuotaExceeded("your Google Drive is full".into())),
+                        ));
+                    }
+                    "auth" => {
+                        self.faults.add(FaultRule::new(
+                            OpKind::Any,
+                            When::Always,
+                            Fault::Error(StorageError::Auth(AuthProblem::Revoked)),
+                        ));
+                    }
+                    "rate_limited" => {
+                        self.faults.add(FaultRule::new(
+                            OpKind::Put,
+                            When::Always,
+                            Fault::Error(StorageError::RateLimited { retry_after: None }),
+                        ));
+                    }
+                    "slow" => {
+                        let ms = cmd.get("ms").and_then(Value::as_u64).unwrap_or(1500);
+                        self.faults.add(FaultRule::new(
+                            OpKind::Put,
+                            When::Always,
+                            Fault::Latency(std::time::Duration::from_millis(ms)),
+                        ));
+                    }
+                    other => return Err(format!("unknown cloud mode {other:?}")),
+                }
+                Ok(json!({ "mode": mode }))
+            }
             "laptop_connect" => {
                 self.laptop.app.use_local_storage(&self.cloud).map_err(|e| e.to_string())?;
                 Ok(json!({}))
@@ -221,14 +276,15 @@ fn main() {
     let cloud = dir.join("cloud");
     std::fs::create_dir_all(&cloud).expect("create the cloud folder");
 
-    let desktop = device(&dir.join("desktop"), "Desktop", args.cli.as_deref());
-    let laptop = device(&dir.join("laptop"), "Laptop", args.cli.as_deref());
+    let faults = FaultPlan::new(7);
+    let desktop = device(&dir.join("desktop"), "Desktop", args.cli.as_deref(), Some(faults.clone()));
+    let laptop = device(&dir.join("laptop"), "Laptop", args.cli.as_deref(), None);
     make_instance(&desktop.data_dir, "Skyblock Pack", &spec(4));
     make_instance(&desktop.data_dir, "Vanilla Plus", &spec(2));
     if args.connected {
         desktop.app.use_local_storage(&cloud).expect("connect the desktop to the cloud");
     }
-    let world = Arc::new(World { cloud: cloud.clone(), desktop, laptop });
+    let world = Arc::new(World { cloud: cloud.clone(), desktop, laptop, faults });
 
     let ctx = OpCtx::detached();
     for name in &args.enable {

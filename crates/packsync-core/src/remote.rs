@@ -494,6 +494,12 @@ impl Remote {
         e
     }
 
+    /// Where a blob lives (its pack and offset in it), if the cached index knows it. Used to download
+    /// files in the order their data is stored.
+    pub fn blob_location(&self, h: Hash) -> Result<Option<(Hash, u64)>> {
+        Ok(self.db.blob_lookup(h)?.map(|(pack, e)| (pack, e.offset)))
+    }
+
     /// Fetch `wanted` blobs into `dir/<hash>` (verified, atomic), grouped by pack with coalesced
     /// ranged reads. Existing store files of the right size are reused (resumability).
     pub fn fetch_blobs(&self, wanted: &[Hash], dir: &Path, concurrency: usize, ctx: &OpCtx) -> Result<FetchStats> {

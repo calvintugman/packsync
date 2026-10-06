@@ -2,11 +2,10 @@ import { useState } from "react";
 import type { InstanceStatus, PendingChanges } from "../api/types";
 import { useInstance, useRevision, useRunningJobs } from "../components/hooks";
 import { JobBar } from "../components/JobBar";
-import { usePlay, useSyncNow } from "../components/InstanceCard";
+import { PlayError, usePlay, useSyncNow, useUploadNow } from "../components/InstanceCard";
 import { ConflictDialog } from "../dialogs/ConflictDialog";
 import { CrashDialog } from "../dialogs/CrashDialog";
-import { describeUpload } from "../lib/describe";
-import { formatBytes, formatDateTime, formatRelative, packLine, plural, worldName } from "../lib/format";
+import { formatBytes, formatDateTime, formatRelative, packLine, plural, sentence, worldName } from "../lib/format";
 import { canPlay, phaseInfo } from "../lib/phases";
 import { href, navigate } from "../lib/router";
 import { useAction, useStore } from "../state/context";
@@ -81,12 +80,7 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
     store.toast("success", r.result.result === "created" ? "Snapshot saved." : "Nothing changed since the last snapshot.");
     await store.refreshInstances();
   });
-  const upload = useAction(async () => {
-    const r = await store.runJob("instance.upload", { instance: id });
-    const o = describeUpload(r);
-    store.toast(o.tone === "warn" ? "warn" : "success", o.text);
-    await store.refreshInstances();
-  });
+  const upload = useUploadNow({ id, name: inst?.name ?? "" });
 
   if (!inst) {
     return (
@@ -143,10 +137,10 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
       {jobs.map((j) => (
         <JobBar key={j.id} jobId={j.id} cancellable={j.method !== "launch.start"} />
       ))}
-      {sync.error ? <ErrorNote error={sync.error} instanceId={id} /> : null}
-      {play.error ? <ErrorNote error={play.error} instanceId={id} /> : null}
+      {sync.error ? <ErrorNote error={sync.error} instanceId={id} onRetry={() => void sync.run()} onSignIn={() => navigate({ name: "settings" })} /> : null}
+      <PlayError error={play.error} play={play} inst={{ id }} />
       {snapshot.error ? <ErrorNote error={snapshot.error} instanceId={id} /> : null}
-      {upload.error ? <ErrorNote error={upload.error} instanceId={id} /> : null}
+      {upload.error ? <ErrorNote error={upload.error} instanceId={id} onRetry={() => void upload.run()} onSignIn={() => navigate({ name: "settings" })} /> : null}
 
       {inst.phase === "conflict" ? (
         <Banner tone="danger" title="Two versions need your decision" actions={<Button size="sm" variant="primary" onClick={() => setDialog("conflict")}>Choose a version…</Button>}>
@@ -164,9 +158,9 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
           Playing on two computers at once leads to conflicts.
         </Banner>
       ) : null}
-      {inst.last_error ? (
+      {inst.last_error && !sync.error && !upload.error ? (
         <Banner tone="warn" title="The last upload did not finish">
-          {inst.last_error}
+          {sentence(inst.last_error)}
           {inst.next_retry_ms ? ` It will retry ${formatRelative(inst.next_retry_ms)}.` : ""}
         </Banner>
       ) : null}

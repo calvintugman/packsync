@@ -465,3 +465,79 @@ fn an_unreadable_snapshot_stops_the_cleanup_before_anything_is_deleted() {
     assert!(matches!(err, Error::Corrupt(_)), "{err}");
     assert!(exists(&w, &orphan), "an incomplete picture of the history never leads to deletions");
 }
+
+#[test]
+fn a_cleanup_killed_at_any_step_leaves_everything_restorable_and_can_simply_be_run_again() {
+    // Termination during cleanup (required scenario 9): after the release markers, after the merged index,
+    // before the first deletion, and in the middle of the deletions. Whatever the moment, every snapshot that
+    // was to be kept still restores byte for byte, and running the cleanup again finishes the job.
+    let _g = serial();
+    let params = GcParams {
+        retention: Some(RetentionPolicy { keep_snapshots: 2, keep_days: 0, keep_crash_days: 90 }),
+        ..Default::default()
+    };
+    let steps: [(&str, u32); 6] = [
+        ("gc.after_expire_markers", 1),
+        ("gc.after_merged_index", 1),
+        ("gc.before_deletes", 1),
+        ("gc.after_delete", 1),
+        ("gc.after_delete", 3),
+        ("gc.after_delete", 5),
+    ];
+    for (point, nth) in steps {
+        let w = TestWorld::new();
+        let a = w.device("desktop");
+        let (root, _info, en) = a.new_instance("pack", &spec());
+        a.upload(en.instance);
+        let ids: Vec<SnapshotId> = (1..=6).map(|n| session(&a, &root, en.instance, n)).collect();
+        let (head, previous) = (ids[5], ids[4]);
+        let at_head = tree(&root);
+        age_everything(&w, 100);
+        let junk = format!("an abandoned upload {point}").into_bytes();
+        let orphan = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, true);
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
+        filetime::set_file_mtime(w.remote_dir.join(&orphan), filetime::FileTime::from_system_time(t)).unwrap();
+
+        let plan = a.engine.gc_plan(&params, &a.ctx()).unwrap();
+        assert!(!plan.delete.is_empty() && !plan.expire.is_empty(), "{point}: nothing to do: {plan:#?}");
+        failpoint::arm(point, Action::Error, Some(nth));
+        let r = a.engine.gc_run(&plan.id, &params, &a.ctx());
+        failpoint::disarm_all();
+        assert!(matches!(r, Err(Error::InjectedCrash(_))), "{point}@{nth}: {r:?}");
+
+        // whatever state the cloud was left in, the snapshots that are kept are intact...
+        let v = a.engine.verify_remote(en.instance, Some(head), true, &a.ctx()).unwrap();
+        assert!(v.missing_packs.is_empty() && v.damaged_blobs.is_empty(), "{point}@{nth}: {v:?}");
+        let v = a.engine.verify_remote(en.instance, Some(previous), true, &a.ctx()).unwrap();
+        assert!(v.missing_packs.is_empty() && v.damaged_blobs.is_empty(), "{point}@{nth}: {v:?}");
+        // ...and a brand-new computer restores the head from what is there
+        let b = w.device("laptop");
+        let rb = b
+            .engine
+            .restore_new(
+                RestoreNewRequest {
+                    instance: en.instance,
+                    snapshot: None,
+                    parent_dir: b.instances_dir(),
+                    folder_name: "pack".into(),
+                    launcher: "generic".into(),
+                    launcher_ref: None,
+                    local: Default::default(),
+                    skip_incompatible: false,
+                },
+                &b.ctx(),
+            )
+            .unwrap_or_else(|e| panic!("{point}@{nth}: the head must restore after an interrupted cleanup: {e}"));
+        assert_eq!(tree(&rb.root), at_head, "{point}@{nth}");
+
+        // running the cleanup again (a fresh preview, as a person would) completes it
+        let plan2 = a.engine.gc_plan(&params, &a.ctx()).unwrap();
+        let rep = a.engine.gc_run(&plan2.id, &params, &a.ctx()).unwrap_or_else(|e| panic!("{point}@{nth}: {e}"));
+        let _ = rep;
+        let left = a.engine.gc_plan(&params, &a.ctx()).unwrap();
+        assert!(left.expire.is_empty() && left.delete.is_empty(), "{point}@{nth}: not finished: {left:#?}");
+        assert!(!exists(&w, &orphan), "{point}@{nth}: the orphan is gone");
+        let v = a.engine.verify_remote(en.instance, Some(head), true, &a.ctx()).unwrap();
+        assert!(v.missing_packs.is_empty() && v.damaged_blobs.is_empty(), "{point}@{nth}: {v:?}");
+    }
+}

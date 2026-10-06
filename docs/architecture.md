@@ -92,3 +92,22 @@ multi-computer harness (several engines, one fake cloud), fault injection around
 crash points compiled in with the `failpoints` feature (in-process, and with real aborts in the CLI tests), a
 hostile-data suite, a mock Drive/OAuth server, a fake `prismlauncher` plus game process — and, on top of
 those, a smoke test that drives the **real Prism Launcher** in a disposable sandbox (`docs/testing.md`).
+
+## Design decisions worth knowing
+
+* **No filesystem watcher.** A snapshot happens at defined moments (the game exited, "Sync now", enabling
+  sync), and a scan with nothing changed costs milliseconds because of the persistent metadata cache (size,
+  mtime, ctime, file identity; `docs/performance.md`). Events could only ever mark paths dirty — the cases that
+  need full hashing (first scan, after a restore, an unclean session, a changed volume) do not go away — so v1
+  does without them. A watcher is a possible later optimisation for showing "unsaved changes" live.
+* **A file's blocks are contiguous in the packs.** Files are hashed by several threads, but each thread hands
+  the blocks of one file to the pack writer in one piece (up to 8 MiB at a time), so reading a file back is
+  one request, not one per block. (Without this a 4.3 GB restore took 34,000 requests and read 6.7 GB; see
+  `docs/performance.md`.) Restores also download files in the order their data is stored.
+* **No async runtime.** The engine is blocking code on threads with cooperative cancellation (`OpCtx`); the
+  Drive adapter uses a blocking HTTP client. It keeps failure behaviour easy to reason about and test.
+* **Several processes, one database.** The app, the CLI and the short-lived launcher hooks are separate
+  processes that coordinate only through SQLite and OS file locks — there is no daemon.
+* **Cleanup and retention are manual**, previewed and tied to a plan id; nothing in the engine calls them on its own.
+* **The rules text lives in every snapshot**, so all computers agree on what is synced whatever their own
+  defaults say.

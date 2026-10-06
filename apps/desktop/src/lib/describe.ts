@@ -60,5 +60,11 @@ export function describeLaunch(o: LaunchOutcome): Outcome {
   }
   if (end.uploaded) return { tone: "ok", text: "Session saved and uploaded." };
   if (end.upload_error) return { tone: "warn", text: `Session saved here. The upload did not finish: ${end.upload_error}` };
+  if (o.offline) {
+    return {
+      tone: "warn",
+      text: "Played offline. Your progress is saved on this computer and uploads once the cloud is reachable.",
+    };
+  }
   return { tone: "ok", text: "Session saved." };
 }

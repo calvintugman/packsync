@@ -1,4 +1,6 @@
-import { describeError } from "../api/errors";
+import type { ReactNode } from "react";
+import { describeError, isTransient } from "../api/errors";
+import { sentence } from "../lib/format";
 import { navigate } from "../lib/router";
 import { Banner, Button } from "./controls";
 
@@ -6,11 +8,17 @@ import { Banner, Button } from "./controls";
 export function ErrorNote({
   error,
   onSignIn,
+  onRetry,
   instanceId,
+  actions: extra,
 }: {
   error: unknown;
   onSignIn?: () => void;
+  /** Offered for problems that may pass by themselves (no network, rate limit). */
+  onRetry?: () => void;
   instanceId?: string;
+  /** Anything else the situation calls for, such as an explicit "play offline" choice. */
+  actions?: ReactNode;
 }) {
   if (!error) return null;
   const d = describeError(error);
@@ -36,12 +44,21 @@ export function ErrorNote({
           Open settings
         </Button>
       ) : null}
+      {extra}
+      {onRetry && isTransient(error) ? (
+        <Button size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      ) : null}
     </>
   );
-  const hasActions = d.action === "sign_in" ? Boolean(onSignIn) : d.action !== undefined && (instanceId !== undefined || d.action === "open_settings");
+  const hasActions =
+    Boolean(extra) ||
+    Boolean(onRetry && isTransient(error)) ||
+    (d.action === "sign_in" ? Boolean(onSignIn) : d.action !== undefined && (instanceId !== undefined || d.action === "open_settings"));
   return (
     <Banner tone="danger" title={d.title} actions={hasActions ? actions : undefined}>
-      <span>{d.message}</span>
+      <span>{sentence(d.message)}</span>
       {d.advice ? <span className="muted"> {d.advice}</span> : null}
     </Banner>
   );

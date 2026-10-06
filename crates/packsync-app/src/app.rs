@@ -13,6 +13,7 @@ use packsync_core::ids::{InstanceId, SnapshotId};
 use packsync_core::launcher::{DiscoveredInstance, LauncherRef, LocalSettings};
 use packsync_core::progress::{CancelToken, OpCtx};
 use packsync_core::retry::Sleeper;
+use packsync_core::storage::Storage;
 use packsync_drive::oauth::{AccountInfo, Authenticator, UrlOpener};
 use packsync_prism::PrismLauncher;
 use parking_lot::RwLock;
@@ -24,6 +25,9 @@ use crate::paths::AppPaths;
 use crate::provider::{self, StorageStatus};
 use crate::settings::{Settings, StorageSetting};
 
+/// Wraps whatever storage the settings describe (fault injection, metering) before the engine uses it.
+pub type StorageWrapper = Arc<dyn Fn(Arc<dyn Storage>) -> Arc<dyn Storage> + Send + Sync>;
+
 /// Injection points for tests and special setups. `Default` is what the real application uses.
 #[derive(Default)]
 pub struct AppOptions {
@@ -34,6 +38,8 @@ pub struct AppOptions {
     pub prism: Option<PrismLauncher>,
     /// Skip startup recovery (tests that exercise it explicitly).
     pub skip_recovery: bool,
+    /// Wrap the configured storage, so a test can make "the cloud" fail on demand.
+    pub storage_wrapper: Option<StorageWrapper>,
 }
 
 pub struct App {
@@ -44,6 +50,7 @@ pub struct App {
     creds: Arc<dyn CredentialStore>,
     prism: RwLock<Arc<PrismLauncher>>,
     prism_fixed: bool,
+    storage_wrapper: Option<StorageWrapper>,
     bus: EventBus,
     jobs: JobRunner,
 }
@@ -107,6 +114,7 @@ impl App {
             creds: opts.credentials.unwrap_or_else(provider::default_credentials),
             prism: RwLock::new(prism),
             prism_fixed,
+            storage_wrapper: opts.storage_wrapper,
             bus,
             jobs,
         });
@@ -182,7 +190,11 @@ impl App {
         *self.auth.write() = None;
         let p = provider::build(&settings, &self.paths, self.engine.db(), self.creds.clone())?;
         *self.auth.write() = p.auth;
-        self.engine.set_storage(p.storage)
+        let storage = match (p.storage, &self.storage_wrapper) {
+            (Some(s), Some(wrap)) => Some(wrap(s)),
+            (s, _) => s,
+        };
+        self.engine.set_storage(storage)
     }
 
     // ------------------------------------------------------------------------------ storage

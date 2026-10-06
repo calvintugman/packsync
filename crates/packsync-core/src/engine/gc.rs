@@ -338,6 +338,7 @@ impl Engine {
             remote.put_expired(r, ctx)?;
             rep.expired += 1;
         }
+        crate::failpoint!("gc.after_expire_markers")?;
         // 2. merged index: written and read back before any old index disappears
         if let Some(doc) = &prepared.merged_index {
             ctx.phase(Phase::Cleanup, "merging index objects");
@@ -348,7 +349,9 @@ impl Engine {
             }
             rep.consolidated_into = Some(index_key(new_id));
         }
+        crate::failpoint!("gc.after_merged_index")?;
         // 3. deletions: indexes first, then packs (an index pointing at a missing pack is harmless, the reverse is not)
+        crate::failpoint!("gc.before_deletes")?;
         let total = prepared.plan.delete.len() as u64;
         for (i, o) in prepared.plan.delete.iter().enumerate() {
             ctx.check()?;
@@ -363,6 +366,7 @@ impl Engine {
                 None => continue,
             }
             remote.delete_object(&o.key, ctx)?;
+            crate::failpoint!("gc.after_delete")?;
             rep.bytes_freed += o.size;
             if o.kind == "pack" {
                 rep.deleted_packs += 1;

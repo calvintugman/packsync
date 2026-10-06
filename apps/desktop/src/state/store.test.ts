@@ -209,3 +209,37 @@ describe("AppStore: events", () => {
     expect(t.count("instances.list")).toBe(after);
   });
 });
+
+describe("AppStore: retrying", () => {
+  it("runs a failed job again with the same arguments", async () => {
+    const t = baseTransport();
+    let calls = 0;
+    t.on("instance.sync", () => {
+      calls += 1;
+      if (calls === 1) throw new ApiError({ code: "offline", message: "no network" });
+      return { ok: true };
+    });
+    const { store } = await started(t);
+    await expect(store.runJob("instance.sync", { instance: "i" })).rejects.toMatchObject({ code: "offline" });
+    expect(store.canRetry("job-1")).toBe(true);
+    await store.retryJob("job-1");
+    expect(calls).toBe(2);
+    expect(t.calls.filter((c) => c.job).map((c) => c.params)).toEqual([{ instance: "i" }, { instance: "i" }]);
+    expect(store.getState().toasts.at(-1)).toMatchObject({ level: "success", message: "Done." });
+    store.stop();
+  });
+
+  it("reports a second failure instead of hiding it, and cannot retry what it did not start", async () => {
+    const t = baseTransport();
+    t.on("instance.sync", () => {
+      throw new ApiError({ code: "quota_exceeded", message: "Drive is full" });
+    });
+    const { store } = await started(t);
+    await store.runJob("instance.sync", { instance: "i" }).catch(() => {});
+    await store.retryJob("job-1");
+    expect(store.getState().toasts.at(-1)).toMatchObject({ level: "error", message: "Drive is full" });
+    expect(store.canRetry("job-from-elsewhere")).toBe(false);
+    await store.retryJob("job-from-elsewhere"); // nothing happens
+    store.stop();
+  });
+});

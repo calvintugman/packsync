@@ -176,6 +176,11 @@ export interface AccountInfo {
   permission_id: string | null;
 }
 
+export interface StorageUsage {
+  provider: string;
+  quota: { used: number; total: number | null } | null;
+}
+
 export interface StorageTest {
   provider: string;
   quota: { used: number; total: number | null } | null;
