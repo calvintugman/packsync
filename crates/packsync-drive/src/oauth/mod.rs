@@ -34,7 +34,7 @@ use crate::config::{DRIVE_API_BASE, DriveEndpoints, DriveSpace, HttpTimeouts, OA
 use crate::http::{self, JSON_LIMIT, Method, Request, Transport};
 use crate::model::RawAbout;
 use crate::stats::{RequestKind, StatsHandle};
-use crate::util::{form_encode, now_ms_i64, truncate_utf8, with_query};
+use crate::util::{form_encode, now_ms, truncate_utf8, with_query};
 
 /// Supplies OAuth access tokens to [`DriveStorage`](crate::DriveStorage).
 pub trait AccessTokenSource: Send + Sync {
@@ -233,15 +233,15 @@ struct AuthState {
 }
 
 /// Successful token endpoint answer.
-pub(crate) struct TokenGrant {
-    pub access_token: Secret,
-    pub expires_in: u64,
-    pub refresh_token: Option<Secret>,
-    pub scopes: Option<Vec<String>>,
+struct TokenGrant {
+    access_token: Secret,
+    expires_in: u64,
+    refresh_token: Option<Secret>,
+    scopes: Option<Vec<String>>,
 }
 
 /// Why a token request failed.
-pub(crate) enum TokenFailure {
+enum TokenFailure {
     InvalidGrant(String),
     Other(StorageError),
 }
@@ -358,7 +358,7 @@ impl Authenticator {
             scopes,
             email: account.email,
             display_name: account.display_name,
-            connected_ms: now_ms_i64(),
+            connected_ms: now_ms(),
         };
         self.persist_grant(grant, None)
     }
@@ -466,7 +466,7 @@ impl Authenticator {
         }
     }
 
-    pub(crate) fn persist_grant(&self, grant: StoredGrant, access: Option<(Secret, u64)>) -> Result<(), AuthError> {
+    fn persist_grant(&self, grant: StoredGrant, access: Option<(Secret, u64)>) -> Result<(), AuthError> {
         let json = serde_json::to_string(&grant)
             .map_err(|_| AuthError::Exchange("could not serialise the credential".into()))?;
         self.creds.set(&self.cred_account, &Secret::new(json))?;
@@ -490,7 +490,7 @@ impl Authenticator {
     }
 
     /// POST a form to the token endpoint.
-    pub(crate) fn token_request(&self, form: &[(&str, &str)], ctx: &OpCtx) -> Result<TokenGrant, TokenFailure> {
+    fn token_request(&self, form: &[(&str, &str)], ctx: &OpCtx) -> Result<TokenGrant, TokenFailure> {
         if ctx.is_cancelled() {
             return Err(TokenFailure::Other(StorageError::Cancelled));
         }
@@ -618,12 +618,15 @@ impl AccessTokenSource for Authenticator {
         if let Some(t) = self.cached_valid() {
             return Ok(t);
         }
-        if self.state.lock().revoked {
+        let revoked = self.state.lock().revoked;
+        if revoked {
             // Do not hammer the token endpoint with a refresh token Google already rejected,
-            // unless another process stored a new one.
-            match self.load_grant_from_store() {
-                Ok(Some(g)) if self.state.lock().grant.as_ref().map(|c| &c.refresh_token) != Some(&g.refresh_token) => {
-                    let mut st = self.state.lock();
+            // unless another process stored a new one meanwhile.
+            let fresh = self.load_grant_from_store().ok().flatten();
+            let mut st = self.state.lock();
+            let known = st.grant.as_ref().map(|c| c.refresh_token.clone());
+            match fresh {
+                Some(g) if known.as_deref() != Some(g.refresh_token.as_str()) => {
                     st.grant = Some(g);
                     st.revoked = false;
                 }

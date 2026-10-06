@@ -219,7 +219,6 @@ pub(crate) fn truncate_utf8(s: &str, max: usize) -> &str {
 }
 
 /// Current time in milliseconds since the Unix epoch.
-#[cfg_attr(not(feature = "mock"), allow(dead_code))]
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
