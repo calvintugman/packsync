@@ -242,6 +242,11 @@ impl Remote {
     /// Fetch, verify and parse a commit. Fails if the object is missing, does not hash to its name,
     /// is malformed, or belongs to another instance.
     pub fn get_commit(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Manifest> {
+        self.get_commit_with_bytes(inst, id, ctx).map(|(m, _)| m)
+    }
+
+    /// Like [`Remote::get_commit`] but also returns the verified stored bytes (for local caching).
+    pub fn get_commit_with_bytes(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<(Manifest, Vec<u8>)> {
         let key = commit_key(inst, id);
         let stored = self.call(ctx, "read snapshot", |_| self.storage.get_bytes(&key, MAX_MANIFEST_STORED, ctx))?;
         ctx.add_down(stored.len() as u64);
@@ -254,7 +259,7 @@ impl Remote {
                 m.instance.id
             )));
         }
-        Ok(m)
+        Ok((m, stored))
     }
 
     pub fn put_commit(&self, m: &Manifest, id: SnapshotId, stored: &[u8], ctx: &OpCtx) -> Result<ObjectInfo> {

@@ -62,3 +62,5 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile.workspace = true
+# Enables the test helpers and crash-injection points for this crate's own integration tests.
+packsync-core = { path = ".", features = ["testkit", "failpoints"] }

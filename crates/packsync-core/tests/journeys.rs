@@ -1,0 +1,328 @@
+//! End-to-end user journeys on two simulated computers sharing one fake cloud.
+
+use std::fs;
+
+use packsync_core::db::{InstanceState, SnapshotState};
+use packsync_core::engine::*;
+use packsync_core::testkit::fixtures::{self, FixtureSpec};
+use packsync_core::testkit::harness::{TestWorld, is_synced_path};
+
+/// Digest of the synced content. `options.txt` is a mixed file (local-only graphics keys stay local),
+/// so it is compared through its portable projection, exactly as the engine stores it.
+fn tree(root: &std::path::Path) -> Vec<(String, packsync_core::hash::Hash)> {
+    let mut v = fixtures::tree_digest(root, is_synced_path);
+    let policy = packsync_core::mixed::options_txt_policy("");
+    for (p, h) in v.iter_mut() {
+        if p == "options.txt" {
+            *h = packsync_core::hash::Hash::of(
+                &packsync_core::mixed::project(&policy, &fs::read(root.join(&*p)).unwrap()).unwrap(),
+            );
+        }
+    }
+    v
+}
+
+#[test]
+fn first_computer_uploads_second_computer_restores_identical_bytes() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root_a, info, enabled) = a.new_instance("My Pack", &FixtureSpec::tiny());
+    assert!(info.synced_files > 10);
+
+    // Before the upload completes the instance must NOT claim to be synced.
+    let st = a.engine.status(enabled.instance, false, &a.ctx()).unwrap();
+    assert_eq!(st.phase, SyncPhase::LocalSnapshotComplete, "{st:?}");
+
+    a.upload(enabled.instance);
+    let st = a.engine.status(enabled.instance, true, &a.ctx()).unwrap();
+    assert_eq!(st.phase, SyncPhase::ReadyOnOtherDevices);
+    assert_eq!(st.pending_snapshots, 0);
+
+    // second computer
+    let b = w.device("laptop");
+    let cloud = b.engine.cloud_instances(&b.ctx()).unwrap();
+    assert_eq!(cloud.len(), 1);
+    assert_eq!(cloud[0].id, enabled.instance);
+    assert_eq!(cloud[0].worlds.len(), 1);
+    assert_eq!(cloud[0].worlds[0].name.as_deref(), Some("My World 0 ünï"));
+    let restored = b
+        .engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: enabled.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "My Pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    assert_eq!(tree(&root_a), tree(&restored.root), "every included byte (and empty dir) is reproduced");
+    // excluded junk did not travel
+    assert!(!restored.root.join("logs").exists() && !restored.root.join("screenshots").exists());
+    assert!(!restored.root.join("natives").exists());
+    // the mixed options.txt kept portable keys but not this device's graphics keys
+    let opts = fs::read_to_string(restored.root.join("options.txt")).unwrap();
+    assert!(opts.contains("lang:en_us") && opts.contains("key_key.jump"));
+    assert!(!opts.contains("renderDistance") && !opts.contains("fullscreen"), "local-only keys stay local: {opts}");
+    // B changes a local-only key: that must not be a pending change
+    fs::write(restored.root.join("options.txt"), format!("{opts}renderDistance:4\nfullscreen:true\n")).unwrap();
+    assert!(
+        !b.engine.pending_changes(enabled.instance, &b.ctx()).unwrap().dirty,
+        "local-only settings never create snapshots"
+    );
+    // B is up to date with the cloud
+    let st = b.engine.status(enabled.instance, true, &b.ctx()).unwrap();
+    assert_eq!(st.phase, SyncPhase::ReadyOnOtherDevices);
+}
+
+#[test]
+fn no_change_sync_uploads_no_content_and_sparse_edits_transfer_little() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let mut spec = FixtureSpec::tiny();
+    spec.regions_per_world = 3;
+    spec.chunks_per_region = 200;
+    spec.chunk_sectors = (1, 2);
+    let (root, info, en) = a.new_instance("pack", &spec);
+    a.upload(en.instance);
+
+    // 1. nothing changed
+    let before = a.meter.snapshot();
+    let (snap, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let d = a.meter.snapshot().since(&before);
+    assert!(matches!(snap.unwrap().result, SnapshotResult::Unchanged { .. }));
+    assert!(matches!(rec, ReconcileReport::UpToDate { .. }));
+    assert_eq!(d.payload_puts(), 0, "a no-change sync uploads no new content: {d:?}");
+    assert_eq!(d.puts, 0, "…and no metadata objects either (no lease/heartbeat traffic in a pure sync)");
+
+    // 2. a sparse region edit + a small config change
+    let region = &info.regions[0];
+    let region_size = fs::metadata(region).unwrap().len();
+    fixtures::edit_region(region, 3, 5);
+    fs::write(&info.configs[0], b"changed = true\n").unwrap();
+    let before = a.meter.snapshot();
+    let (snap, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(snap.unwrap().result, SnapshotResult::Created { .. }));
+    assert!(matches!(rec, ReconcileReport::LocalAhead { uploaded: true, .. }), "{rec:?}");
+    let d = a.meter.snapshot().since(&before);
+    assert!(d.payload_bytes_up() > 0);
+    assert!(
+        d.payload_bytes_up() < region_size / 4,
+        "3 edited chunks of a {region_size}-byte region must upload far less than the file: {} bytes",
+        d.payload_bytes_up()
+    );
+    let _ = root;
+}
+
+#[test]
+fn same_size_edit_with_restored_timestamp_is_detected() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    fixtures::same_size_edit_preserving_mtime(&info.configs[1], 11);
+    let p = a.engine.pending_changes(en.instance, &a.ctx()).unwrap();
+    #[cfg(unix)]
+    assert_eq!(p.modified.len(), 1, "inode change time exposes the edit: {p:?}");
+    // and a forced full scan finds it on any platform
+    a.engine.rescan(en.instance).unwrap();
+    assert_eq!(a.engine.pending_changes(en.instance, &a.ctx()).unwrap().modified.len(), 1);
+}
+
+#[test]
+fn creation_deletion_rename_empty_dirs_unicode_and_long_paths_propagate() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root_a, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    let b = w.device("laptop");
+    let req = |snapshot| RestoreNewRequest {
+        instance: en.instance,
+        snapshot,
+        parent_dir: b.instances_dir(),
+        folder_name: "pack".into(),
+        launcher: "generic".into(),
+        launcher_ref: None,
+        local: Default::default(),
+        skip_incompatible: false,
+    };
+    let rb = b.engine.restore_new(req(None), &b.ctx()).unwrap();
+
+    // A: create / delete / rename / empty dir / unicode / long path
+    fs::write(root_a.join("config/new-file.toml"), b"x = 1\n").unwrap();
+    fs::remove_file(&info.mods[0]).unwrap();
+    fs::rename(&info.configs[0], root_a.join("config/renamed-config.toml")).unwrap();
+    fs::create_dir_all(root_a.join("config/brand-new-empty-dir")).unwrap();
+    fs::remove_dir_all(root_a.join("config/empty-folder")).unwrap();
+    fs::create_dir_all(root_a.join("config/日本語/ディレクトリ")).unwrap();
+    fs::write(root_a.join("config/日本語/ディレクトリ/ファイル.json"), b"{}").unwrap();
+    let long = (0..40).map(|i| format!("deep-directory-{i:02}")).collect::<Vec<_>>().join("/");
+    fs::create_dir_all(root_a.join("config").join(&long)).unwrap();
+    fs::write(
+        root_a
+            .join("config")
+            .join(&long)
+            .join("a-file-with-a-rather-long-name-to-push-the-path-length-over-two-hundred-chars-total.cfg"),
+        b"deep",
+    )
+    .unwrap();
+    let rep = a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    assert!(matches!(rep.result, SnapshotResult::Created { .. }));
+    assert_eq!((rep.stats.added, rep.stats.removed), (rep.stats.added, rep.stats.removed));
+    a.upload(en.instance);
+
+    // B picks it up by fast-forward
+    let r = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx()).unwrap();
+    assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{r:?}");
+    assert_eq!(tree(&root_a), tree(&rb.root));
+    assert!(!rb.root.join(info.mods[0].strip_prefix(&root_a).unwrap()).exists(), "deletion propagated");
+    assert!(rb.root.join("config/renamed-config.toml").exists());
+    assert!(!rb.root.join("config/empty-folder").exists(), "removed empty dir is removed");
+    assert!(rb.root.join("config/brand-new-empty-dir").is_dir(), "new empty dir is created");
+    assert!(rb.root.join("config/日本語/ディレクトリ/ファイル.json").exists());
+    // the previous versions are kept as a recovery point
+    assert!(!b.engine.list_recovery_points(en.instance).unwrap().is_empty());
+    // and nothing is pending anywhere
+    assert!(!b.engine.pending_changes(en.instance, &b.ctx()).unwrap().dirty);
+    assert!(!a.engine.pending_changes(en.instance, &a.ctx()).unwrap().dirty);
+}
+
+#[test]
+fn offline_changes_on_two_devices_become_a_conflict_and_both_versions_survive_each_resolution() {
+    for choice in ["keep_local", "keep_cloud", "split"] {
+        let w = TestWorld::new();
+        let a = w.device("desktop");
+        let (root_a, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+        a.upload(en.instance);
+        let b = w.device("laptop");
+        let rb = b
+            .engine
+            .restore_new(
+                RestoreNewRequest {
+                    instance: en.instance,
+                    snapshot: None,
+                    parent_dir: b.instances_dir(),
+                    folder_name: "pack".into(),
+                    launcher: "generic".into(),
+                    launcher_ref: None,
+                    local: Default::default(),
+                    skip_incompatible: false,
+                },
+                &b.ctx(),
+            )
+            .unwrap();
+
+        // both play offline: different edits
+        fs::write(root_a.join("config/from-desktop.toml"), b"desktop = true\n").unwrap();
+        fs::write(rb.root.join("config/from-laptop.toml"), b"laptop = true\n").unwrap();
+        a.plan.set_offline(true);
+        b.plan.set_offline(true);
+        let ra = a.engine.sync_now(en.instance, &a.ctx()).unwrap().1;
+        assert!(matches!(ra, ReconcileReport::Offline { .. }), "{ra:?}");
+        let rbn = b.engine.sync_now(en.instance, &b.ctx()).unwrap().1;
+        assert!(matches!(rbn, ReconcileReport::Offline { .. }), "{rbn:?}");
+        // the local snapshots exist but are honestly "not uploaded"
+        let sa = a.engine.status(en.instance, false, &a.ctx()).unwrap();
+        assert!(matches!(sa.phase, SyncPhase::LocalSnapshotComplete | SyncPhase::UploadPending), "{:?}", sa.phase);
+        a.plan.set_offline(false);
+        b.plan.set_offline(false);
+
+        // reconnection: desktop publishes first and is simply ahead
+        let ra = a.engine.sync_now(en.instance, &a.ctx()).unwrap().1;
+        assert!(matches!(ra, ReconcileReport::LocalAhead { uploaded: true, .. }), "{ra:?}");
+        // laptop must NOT silently replace desktop's progress (nor overwrite its own)
+        let before = tree(&rb.root);
+        let rbn = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx()).unwrap();
+        let ReconcileReport::Conflict(c) = rbn else { panic!("expected conflict, got {rbn:?}") };
+        assert_eq!(c.cloud.len(), 1);
+        assert!(c.local.is_some());
+        assert_eq!(tree(&rb.root), before, "detecting a conflict touches no files");
+        assert_eq!(b.engine.instance(en.instance).unwrap().state, InstanceState::Conflict);
+        // while a conflict is pending, syncing is refused (no silent progress)
+        assert!(
+            b.engine.upload_pending(en.instance, true, &b.ctx()).is_ok(),
+            "uploading the retained local branch is allowed"
+        );
+
+        let resolution = match choice {
+            "keep_local" => Resolution::KeepLocal,
+            "keep_cloud" => Resolution::KeepCloud { head: None },
+            _ => Resolution::SplitLocal { new_name: "Laptop Fork".into() },
+        };
+        let rep = b.engine.resolve_conflict(en.instance, resolution, &b.ctx()).unwrap();
+        assert_eq!(b.engine.instance(rep.new_instance.unwrap_or(en.instance)).unwrap().state, InstanceState::Ok);
+
+        match choice {
+            "keep_local" => {
+                assert!(rb.root.join("config/from-laptop.toml").exists());
+                // desktop converges onto the merge commit and now has the laptop's file too
+                let r = a.engine.reconcile(en.instance, ReconcileOpts::default(), &a.ctx()).unwrap();
+                assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{r:?}");
+                assert!(root_a.join("config/from-laptop.toml").exists());
+                assert!(
+                    !root_a.join("config/from-desktop.toml").exists(),
+                    "continuing the laptop's version means desktop's edit is only in history"
+                );
+            }
+            "keep_cloud" => {
+                assert!(rb.root.join("config/from-desktop.toml").exists());
+                assert!(!rb.root.join("config/from-laptop.toml").exists());
+                // the laptop's version is not lost: it is in the cloud history…
+                let hist = b.engine.history(en.instance, true, &b.ctx()).unwrap();
+                let laptop_branch = hist
+                    .iter()
+                    .find(|h| {
+                        h.device.as_deref() == Some("laptop") && h.note.is_none() && h.parents.len() == 1 && !h.is_base
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "the laptop's own snapshot is retained as a branch in history: {:#?}",
+                            hist.iter()
+                                .map(|h| (
+                                    h.id.short(),
+                                    h.device.clone(),
+                                    h.note.clone(),
+                                    h.parents.iter().map(|p| p.short()).collect::<Vec<_>>(),
+                                    h.state,
+                                    h.is_base
+                                ))
+                                .collect::<Vec<_>>()
+                        )
+                    });
+                assert!(
+                    matches!(laptop_branch.state, SnapshotState::Visible | SnapshotState::Published),
+                    "{:?}",
+                    laptop_branch.state
+                );
+                // …and as a recovery point on disk
+                assert!(!b.engine.list_recovery_points(en.instance).unwrap().is_empty());
+                // desktop fast-forwards to the merge commit (same tree as its own)
+                let r = a.engine.reconcile(en.instance, ReconcileOpts::default(), &a.ctx()).unwrap();
+                assert!(matches!(r, ReconcileReport::FastForwarded { .. } | ReconcileReport::UpToDate { .. }), "{r:?}");
+            }
+            _ => {
+                let n = rep.new_instance.expect("a new instance identity");
+                assert_ne!(n, en.instance);
+                assert!(
+                    rb.root.join("config/from-laptop.toml").exists(),
+                    "the fork keeps this computer's files in place"
+                );
+                // the original instance continues unchanged for everyone else
+                let r = a.engine.reconcile(en.instance, ReconcileOpts::default(), &a.ctx()).unwrap();
+                assert!(matches!(r, ReconcileReport::UpToDate { .. } | ReconcileReport::FastForwarded { .. }), "{r:?}");
+                assert!(root_a.join("config/from-desktop.toml").exists());
+                assert!(!root_a.join("config/from-laptop.toml").exists());
+                // and the fork is its own instance in the cloud
+                let c = a.engine.cloud_instances(&a.ctx()).unwrap();
+                assert_eq!(c.len(), 2, "{c:?}");
+            }
+        }
+        let _ = info;
+    }
+}

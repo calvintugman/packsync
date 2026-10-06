@@ -641,6 +641,7 @@ dependencies = [
  "libc",
  "md-5",
  "notify",
+ "packsync-core",
  "parking_lot",
  "rayon",
  "rusqlite",

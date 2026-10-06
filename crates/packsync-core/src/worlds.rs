@@ -183,8 +183,8 @@ pub fn list_worlds(game_root: &Path) -> Vec<WorldInfo> {
     out
 }
 
-#[cfg(test)]
-pub(crate) fn build_level_dat(name: &str, last_played: i64) -> Vec<u8> {
+#[cfg(any(test, feature = "testkit"))]
+pub fn build_level_dat(name: &str, last_played: i64) -> Vec<u8> {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use std::io::Write;

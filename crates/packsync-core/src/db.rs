@@ -260,7 +260,8 @@ impl Db {
             return Ok((id, name));
         }
         let id = DeviceId::new();
-        let name = default_device_name();
+        // A name chosen before the identity existed (EngineConfig.device_name) must survive.
+        let name = self.meta_get("device_name")?.unwrap_or_else(default_device_name);
         self.meta_set("device_id", &id.to_string())?;
         self.meta_set("device_name", &name)?;
         Ok((id, name))
@@ -496,6 +497,42 @@ impl Db {
             let rows =
                 st.query_map([instance.to_string()], snapshot_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
+        })
+    }
+
+    /// Forget a cached snapshot row (e.g. a damaged or vanished remote commit). Never touches the cloud.
+    pub fn snapshot_remove(&self, instance: InstanceId, id: SnapshotId) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM snapshots WHERE instance_id=?1 AND id=?2",
+                params![instance.to_string(), id.to_hex()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Move a registration to a new instance identity (forking a local copy into a separate
+    /// instance). The old identity's cached snapshot rows are dropped; cloud data is untouched.
+    pub fn instance_rekey(
+        &self,
+        old: InstanceId,
+        new: InstanceId,
+        name: &str,
+        base: SnapshotId,
+        marker: &str,
+    ) -> Result<()> {
+        self.tx(|tx| {
+            let (o, n) = (old.to_string(), new.to_string());
+            tx.execute(
+                "INSERT INTO instances(id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan)
+                 SELECT ?2,?3,root,launcher,launcher_ref,game_root,sync_enabled,?4,NULL,?5,root_dev,provider_id,'ok',NULL,created_ms,last_scan_ms,last_full_verify_ms,NULL,1 FROM instances WHERE id=?1",
+                params![o, n, name, base.to_hex(), marker],
+            )?;
+            tx.execute("DELETE FROM file_index WHERE instance_id=?1", [&o])?;
+            tx.execute("DELETE FROM sessions WHERE instance_id=?1", [&o])?;
+            tx.execute("DELETE FROM snapshots WHERE instance_id=?1", [&o])?;
+            tx.execute("DELETE FROM instances WHERE id=?1", [&o])?;
+            Ok(())
         })
     }
 

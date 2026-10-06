@@ -28,8 +28,19 @@ pub struct InstanceLock {
 impl InstanceLock {
     /// Try to take the lock without waiting; `Err(Busy)` names the holder when it can be read.
     pub fn try_acquire(dir: &Path, instance: InstanceId, operation: &str) -> Result<InstanceLock> {
+        Self::try_acquire_kind(dir, instance, "", operation)
+    }
+
+    /// Like [`try_acquire`](Self::try_acquire) but for an independent lock *kind* (`"upload"`): locks of
+    /// different kinds never block each other, so an operation holding the instance lock can still
+    /// upload.
+    pub fn try_acquire_kind(dir: &Path, instance: InstanceId, kind: &str, operation: &str) -> Result<InstanceLock> {
         fs::create_dir_all(dir).map_err(|e| Error::io(format!("creating {}", dir.display()), e))?;
-        let path = dir.join(format!("{instance}.lock"));
+        let path = if kind.is_empty() {
+            dir.join(format!("{instance}.lock"))
+        } else {
+            dir.join(format!("{instance}.{kind}.lock"))
+        };
         let mut file = OpenOptions::new()
             .read(true)
             .write(true)

@@ -2,3 +2,5 @@
 //! benchmark tool. Nothing in here is used by production code paths.
 
 pub mod conformance;
+pub mod fixtures;
+pub mod harness;

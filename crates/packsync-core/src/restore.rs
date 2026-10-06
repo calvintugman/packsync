@@ -1,0 +1,1072 @@
+//! Restoring a snapshot onto disk: plan → pre-flight → stage & verify → journaled apply.
+//!
+//! Safety properties (tested in `tests/` with fault injection at every boundary):
+//! * pre-flight failures (incompatible names, collisions, symlinks in the way, no disk space,
+//!   missing/corrupt cloud data) happen **before the live instance is touched**;
+//! * all new content is downloaded, hash-verified (per blob *and* per file) and staged first;
+//! * replaced/deleted files are moved to a trash, never unlinked; the whole transaction is
+//!   recoverable (see [`crate::journal`]) and the previous state is kept as a recovery point;
+//! * cancellation or any error during apply rolls the instance back.
+
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::chunk::ChunkingConfig;
+use crate::db::{Db, IndexRow, InstanceRow, InstanceState};
+use crate::error::{Error, IoContext, Result};
+use crate::fsutil::{FileKind, FileStat, available_space, long_path, set_mtime_ms, stat_nofollow};
+use crate::hash::{Hash, Hasher};
+use crate::ids::{InstanceId, SnapshotId, TxId};
+use crate::journal::*;
+use crate::manifest::{Entry, EntryType, Manifest, Recipe, now_rfc3339};
+use crate::mixed::{self, MixedPolicy};
+use crate::paths::{FoldMode, ensure_no_symlink_ancestors, find_collisions, is_case_insensitive_fs, windows_issues};
+use crate::progress::{Level, OpCtx, Phase};
+use crate::remote::Remote;
+use crate::rules::RuleSet;
+use crate::scan::{ContentInfo, ScanOptions, hash_phase, walk};
+use crate::stage::CountingSink;
+
+#[derive(Debug, Clone)]
+pub struct RestoreConfig {
+    /// File bytes fetched and staged per batch (bounds temporary disk use beyond the staged files).
+    pub batch_bytes: u64,
+    pub concurrency: usize,
+    /// Skip entries whose names cannot exist on this platform instead of refusing the restore.
+    pub skip_incompatible: bool,
+    pub space_margin: u64,
+    pub apply_batch: usize,
+    pub keep_recovery_days: u32,
+}
+
+impl Default for RestoreConfig {
+    fn default() -> Self {
+        Self {
+            batch_bytes: 512 * 1024 * 1024,
+            concurrency: 4,
+            skip_incompatible: false,
+            space_margin: 64 * 1024 * 1024,
+            apply_batch: 64,
+            keep_recovery_days: 14,
+        }
+    }
+}
+
+pub struct RestoreEnv<'a> {
+    pub db: &'a Arc<Db>,
+    pub remote: &'a Remote,
+    pub policies: &'a HashMap<String, MixedPolicy>,
+    pub cfg: &'a RestoreConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalFile {
+    pub content: ContentInfo,
+    pub stat: FileStat,
+    pub mixed: Option<String>,
+}
+
+/// What is on disk right now (restricted to paths the *target's* rules include).
+#[derive(Debug, Default)]
+pub struct LocalState {
+    pub files: HashMap<String, LocalFile>,
+    pub empty_dirs: HashSet<String>,
+    pub rows: HashMap<String, IndexRow>,
+    pub excluded_present: u64,
+}
+
+/// Scan the live instance under `rules` (the target's rules) without staging anything.
+pub fn scan_local_state(
+    db: &Arc<Db>,
+    inst: &InstanceRow,
+    rules: &RuleSet,
+    policies: &HashMap<String, MixedPolicy>,
+    chunking: &ChunkingConfig,
+    scan: &ScanOptions,
+    ctx: &OpCtx,
+) -> Result<LocalState> {
+    let index = if inst.needs_full_scan { HashMap::new() } else { db.index_load(inst.id)? };
+    let mut opts = scan.clone();
+    if inst.needs_full_scan {
+        opts.mode = crate::scan::ScanMode::Full;
+    }
+    let w = walk(&inst.root, rules, &index, &opts, ctx)?;
+    if !w.unreadable_dirs.is_empty() {
+        return Err(Error::InstanceUnavailable(format!(
+            "{} could not be read; refusing to restore over unknown content",
+            w.unreadable_dirs[0]
+        )));
+    }
+    let to_hash: Vec<&crate::scan::Candidate> = w.files.iter().filter(|c| c.reuse.is_none()).collect();
+    let sink = CountingSink::new(db.clone());
+    let hp = hash_phase(&inst.root, &to_hash, &sink, chunking, policies, scan.threads, ctx)?;
+    let hashed: HashMap<&str, &crate::scan::HashedFile> = hp.hashed.iter().map(|h| (h.path.as_str(), h)).collect();
+    let mut st =
+        LocalState { excluded_present: w.excluded.groups.values().map(|g| g.files).sum(), ..Default::default() };
+    let now = crate::scan::now_ns();
+    for c in &w.files {
+        if let Some(row) = &c.reuse {
+            st.files.insert(
+                c.path.clone(),
+                LocalFile {
+                    content: ContentInfo { size: row.content_size, hash: row.hash, recipe: row.recipe, chunks: 0 },
+                    stat: c.stat.clone(),
+                    mixed: row.mixed.clone(),
+                },
+            );
+            st.rows.insert(c.path.clone(), row.clone());
+        } else if let Some(h) = hashed.get(c.path.as_str()) {
+            st.files.insert(
+                c.path.clone(),
+                LocalFile { content: h.content.clone(), stat: h.stat.clone(), mixed: h.mixed.clone() },
+            );
+            st.rows.insert(
+                c.path.clone(),
+                IndexRow {
+                    path: c.path.clone(),
+                    size: h.stat.size,
+                    mtime_ns: h.stat.mtime_ns,
+                    ctime_ns: h.stat.ctime_ns,
+                    file_id: h.stat.file_id.clone(),
+                    hash: h.content.hash,
+                    recipe: h.content.recipe,
+                    mixed: h.mixed.clone(),
+                    content_size: h.content.size,
+                    hashed_at_ns: h.hashed_at_ns,
+                    verified_at_ns: now,
+                },
+            );
+        }
+    }
+    st.empty_dirs = w.empty_dirs.iter().cloned().collect();
+    Ok(st)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanIssue {
+    pub path: String,
+    pub problem: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RestorePlan {
+    pub target: SnapshotId,
+    pub ops: Vec<JOp>,
+    /// Entries to materialise, keyed by path (the `Write` ops refer to these).
+    pub writes: Vec<Entry>,
+    pub unchanged: u64,
+    pub deleted: u64,
+    pub bytes_to_write: u64,
+    pub preserved_local_only: u64,
+    /// Entries left out because they cannot exist on this platform (`skip_incompatible`).
+    pub skipped: Vec<PlanIssue>,
+}
+
+impl RestorePlan {
+    pub fn is_noop(&self) -> bool {
+        self.ops.is_empty()
+    }
+}
+
+fn ancestors(path: &str) -> Vec<&str> {
+    let mut v = vec![];
+    let mut idx = 0;
+    while let Some(p) = path[idx..].find('/') {
+        idx += p;
+        v.push(&path[..idx]);
+        idx += 1;
+    }
+    v
+}
+
+/// Compute the operations that make the included paths of `root` equal to `target`.
+/// Pure with respect to the cloud; reads the live tree only to see what exists.
+pub fn plan(
+    target: &Manifest,
+    target_id: SnapshotId,
+    local: &LocalState,
+    root: &Path,
+    cfg: &RestoreConfig,
+) -> Result<RestorePlan> {
+    let on_windows = cfg!(windows);
+    let mut skipped: Vec<PlanIssue> = vec![];
+    let mut entries: Vec<&Entry> = vec![];
+    for e in &target.entries {
+        if on_windows {
+            let wi = windows_issues(&e.p);
+            if !wi.is_empty() {
+                let problem = wi.iter().map(|i| i.to_string()).collect::<Vec<_>>().join("; ");
+                if cfg.skip_incompatible {
+                    skipped.push(PlanIssue { path: e.p.clone(), problem });
+                    continue;
+                }
+                return Err(Error::Unsupported(format!(
+                    "this snapshot contains a name that cannot exist on Windows: {} ({problem}). Nothing was changed; restore with 'skip incompatible files' or rename it on the source computer",
+                    e.p
+                )));
+            }
+        }
+        entries.push(e);
+    }
+    // Names that collide on this file system (case / Unicode normalisation).
+    let probe_dir = if root.is_dir() {
+        root.to_path_buf()
+    } else {
+        root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+    };
+    let mode = if cfg!(target_os = "macos") {
+        FoldMode::CaseAndNormalizationInsensitive
+    } else if on_windows || is_case_insensitive_fs(&probe_dir) {
+        FoldMode::CaseInsensitive
+    } else {
+        FoldMode::Sensitive
+    };
+    let coll = find_collisions(entries.iter().map(|e| (e.p.as_str(), e.t == EntryType::Dir)), mode);
+    if let Some(c) = coll.first() {
+        if !cfg.skip_incompatible {
+            return Err(Error::Unsupported(format!(
+                "these snapshot paths would overwrite each other on this file system: {}. Nothing was changed",
+                c.join(", ")
+            )));
+        }
+        let drop: HashSet<&str> = c.iter().skip(1).map(|s| s.as_str()).collect();
+        entries.retain(|e| {
+            if drop.contains(e.p.as_str()) {
+                skipped.push(PlanIssue {
+                    path: e.p.clone(),
+                    problem: "collides with another path on this file system".into(),
+                });
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    let target_files: HashMap<&str, &Entry> =
+        entries.iter().filter(|e| e.is_file()).map(|e| (e.p.as_str(), *e)).collect();
+    let mut needed_dirs: BTreeSet<String> = BTreeSet::new();
+    for e in &entries {
+        if e.t == EntryType::Dir {
+            needed_dirs.insert(e.p.clone());
+        }
+        for a in ancestors(&e.p) {
+            needed_dirs.insert(a.to_string());
+        }
+    }
+
+    let mut writes: Vec<Entry> = vec![];
+    let mut unchanged = 0u64;
+    let mut bytes_to_write = 0u64;
+    let mut write_ops = vec![];
+    for e in entries.iter().filter(|e| e.is_file()) {
+        let same = local.files.get(&e.p).is_some_and(|lf| {
+            lf.content.hash == e.h.unwrap_or(Hash::ZERO)
+                && lf.content.size == e.s
+                && lf.mixed == e.mx
+                && lf.stat.executable == e.x
+        });
+        if same {
+            unchanged += 1;
+        } else {
+            let existed =
+                root.join(Path::new(&e.p.replace('/', std::path::MAIN_SEPARATOR_STR))).symlink_metadata().is_ok();
+            write_ops.push(JOp::Write { p: e.p.clone(), existed });
+            bytes_to_write += e.s;
+            writes.push((*e).clone());
+        }
+    }
+    let mut delete_paths: Vec<&str> =
+        local.files.keys().map(|s| s.as_str()).filter(|p| !target_files.contains_key(p)).collect();
+    delete_paths.sort_unstable();
+    let delete_set: HashSet<&str> = delete_paths.iter().copied().collect();
+    let mut ops: Vec<JOp> = delete_paths.iter().map(|p| JOp::Delete { p: p.to_string() }).collect();
+
+    // Directories emptied by the deletions (attempted, deepest first) and directories that stand where
+    // a file must go.
+    let mut rm: BTreeSet<String> = BTreeSet::new();
+    for p in &delete_paths {
+        for a in ancestors(p) {
+            if !needed_dirs.contains(a) {
+                rm.insert(a.to_string());
+            }
+        }
+    }
+    // Empty directories that exist locally but are not part of the target any more.
+    for d in &local.empty_dirs {
+        if !needed_dirs.contains(d) && !target_files.contains_key(d.as_str()) {
+            rm.insert(d.clone());
+        }
+    }
+    for e in &writes {
+        let live = root.join(Path::new(&e.p.replace('/', std::path::MAIN_SEPARATOR_STR)));
+        if live.is_dir() {
+            // a directory where the snapshot has a file: allowed only if everything inside is being deleted
+            for ent in walkdir::WalkDir::new(&live).into_iter().flatten().filter(|x| x.file_type().is_file()) {
+                let rel = crate::paths::to_relpath(root, ent.path()).unwrap_or_default();
+                if !delete_set.contains(rel.as_str()) {
+                    return Err(Error::Unsupported(format!(
+                        "{} is a folder on this computer but a file in the snapshot, and it holds local-only content ({}); move it away first. Nothing was changed",
+                        e.p, rel
+                    )));
+                }
+            }
+            rm.insert(e.p.clone());
+            for ent in walkdir::WalkDir::new(&live).into_iter().flatten().filter(|x| x.file_type().is_dir()) {
+                if let Some(rel) = crate::paths::to_relpath(root, ent.path()) {
+                    rm.insert(rel);
+                }
+            }
+        }
+    }
+    let mut rm_sorted: Vec<String> = rm.into_iter().collect();
+    rm_sorted.sort_by_key(|p| std::cmp::Reverse(p.matches('/').count()));
+    ops.extend(rm_sorted.into_iter().map(|p| JOp::RmDir { p }));
+
+    // Directories to create (missing ones only), shallow first.
+    let mut mk: Vec<String> = vec![];
+    for d in &needed_dirs {
+        let live = root.join(Path::new(&d.replace('/', std::path::MAIN_SEPARATOR_STR)));
+        match live.symlink_metadata() {
+            Ok(md) if md.is_dir() => {}
+            Ok(_) if delete_set.contains(d.as_str()) => mk.push(d.clone()), // a file being deleted stands here
+            Ok(_) => {
+                return Err(Error::Unsupported(format!(
+                    "{d} is a local file that is not part of the sync, but the snapshot needs a folder there. Nothing was changed"
+                )));
+            }
+            Err(_) => mk.push(d.clone()),
+        }
+    }
+    mk.sort_by_key(|p| p.matches('/').count());
+    ops.extend(mk.into_iter().map(|p| JOp::MkDir { p }));
+    ops.extend(write_ops);
+
+    Ok(RestorePlan {
+        target: target_id,
+        deleted: delete_paths.len() as u64,
+        ops,
+        writes,
+        unchanged,
+        bytes_to_write,
+        preserved_local_only: local.excluded_present,
+        skipped,
+    })
+}
+
+/// Checks that need the file system but not the cloud. Fails before anything is touched.
+pub fn preflight(plan: &RestorePlan, root: &Path, cfg: &RestoreConfig) -> Result<()> {
+    let mut seen: HashSet<String> = HashSet::new();
+    for op in &plan.ops {
+        let p = op.path();
+        // check each distinct parent chain once
+        let parent = p.rsplit_once('/').map(|x| x.0).unwrap_or("");
+        let probe = if matches!(op, JOp::MkDir { .. } | JOp::RmDir { .. }) { p } else { parent };
+        if !probe.is_empty() && seen.insert(probe.to_string()) {
+            ensure_no_symlink_ancestors(root, probe)?;
+        }
+        if matches!(op, JOp::Write { .. } | JOp::Delete { .. }) {
+            let live = root.join(Path::new(&p.replace('/', std::path::MAIN_SEPARATOR_STR)));
+            if let Ok(md) = live.symlink_metadata()
+                && md.file_type().is_symlink()
+            {
+                return Err(Error::Unsupported(format!(
+                    "{p} is a symbolic link; PackSync never replaces links inside an instance"
+                )));
+            }
+        }
+    }
+    let needed =
+        plan.bytes_to_write.saturating_add(cfg.batch_bytes.min(plan.bytes_to_write)).saturating_add(cfg.space_margin);
+    let have = available_space(root).unwrap_or(u64::MAX);
+    if have < needed {
+        return Err(Error::NoSpace { path: root.to_path_buf(), needed, available: have });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RestoreReport {
+    pub target: Option<SnapshotId>,
+    pub written: u64,
+    pub unchanged: u64,
+    pub deleted: u64,
+    pub bytes_written: u64,
+    pub bytes_downloaded: u64,
+    pub recovery_point: Option<String>,
+    pub skipped: Vec<PlanIssue>,
+}
+
+fn lp(p: &Path) -> PathBuf {
+    long_path(p)
+}
+
+fn local_path(root: &Path, rel: &str) -> PathBuf {
+    live_path(root, rel)
+}
+
+/// Gather blobs for one batch of entries into `blob_dir` (recipes first, then chunks).
+fn fetch_batch(
+    env: &RestoreEnv<'_>,
+    entries: &[&Entry],
+    blob_dir: &Path,
+    ctx: &OpCtx,
+) -> Result<(HashMap<Hash, Recipe>, u64)> {
+    let rec_hashes: Vec<Hash> = entries.iter().filter_map(|e| e.r).collect();
+    let mut downloaded = 0;
+    if !rec_hashes.is_empty() {
+        downloaded += env.remote.fetch_blobs(&rec_hashes, blob_dir, env.cfg.concurrency, ctx)?.fetched_bytes;
+    }
+    let mut recipes = HashMap::new();
+    let mut data: Vec<Hash> = vec![];
+    for e in entries {
+        match e.r {
+            Some(r) => {
+                let bytes = fs::read(blob_dir.join(r.to_hex())).io_ctx(|| format!("reading recipe for {}", e.p))?;
+                let rec = Recipe::decode(&bytes, e.s)?;
+                data.extend(rec.chunks.iter().map(|c| c.0));
+                recipes.insert(r, rec);
+            }
+            None if e.s > 0 => {
+                data.push(e.h.ok_or_else(|| Error::invalid("snapshot", format!("{} has no content hash", e.p)))?)
+            }
+            None => {}
+        }
+    }
+    downloaded += env.remote.fetch_blobs(&data, blob_dir, env.cfg.concurrency, ctx)?.fetched_bytes;
+    Ok((recipes, downloaded))
+}
+
+/// Build the file for `e` at `out` from the blob store and verify its whole-content hash.
+/// Returns the final on-disk size.
+fn assemble(
+    e: &Entry,
+    recipe: Option<&Recipe>,
+    blob_dir: &Path,
+    out: &Path,
+    policy: Option<&MixedPolicy>,
+    local_current: Option<Vec<u8>>,
+) -> Result<u64> {
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(lp(parent)).io_ctx(|| format!("creating {}", parent.display()))?;
+    }
+    let want = e.h.ok_or_else(|| Error::invalid("snapshot", format!("{} has no content hash", e.p)))?;
+    let part = out.with_file_name(format!(".{}.part", uuid::Uuid::new_v4().simple()));
+    let result = (|| -> Result<u64> {
+        let mut hasher = Hasher::new();
+        let mut size = 0u64;
+        // The portable content of the file, for mixed files held in memory.
+        let mut mixed_buf: Option<Vec<u8>> = policy.map(|_| Vec::new());
+        let mut file = if mixed_buf.is_none() {
+            Some(fs::File::create(lp(&part)).io_ctx(|| format!("creating {}", part.display()))?)
+        } else {
+            None
+        };
+        let mut emit = |bytes: &[u8]| -> Result<()> {
+            hasher.update(bytes);
+            size += bytes.len() as u64;
+            if let Some(b) = mixed_buf.as_mut() {
+                b.extend_from_slice(bytes);
+                if b.len() as u64 > crate::scan::MAX_MIXED_FILE {
+                    return Err(Error::invalid("mixed settings file", format!("{} is too large", e.p)));
+                }
+            } else if let Some(f) = file.as_mut() {
+                f.write_all(bytes).io_ctx(|| format!("writing {}", part.display()))?;
+            }
+            Ok(())
+        };
+        if e.s > 0 {
+            match recipe {
+                Some(r) => {
+                    for (h, len) in &r.chunks {
+                        let b = fs::read(blob_dir.join(h.to_hex()))
+                            .io_ctx(|| format!("reading staged blob {}", h.short()))?;
+                        if b.len() != *len as usize || Hash::of(&b) != *h {
+                            return Err(Error::Corrupt(format!("blob {} of {} failed verification", h.short(), e.p)));
+                        }
+                        emit(&b)?;
+                    }
+                }
+                None => {
+                    let b = fs::read(blob_dir.join(want.to_hex()))
+                        .io_ctx(|| format!("reading staged blob {}", want.short()))?;
+                    emit(&b)?;
+                }
+            }
+        }
+        if size != e.s || hasher.finalize() != want {
+            return Err(Error::Corrupt(format!(
+                "{} does not match the snapshot's recorded content (hash/size mismatch)",
+                e.p
+            )));
+        }
+        if let (Some(pol), Some(projection)) = (policy, mixed_buf.take()) {
+            let merged = mixed::merge(pol, &projection, local_current.as_deref())?;
+            fs::write(lp(&part), &merged).io_ctx(|| format!("writing {}", part.display()))?;
+            size = merged.len() as u64;
+        } else if let Some(f) = file.take() {
+            f.sync_all().io_ctx(|| format!("syncing {}", part.display()))?;
+        }
+        Ok(size)
+    })();
+    match result {
+        Ok(size) => {
+            fs::rename(lp(&part), lp(out)).io_ctx(|| format!("finishing {}", out.display()))?;
+            Ok(size)
+        }
+        Err(e) => {
+            let _ = fs::remove_file(lp(&part));
+            Err(e)
+        }
+    }
+}
+
+fn apply_metadata(path: &Path, e: &Entry) {
+    if e.m != 0 {
+        let _ = set_mtime_ms(path, e.m);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(md) = fs::metadata(path) {
+            let mut mode = md.permissions().mode();
+            let want = if e.x { mode | 0o111 } else { mode & !0o111 };
+            if want != mode {
+                mode = want;
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+            }
+        }
+    }
+}
+
+/// Download, verify and stage every file in `plan.writes` under `stage_dir`.
+fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<u64> {
+    let blob_dir = txd.join("blobs");
+    let mut downloaded = 0;
+    let total = plan.bytes_to_write;
+    let mut done_bytes = 0u64;
+    let mut done_files = 0u64;
+    let mut i = 0;
+    while i < plan.writes.len() {
+        ctx.check()?;
+        // one batch
+        let mut batch: Vec<&Entry> = vec![];
+        let mut bytes = 0u64;
+        while i < plan.writes.len() && (batch.is_empty() || bytes + plan.writes[i].s <= env.cfg.batch_bytes) {
+            bytes += plan.writes[i].s;
+            batch.push(&plan.writes[i]);
+            i += 1;
+        }
+        ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
+        let (recipes, d) = fetch_batch(env, &batch, &blob_dir, ctx)?;
+        downloaded += d;
+        crate::failpoint!("restore.after_fetch_batch")?;
+        for e in batch {
+            ctx.check()?;
+            let out = stage_path(txd, &e.p);
+            let policy =
+                e.mx.as_ref()
+                    .map(|id| {
+                        env.policies
+                            .get(id)
+                            .ok_or_else(|| Error::Config(format!("snapshot uses unknown mixed-file policy {id:?}")))
+                    })
+                    .transpose()?;
+            let local_current = if policy.is_some() {
+                fs::read(lp(&local_path(root, &e.p))).ok().filter(|b| b.len() as u64 <= crate::scan::MAX_MIXED_FILE)
+            } else {
+                None
+            };
+            assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, local_current)?;
+            apply_metadata(&out, e);
+            done_bytes += e.s;
+            done_files += 1;
+            ctx.progress(
+                Phase::Validate,
+                (done_files, plan.writes.len() as u64),
+                (done_bytes, total),
+                format!("verified {}", e.p),
+            );
+        }
+        let _ = fs::remove_dir_all(lp(&blob_dir));
+    }
+    Ok(downloaded)
+}
+
+fn new_tx_dir(root: &Path, tx: TxId) -> Result<PathBuf> {
+    let d = tx_dir(root, tx);
+    fs::create_dir_all(lp(&d)).io_ctx(|| format!("creating {}", d.display()))?;
+    Ok(d)
+}
+
+/// Apply the plan to the live tree under the journal. On error (other than a simulated crash) the
+/// operations that ran are rolled back.
+fn apply(
+    root: &Path,
+    txd: &Path,
+    journal: &mut Journal,
+    plan: &RestorePlan,
+    cfg: &RestoreConfig,
+    ctx: &OpCtx,
+) -> Result<()> {
+    let n = plan.ops.len();
+    let mut done = 0;
+    let result: Result<()> = (|| {
+        while done < n {
+            ctx.check()?;
+            let upto = (done + cfg.apply_batch.max(1)).min(n);
+            journal.append(&Rec::BatchBegin { upto }, true)?;
+            crate::failpoint!("restore.after_batch_begin")?;
+            for (k, op) in plan.ops[done..upto].iter().enumerate() {
+                run_op(root, txd, op)?;
+                if k % 8 == 7 {
+                    ctx.progress(
+                        Phase::Apply,
+                        ((done + k + 1) as u64, n as u64),
+                        (0, 0),
+                        format!("applying {}", op.path()),
+                    );
+                }
+                crate::failpoint!("restore.mid_batch")?;
+            }
+            journal.append(&Rec::BatchDone { upto }, true)?;
+            crate::failpoint!("restore.after_batch_done")?;
+            done = upto;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        if crate::failpoint::is_crash(&e) {
+            return Err(e);
+        }
+        // roll back everything that may have started
+        let begun = n.min(done + cfg.apply_batch.max(1));
+        if let Err(re) = rollback_ops(root, txd, &plan.ops, begun) {
+            return Err(Error::Corrupt(format!(
+                "restore failed ({e}) and rollback also failed ({re}); recovery will retry on next start"
+            )));
+        }
+        return Err(e);
+    }
+    Ok(())
+}
+
+fn run_op(root: &Path, txd: &Path, op: &JOp) -> Result<()> {
+    let live = local_path(root, op.path());
+    match op {
+        JOp::Delete { p } => {
+            let trash = trash_path(txd, p);
+            if let Some(d) = trash.parent() {
+                fs::create_dir_all(lp(d)).io_ctx(|| "creating trash".into())?;
+            }
+            match fs::rename(lp(&live), lp(&trash)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
+                Err(e) => return Err(map_rename_err(e, &live)),
+            }
+        }
+        JOp::RmDir { .. } => {
+            let _ = fs::remove_dir(lp(&live)); // fails (and is skipped) when something is still inside
+        }
+        JOp::MkDir { .. } => match fs::create_dir(lp(&live)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && live.is_dir() => {}
+            Err(e) => return Err(Error::io(format!("creating {}", live.display()), e)),
+        },
+        JOp::Write { p, existed } => {
+            if *existed && fs::symlink_metadata(lp(&live)).is_ok() {
+                let trash = trash_path(txd, p);
+                if let Some(d) = trash.parent() {
+                    fs::create_dir_all(lp(d)).io_ctx(|| "creating trash".into())?;
+                }
+                fs::rename(lp(&live), lp(&trash)).map_err(|e| map_rename_err(e, &live))?;
+                crate::failpoint!("restore.after_trash")?;
+            }
+            let stage = stage_path(txd, p);
+            if let Some(d) = live.parent() {
+                fs::create_dir_all(lp(d)).io_ctx(|| format!("creating {}", d.display()))?;
+            }
+            fs::rename(lp(&stage), lp(&live)).map_err(|e| map_rename_err(e, &live))?;
+            crate::failpoint!("restore.after_place")?;
+        }
+    }
+    Ok(())
+}
+
+fn map_rename_err(e: std::io::Error, path: &Path) -> Error {
+    // Windows: sharing violation (32) / lock violation (33): another process has the file open.
+    if matches!(e.raw_os_error(), Some(32) | Some(33)) || e.kind() == std::io::ErrorKind::PermissionDenied {
+        return Error::GameRunning(format!("{} is in use by another program ({e})", path.display()));
+    }
+    if e.raw_os_error() == Some(18) {
+        return Error::Unsupported(format!(
+            "{} is on a different file system than the instance folder; PackSync cannot replace it atomically",
+            path.display()
+        ));
+    }
+    Error::io(format!("replacing {}", path.display()), e)
+}
+
+/// What to restore and why.
+#[derive(Clone, Copy)]
+pub struct RestoreRequest<'a> {
+    pub target: &'a Manifest,
+    pub target_id: SnapshotId,
+    /// The snapshot the live tree currently corresponds to (recorded in the recovery point).
+    pub base: Option<SnapshotId>,
+    pub reason: &'a str,
+}
+
+/// Restore `target` over an existing instance. The caller holds the instance lock and has verified
+/// that no game is running.
+pub fn restore_in_place(
+    env: &RestoreEnv<'_>,
+    inst: &InstanceRow,
+    req: &RestoreRequest<'_>,
+    local: &LocalState,
+    ctx: &OpCtx,
+) -> Result<RestoreReport> {
+    let RestoreRequest { target, target_id, base, reason } = *req;
+    let root = inst.root.as_path();
+    ctx.phase(Phase::Validate, "planning restore");
+    let plan = plan(target, target_id, local, root, env.cfg)?;
+    preflight(&plan, root, env.cfg)?;
+    crate::failpoint!("restore.after_plan")?;
+    let mut report = RestoreReport {
+        target: Some(target_id),
+        unchanged: plan.unchanged,
+        deleted: plan.deleted,
+        skipped: plan.skipped.clone(),
+        ..Default::default()
+    };
+    if plan.is_noop() {
+        finish_in_place(env.db, inst, target, target_id, local, &plan, &HashMap::new())?;
+        return Ok(report);
+    }
+
+    let tx = TxId::new();
+    let txd = new_tx_dir(root, tx)?;
+    let mut journal = Journal::create(&txd.join("journal.jsonl"))?;
+    journal.append(&Rec::Begin { tx, target: target_id, base, instance: inst.id, created: now_rfc3339() }, true)?;
+    journal.append(&Rec::Ops { ops: plan.ops.clone() }, true)?;
+    env.db.instance_update(inst.id, |r| {
+        r.state = InstanceState::Restoring;
+        r.state_detail = Some(format!("restoring snapshot {}", target_id.short()));
+    })?;
+
+    let cleanup = |txd: &Path, e: &Error| {
+        if !crate::failpoint::is_crash(e) {
+            let _ = fs::remove_dir_all(lp(txd));
+            let _ = env.db.instance_update(inst.id, |r| {
+                r.state = InstanceState::Ok;
+                r.state_detail = None;
+            });
+        }
+    };
+
+    let downloaded = match stage_all(env, &plan, root, &txd, ctx) {
+        Ok(d) => d,
+        Err(e) => {
+            cleanup(&txd, &e);
+            return Err(e);
+        }
+    };
+    report.bytes_downloaded = downloaded;
+    if let Err(e) = journal.append(&Rec::Staged, true).and_then(|_| crate::failpoint!("restore.after_staged")) {
+        cleanup(&txd, &e);
+        return Err(e);
+    }
+    ctx.phase(Phase::Apply, format!("applying {} changes", plan.ops.len()));
+    if let Err(e) = apply(root, &txd, &mut journal, &plan, env.cfg, ctx) {
+        if !crate::failpoint::is_crash(&e) {
+            let _ = journal.append(&Rec::RolledBack, true);
+        }
+        cleanup(&txd, &e);
+        return Err(e);
+    }
+    journal.append(&Rec::Applied, true)?;
+    crate::failpoint!("restore.after_applied")?;
+
+    // bookkeeping, then the commit record, then move the trash to the recovery area
+    finish_in_place(env.db, inst, target, target_id, local, &plan, &HashMap::new())?;
+    crate::failpoint!("restore.after_db_update")?;
+    journal.append(&Rec::Committed, true)?;
+    let bytes_replaced = plan.bytes_to_write;
+    finalize_tx(
+        root,
+        tx,
+        &RecoveryNote {
+            tx,
+            created: now_rfc3339(),
+            from: base,
+            to: target_id,
+            files: (plan.writes.len() as u64) + plan.deleted,
+            bytes: bytes_replaced,
+            reason: reason.to_string(),
+        },
+    )?;
+    let _ = prune_recovery(root, env.cfg.keep_recovery_days);
+    report.written = plan.writes.len() as u64;
+    report.bytes_written = plan.bytes_to_write;
+    report.recovery_point = Some(tx.to_string());
+    ctx.note(
+        Phase::Apply,
+        Level::Info,
+        format!(
+            "restored snapshot {} ({} files written, {} removed)",
+            target_id.short(),
+            report.written,
+            report.deleted
+        ),
+    );
+    Ok(report)
+}
+
+/// Database bookkeeping after a successful apply: new base, a file index that reflects what we just
+/// wrote (fresh stats; hashes known from the manifest), instance state back to `ok`.
+pub fn finish_in_place(
+    db: &Arc<Db>,
+    inst: &InstanceRow,
+    target: &Manifest,
+    target_id: SnapshotId,
+    local: &LocalState,
+    plan: &RestorePlan,
+    _extra: &HashMap<String, String>,
+) -> Result<()> {
+    let root = inst.root.as_path();
+    let written: HashSet<&str> = plan.writes.iter().map(|e| e.p.as_str()).collect();
+    let target_files: HashSet<&str> = target.entries.iter().filter(|e| e.is_file()).map(|e| e.p.as_str()).collect();
+    let now = crate::scan::now_ns();
+    let mut rows: Vec<IndexRow> = vec![];
+    for e in target.entries.iter().filter(|e| e.is_file()) {
+        if written.contains(e.p.as_str()) {
+            let abs = local_path(root, &e.p);
+            if let Ok(st) = stat_nofollow(&abs)
+                && st.kind == FileKind::File
+            {
+                rows.push(IndexRow {
+                    path: e.p.clone(),
+                    size: st.size,
+                    mtime_ns: st.mtime_ns,
+                    ctime_ns: st.ctime_ns,
+                    file_id: st.file_id,
+                    hash: e.h.unwrap_or(Hash::ZERO),
+                    recipe: e.r,
+                    mixed: e.mx.clone(),
+                    content_size: e.s,
+                    hashed_at_ns: now,
+                    verified_at_ns: now,
+                });
+            }
+        } else if let Some(r) = local.rows.get(&e.p) {
+            rows.push(r.clone());
+        }
+    }
+    let _ = target_files;
+    db.index_replace(inst.id, &rows)?;
+    db.instance_update(inst.id, |r| {
+        r.base_snapshot = Some(target_id);
+        r.state = InstanceState::Ok;
+        r.state_detail = None;
+        r.needs_full_scan = false;
+        r.last_scan_ms = Some(crate::db::now_ms());
+    })?;
+    Ok(())
+}
+
+/// Finish a transaction that had applied everything before a crash.
+pub fn roll_forward(
+    db: &Arc<Db>,
+    inst: &InstanceRow,
+    target: &Manifest,
+    target_id: SnapshotId,
+    tx: TxId,
+) -> Result<()> {
+    // The files on disk equal the target by construction; re-derive the index lazily with a full scan.
+    db.index_clear(inst.id)?;
+    db.instance_update(inst.id, |r| {
+        r.base_snapshot = Some(target_id);
+        r.state = InstanceState::Ok;
+        r.state_detail = None;
+        r.needs_full_scan = true;
+    })?;
+    let txd = tx_dir(&inst.root, tx);
+    let note = RecoveryNote {
+        tx,
+        created: now_rfc3339(),
+        from: inst.base_snapshot,
+        to: target_id,
+        files: 0,
+        bytes: 0,
+        reason: "completed after an interruption".into(),
+    };
+    let _ = target;
+    finalize_tx(&inst.root, tx, &note)?;
+    let _ = fs::remove_dir_all(lp(&txd));
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------------------------
+// New-directory restore (second computer / "restore as a new instance")
+// -----------------------------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestoreMarker {
+    pub tx: TxId,
+    pub instance: InstanceId,
+    pub target: SnapshotId,
+    pub created: String,
+}
+
+pub fn restore_marker_path(dir: &Path) -> PathBuf {
+    dir.join(crate::brand::LOCAL_MARKER_DIR).join("restore.json")
+}
+
+/// Is `dir` a half-finished restore we created (and may therefore delete)?
+pub fn is_our_restore_dir(dir: &Path) -> bool {
+    fs::read(restore_marker_path(dir)).ok().and_then(|b| serde_json::from_slice::<RestoreMarker>(&b).ok()).is_some()
+}
+
+/// Materialise `target` into the new, non-existing directory `dir` (a hidden staging folder the
+/// launcher ignores). On failure or cancellation the directory is removed again; the caller then
+/// registers/renames it.
+pub fn restore_new(
+    env: &RestoreEnv<'_>,
+    dir: &Path,
+    instance: InstanceId,
+    target: &Manifest,
+    target_id: SnapshotId,
+    ctx: &OpCtx,
+) -> Result<RestoreReport> {
+    if dir.exists() {
+        return Err(Error::Invalid { what: "restore location", detail: format!("{} already exists", dir.display()) });
+    }
+    // Pre-flight with an empty local state: same checks as an in-place restore.
+    let empty = LocalState::default();
+    let parent = dir.parent().unwrap_or(Path::new("."));
+    let plan = plan(target, target_id, &empty, dir, env.cfg)?;
+    let needed = plan.bytes_to_write + env.cfg.batch_bytes.min(plan.bytes_to_write) + env.cfg.space_margin;
+    let have = available_space(parent).unwrap_or(u64::MAX);
+    if have < needed {
+        return Err(Error::NoSpace { path: parent.to_path_buf(), needed, available: have });
+    }
+    let tx = TxId::new();
+    fs::create_dir_all(lp(dir)).io_ctx(|| format!("creating {}", dir.display()))?;
+    let marker = RestoreMarker { tx, instance, target: target_id, created: now_rfc3339() };
+    crate::fsutil::write_atomic(&restore_marker_path(dir), &serde_json::to_vec(&marker)?)
+        .io_ctx(|| "writing restore marker".into())?;
+    let pending_key = "pending_restores";
+    let mut pend: Vec<String> =
+        env.db.meta_get(pending_key)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    pend.push(dir.to_string_lossy().into_owned());
+    env.db.meta_set(pending_key, &serde_json::to_string(&pend)?)?;
+    crate::failpoint!("restore_new.after_marker")?;
+
+    let result = (|| -> Result<RestoreReport> {
+        let blob_dir = dir.join(crate::brand::LOCAL_MARKER_DIR).join("tx").join(tx.to_string()).join("blobs");
+        for op in &plan.ops {
+            if let JOp::MkDir { p } = op {
+                fs::create_dir_all(lp(&local_path(dir, p))).io_ctx(|| format!("creating {p}"))?;
+            }
+        }
+        let mut downloaded = 0;
+        let (mut i, total) = (0usize, plan.writes.len());
+        while i < total {
+            ctx.check()?;
+            let mut batch: Vec<&Entry> = vec![];
+            let mut bytes = 0;
+            while i < total && (batch.is_empty() || bytes + plan.writes[i].s <= env.cfg.batch_bytes) {
+                bytes += plan.writes[i].s;
+                batch.push(&plan.writes[i]);
+                i += 1;
+            }
+            ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
+            let (recipes, d) = fetch_batch(env, &batch, &blob_dir, ctx)?;
+            downloaded += d;
+            for e in batch {
+                ctx.check()?;
+                let out = local_path(dir, &e.p);
+                let policy = e
+                    .mx
+                    .as_ref()
+                    .map(|id| {
+                        env.policies.get(id).ok_or_else(|| Error::Config(format!("unknown mixed-file policy {id:?}")))
+                    })
+                    .transpose()?;
+                assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, None)?;
+                apply_metadata(&out, e);
+                crate::failpoint!("restore_new.after_file")?;
+                ctx.progress(Phase::Validate, (i as u64, total as u64), (0, 0), format!("restored {}", e.p));
+            }
+            let _ = fs::remove_dir_all(lp(&blob_dir));
+        }
+        let _ = fs::remove_dir_all(lp(&dir.join(crate::brand::LOCAL_MARKER_DIR).join("tx")));
+        Ok(RestoreReport {
+            target: Some(target_id),
+            written: plan.writes.len() as u64,
+            unchanged: 0,
+            deleted: 0,
+            bytes_written: plan.bytes_to_write,
+            bytes_downloaded: downloaded,
+            recovery_point: None,
+            skipped: plan.skipped.clone(),
+        })
+    })();
+    match result {
+        Ok(r) => {
+            let _ = fs::remove_file(restore_marker_path(dir));
+            forget_pending(env.db, dir);
+            Ok(r)
+        }
+        Err(e) => {
+            if !crate::failpoint::is_crash(&e) {
+                remove_restore_dir(dir);
+                forget_pending(env.db, dir);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Remove a restore directory, but only if it carries our restore marker.
+pub fn remove_restore_dir(dir: &Path) -> bool {
+    if is_our_restore_dir(dir) { fs::remove_dir_all(lp(dir)).is_ok() } else { false }
+}
+
+fn forget_pending(db: &Db, dir: &Path) {
+    let key = "pending_restores";
+    if let Ok(Some(s)) = db.meta_get(key) {
+        let mut v: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
+        v.retain(|p| p != &dir.to_string_lossy());
+        let _ = db.meta_set(key, &serde_json::to_string(&v).unwrap_or_else(|_| "[]".into()));
+    }
+}
+
+/// Startup recovery for half-finished new-directory restores.
+pub fn recover_pending_restores(db: &Db) -> Vec<(PathBuf, bool)> {
+    let key = "pending_restores";
+    let Ok(Some(s)) = db.meta_get(key) else { return vec![] };
+    let v: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
+    let mut out = vec![];
+    for p in v {
+        let path = PathBuf::from(&p);
+        let removed = if path.exists() { remove_restore_dir(&path) } else { true };
+        out.push((path, removed));
+    }
+    let _ = db.meta_set(key, "[]");
+    out
+}
+
+#[allow(dead_code)]
+fn _assert_send_sync() {
+    fn f<T: Send + Sync>() {}
+    f::<RestoreConfig>();
+}
+
+#[allow(unused_imports)]
+use Read as _;

@@ -526,6 +526,76 @@ fn required_packs(
     Ok(v)
 }
 
+/// Arguments for a snapshot that is derived from an existing manifest instead of a scan: merge
+/// commits (conflict resolution), promotions of crash saves, forks and rollback commits. The tree is
+/// the source's tree, so no content has to be staged and nothing is read from the instance.
+pub struct DeriveRequest<'a> {
+    pub source: &'a Manifest,
+    /// Override the instance identity (forking into a separate instance).
+    pub instance: Option<(InstanceId, String)>,
+    pub parents: Vec<SnapshotId>,
+    pub kind: SnapshotKind,
+    pub device: (DeviceId, String),
+    pub note: Option<String>,
+    pub session: Option<SessionSummary>,
+    pub fork_of: Option<crate::manifest::ForkOrigin>,
+}
+
+pub fn create_derived(db: &Db, state_dir: &Path, req: &DeriveRequest<'_>) -> Result<(SnapshotId, Manifest)> {
+    let mut m = req.source.clone();
+    if let Some((id, name)) = &req.instance {
+        m.instance = InstanceRef { id: *id, name: name.clone() };
+    }
+    m.device = DeviceRef { id: req.device.0, name: req.device.1.clone() };
+    m.created = crate::manifest::now_rfc3339();
+    m.parents = req.parents.clone();
+    m.kind = req.kind;
+    m.note = req.note.clone();
+    m.session = req.session.clone();
+    m.fork_of = req.fork_of.clone();
+    m.finalize()?;
+    let (id, stored) = m.encode()?;
+    let dir = snapshot_staging_dir(state_dir, id);
+    fs::create_dir_all(&dir).map_err(|e| Error::io("creating staging directory", e))?;
+    let meta = StagedMeta {
+        snapshot: id,
+        instance: m.instance.id,
+        packs: vec![],
+        reused_packs: vec![],
+        required_packs: vec![],
+    };
+    fs::write(dir.join("staged.json"), serde_json::to_vec(&meta)?)
+        .map_err(|e| Error::io("writing staged metadata", e))?;
+    crate::fsutil::write_atomic(&manifest_path(state_dir, id), &stored)
+        .map_err(|e| Error::io("writing manifest", e))?;
+    let row = SnapshotRow {
+        id,
+        instance_id: m.instance.id,
+        kind: m.kind,
+        parents: m.parents.clone(),
+        parents_known: true,
+        device_id: Some(m.device.id),
+        device_name: Some(m.device.name.clone()),
+        created: Some(m.created.clone()),
+        origin: Origin::Local,
+        state: SnapshotState::LocalComplete,
+        files: m.stats.files,
+        bytes: m.stats.bytes,
+        note: m.note.clone(),
+        session_outcome: m.session.as_ref().and_then(|s| s.outcome),
+        published_ms: None,
+        visible_ms: None,
+        has_manifest: true,
+    };
+    db.commit_local_snapshot(&crate::db::LocalSnapshotCommit {
+        row: &row,
+        staged: &[],
+        index: None,
+        full_scan: false,
+    })?;
+    Ok((id, m))
+}
+
 /// Re-read `index` documents of staged packs from disk (used by the uploader).
 pub fn load_staged_meta(state_dir: &Path, id: SnapshotId) -> Result<StagedMeta> {
     let p = snapshot_staging_dir(state_dir, id).join("staged.json");
