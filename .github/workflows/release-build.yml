@@ -1,0 +1,56 @@
+name: Release build (manual, unsigned, nothing is published)
+
+# Builds installers for each platform and keeps them as artifacts of THIS run only.
+# It never creates a GitHub Release, never uploads anywhere else and never signs anything: code signing and
+# notarisation need certificates that belong to whoever distributes the build (see docs/desktop.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Installers (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Linux: system libraries for the web view"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build the command-line tool and place it as the app's sidecar
+        shell: bash
+        run: |
+          cargo build --release -p packsync-cli
+          triple=$(rustc -vV | sed -n 's/^host: //p')
+          mkdir -p apps/desktop/src-tauri/binaries
+          ext=""; [ "${{ matrix.os }}" = "windows-latest" ] && ext=".exe"
+          cp "target/release/packsync$ext" "apps/desktop/src-tauri/binaries/packsync-$triple$ext"
+      - name: Build the installers
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run tauri build -- --config src-tauri/tauri.bundle.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packsync-${{ matrix.os }}-installers-unsigned
+          path: apps/desktop/src-tauri/target/release/bundle/
+          retention-days: 7

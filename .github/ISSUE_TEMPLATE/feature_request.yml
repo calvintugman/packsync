@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest something PackSync should do.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation first, the solution second.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like PackSync to do?
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Could it put anyone's worlds at risk?
+      description: See the ground rules in CONTRIBUTING.md (no automatic merging, nothing deleted silently, honest status…).
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: I checked the README's "What it does not do" list and `docs/` for this.

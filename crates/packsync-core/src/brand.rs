@@ -1,5 +1,5 @@
 //! Branding constants. Change these (and `apps/desktop/src-tauri/tauri.conf.json`,
-//! `apps/desktop/ui/src/brand.ts`) to rebrand the product. See `docs/rebranding.md`.
+//! `apps/desktop/src/brand.ts`) to rebrand the product. See `docs/rebranding.md`.
 //!
 //! Remote *format* identifiers (see [`FORMAT_NAMESPACE`]) are protocol names, not branding:
 //! they must NOT change when rebranding, or existing cloud data stops being recognised.

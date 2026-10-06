@@ -1,0 +1,54 @@
+# cargo-deny policy: `cargo deny check` (run in CI, see .github/workflows/ci.yml).
+# Applies to the engine, CLI and adapters. The desktop shell (apps/desktop/src-tauri) is checked
+# separately with the same file: `cargo deny --manifest-path apps/desktop/src-tauri/Cargo.toml check`.
+
+[graph]
+# Check what is actually built for the platforms we support, not every platform some crate mentions.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+# An entry needs a reason. Only the desktop shell's Linux GUI stack is affected; the engine and CLI are clean.
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is an unmaintained *build-time* proc macro used by gtk-rs 0.18, which Tauri 2 uses for its Linux window; nothing at run time, and not ours to replace" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Permissive licences (and MPL-2.0, which only asks that changes to *those files* stay open: nothing here is
+# modified). A dual-licensed crate passes when one of its options is on this list.
+allow = [
+    "MIT",
+    "MIT-0",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "Unlicense",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true   # path dependencies between our own (unpublished) crates have no version
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

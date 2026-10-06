@@ -1,0 +1,173 @@
+name: CI
+
+# Nothing here publishes anything: no releases, no uploads outside this workflow run's own artifacts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  rust-lint:
+    name: Rust · format and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --features packsync-cli/failpoints -- -D warnings
+
+  rust-test:
+    name: Rust · tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    # Windows and macOS have never been run by the author (the project was developed on Linux). Until the
+    # first green run, a failure there is information, not a blocker; remove `experimental` when they pass.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, experimental: false }
+          - { os: windows-latest, experimental: true }
+          - { os: macos-latest, experimental: true }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --no-fail-fast
+      - name: Crash tests that kill the real process at every boundary
+        if: matrix.os != 'windows-latest'
+        run: cargo test -p packsync-cli --features failpoints --test killed
+
+  supply-chain:
+    name: Dependencies · licences, advisories, sources
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: ./Cargo.toml
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: ./apps/desktop/src-tauri/Cargo.toml
+
+  ui:
+    name: UI · typecheck, lint, unit tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --omit=dev --audit-level=high
+
+  e2e:
+    name: UI · browser tests against the real engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: cargo build -p packsync-e2e -p packsync-cli
+      - name: Build the UI and install the browser
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Run the browser tests
+        working-directory: apps/desktop
+        env:
+          PACKSYNC_E2E_SKIP_BUILD: "1"
+          CI: "1"
+        run: npm run e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: apps/desktop/playwright-report
+          retention-days: 7
+
+  desktop-build:
+    name: Desktop app · build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    continue-on-error: ${{ matrix.experimental }}   # see rust-test: Windows and macOS have never been run
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, experimental: false }
+          - { os: windows-latest, experimental: true }
+          - { os: macos-latest, experimental: true }
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Linux: system libraries for the web view"
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build the command-line tool
+        run: cargo build --release -p packsync-cli
+      - name: Build the desktop app (binary only; unsigned)
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run tauri build -- --no-bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packsync-${{ matrix.os }}-unsigned-dev-build
+          path: |
+            apps/desktop/src-tauri/target/release/packsync-desktop
+            apps/desktop/src-tauri/target/release/packsync-desktop.exe
+            target/release/packsync
+            target/release/packsync.exe
+          if-no-files-found: ignore
+          retention-days: 7

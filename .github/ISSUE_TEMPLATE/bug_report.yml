@@ -1,0 +1,75 @@
+name: Bug report
+description: Something does not work, or PackSync did something you did not expect.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Data loss or a security problem?** Do not post details here — read `SECURITY.md` first.
+
+        **Remove secrets before posting.** Never paste tokens, OAuth client secrets or `.env` files. `packsync doctor`
+        redacts what it knows about, but read the report before you attach it.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: And what did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Which computers were involved, what you did on each, in order. Was the game running or closed?
+      placeholder: |
+        1. On the desktop, I played and closed the game…
+        2. On the laptop, I pressed Sync now…
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where did it happen?
+      options: [Desktop app, Command line, Launcher hooks (started from Prism), Not sure]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: PackSync version
+      description: Settings → About, or `packsync --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Linux, Windows, macOS, Other]
+    validations:
+      required: true
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: Cloud
+      options: [Google Drive (visible folder), Google Drive (hidden app data), A folder, Not connected]
+    validations:
+      required: true
+  - type: input
+    id: prism
+    attributes:
+      label: Prism Launcher version and how it is installed (AppImage, Flatpak, package…)
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`packsync doctor --online --out report.txt` (redacted)"
+      description: Paste or attach the report after reading it.
+      render: text
+  - type: checkboxes
+    id: safe
+    attributes:
+      label: Before you submit
+      options:
+        - label: I removed tokens, client secrets and other credentials from everything I pasted.
+          required: true
+        - label: I did not paste or attach my real world data or mod files.
+          required: true
