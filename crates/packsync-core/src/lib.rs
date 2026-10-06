@@ -19,6 +19,7 @@ pub mod storage;
 pub mod storage_fault;
 pub mod storage_local;
 pub mod storage_meter;
+pub mod worlds;
 
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;

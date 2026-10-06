@@ -47,6 +47,7 @@ fastrand.workspace = true
 dunce.workspace = true
 hex.workspace = true
 md-5.workspace = true
+flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
