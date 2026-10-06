@@ -213,6 +213,14 @@ pub struct VerifyArgs {
     /// Snapshot to check in the cloud (default: this computer's base).
     #[arg(long)]
     pub snapshot: Option<String>,
+    /// With --remote: upload again, from this computer's files, any data the cloud is missing (for this
+    /// snapshot and for versions not uploaded yet). Never changes the instance's files or its history.
+    #[arg(long, requires = "remote")]
+    pub repair: bool,
+    /// With --repair: if this computer no longer has some of that data either, drop the versions that only
+    /// exist here and can never be uploaded (the files are not touched; `packsync sync` then saves them).
+    #[arg(long, requires = "repair")]
+    pub discard_unrepairable: bool,
 }
 
 #[derive(Args, Debug)]

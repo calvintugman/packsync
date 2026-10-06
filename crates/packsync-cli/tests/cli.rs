@@ -226,3 +226,38 @@ fn cleanup_shows_a_plan_first_and_only_runs_exactly_that_plan() {
     // the instance still verifies against the cloud
     assert_eq!(a.ok(&["verify", &id, "--remote", "--deep"])["remote"]["damaged_blobs"].as_array().unwrap().len(), 0);
 }
+
+#[test]
+fn verify_finds_data_missing_from_the_cloud_and_repair_uploads_it_again() {
+    let w = World::new();
+    let a = w.dev("desktop");
+    let (id, _root) = a.enabled_instance("Pack One");
+    let v = a.ok(&["verify", &id, "--remote", "--repair"]);
+    assert_eq!(v["repair"]["files_missing"], 0, "{v}");
+
+    // the biggest data pack disappears from the cloud folder (removed outside PackSync)
+    let mut packs: Vec<_> = std::fs::read_dir(w.cloud.join("packs"))
+        .unwrap()
+        .flatten()
+        .map(|e| (e.metadata().unwrap().len(), e.path()))
+        .collect();
+    packs.sort();
+    std::fs::remove_file(&packs.last().unwrap().1).unwrap();
+
+    let r = a.run(&["--json", "verify", &id, "--remote"]);
+    assert_eq!((r.code, r.error_code()), (16, "corrupt_remote".to_string()), "{}", r.stdout);
+    // one JSON document: the error, and the report that explains it
+    assert!(!r.json()["result"]["remote"]["missing_packs"].as_array().unwrap().is_empty(), "{}", r.stdout);
+    let v = a.ok(&["verify", &id, "--remote", "--repair"]);
+    assert!(v["repair"]["files_missing"].as_u64().unwrap() > 0, "{v}");
+    assert_eq!(v["repair"]["unrepairable"].as_array().unwrap().len(), 0, "{v}");
+    assert_eq!(
+        v["remote"]["missing_packs"].as_array().unwrap().len()
+            + v["remote"]["unlisted_blobs"].as_array().unwrap().len(),
+        0,
+        "{v}"
+    );
+    // another computer can restore it again
+    let b = w.dev("laptop");
+    b.ok(&["restore-new"]);
+}

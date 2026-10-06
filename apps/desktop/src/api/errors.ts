@@ -62,6 +62,7 @@ const TITLES: Record<string, string> = {
   instance_unavailable: "The instance folder isn't available",
   safety_guard: "PackSync stopped to protect your files",
   corrupt_remote: "Cloud data is damaged or incomplete",
+  cloud_data_missing: "Some cloud data is missing",
   cancelled: "Cancelled",
   config: "A setting needs attention",
   not_found: "Not found",

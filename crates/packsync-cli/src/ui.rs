@@ -12,6 +12,22 @@ use serde::Serialize;
 
 static CANCEL: OnceLock<CancelToken> = OnceLock::new();
 
+/// In `--json` mode the result is printed when the command ends, so that a command that fails after
+/// producing a report prints ONE document: `{"ok":false,"error":…,"result":…}` (see `main`).
+static PENDING: Mutex<Option<serde_json::Value>> = parking_lot::const_mutex(None);
+
+/// The result a `--json` command produced and that has not been printed yet.
+pub fn take_pending_result() -> Option<serde_json::Value> {
+    PENDING.lock().take()
+}
+
+pub fn print_json(doc: &serde_json::Value) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = serde_json::to_writer_pretty(&mut stdout, doc);
+    let _ = writeln!(stdout);
+    let _ = stdout.flush();
+}
+
 /// Ctrl-C asks the running operation to stop at its next safe point; a second Ctrl-C ends the process
 /// (every operation is built to survive that: see docs/consistency.md).
 pub fn cancel_token() -> CancelToken {
@@ -40,20 +56,23 @@ pub struct Out {
 }
 
 impl Out {
-    /// Print a result: JSON document (`{"ok":true,"result":..}`) or the human rendering.
+    /// Print a result: the human rendering now, or (`--json`) the document `{"ok":true,"result":..}` when
+    /// the command ends — or, if it then fails, together with the error in one document.
     pub fn emit<T: Serialize>(
         &self,
         value: &T,
         human: impl FnOnce(&mut dyn Write) -> std::io::Result<()>,
     ) -> Result<()> {
+        if self.json {
+            let v = serde_json::to_value(value)?;
+            // a command that reports more than once: earlier results are printed as they come
+            if let Some(prev) = PENDING.lock().replace(v) {
+                print_json(&serde_json::json!({ "ok": true, "result": prev }));
+            }
+            return Ok(());
+        }
         let mut stdout = std::io::stdout().lock();
-        let r = if self.json {
-            let doc = serde_json::json!({ "ok": true, "result": value });
-            serde_json::to_writer_pretty(&mut stdout, &doc).map_err(std::io::Error::from).and_then(|_| writeln!(stdout))
-        } else {
-            human(&mut stdout)
-        };
-        r.map_err(|e| Error::io("writing output", e))
+        human(&mut stdout).map_err(|e| Error::io("writing output", e))
     }
 
     /// A line for the person watching (stderr), unless `--quiet`.

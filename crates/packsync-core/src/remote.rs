@@ -192,18 +192,34 @@ pub struct IndexSyncStats {
     pub blobs_added: u64,
     /// Indexes that mention packs the listing does not show (yet): retried next time.
     pub indexes_deferred: usize,
+    /// Packs the local cache knew that are no longer in the cloud (forgotten now).
+    pub packs_vanished: usize,
+    /// Cached packs this listing did not show but that were seen too recently to be declared gone (the
+    /// listing may lag). A publisher checks these with a direct (strongly consistent) lookup.
+    pub unlisted_recent: Vec<Hash>,
 }
+
+/// How long a pack must have been absent from listings before the cache forgets it. Listings can lag
+/// behind uploads (Google Drive is eventually consistent), so a pack this computer uploaded or saw
+/// recently is never declared gone because one listing did not show it.
+pub const PACK_VANISH_GRACE_MS: i64 = 15 * 60 * 1000;
 
 pub struct Remote {
     pub storage: Arc<dyn Storage>,
     pub db: Arc<Db>,
     pub sleeper: Arc<dyn Sleeper>,
     pub retry: RetryPolicy,
+    pub vanish_grace_ms: i64,
 }
 
 impl Remote {
     pub fn new(storage: Arc<dyn Storage>, db: Arc<Db>, sleeper: Arc<dyn Sleeper>) -> Remote {
-        Remote { storage, db, sleeper, retry: RetryPolicy::quick() }
+        Remote { storage, db, sleeper, retry: RetryPolicy::quick(), vanish_grace_ms: PACK_VANISH_GRACE_MS }
+    }
+
+    pub fn with_vanish_grace(mut self, ms: i64) -> Remote {
+        self.vanish_grace_ms = ms;
+        self
     }
 
     fn call<T>(&self, ctx: &OpCtx, what: &str, f: impl FnMut(u32) -> StorageResult<T>) -> Result<T> {
@@ -404,6 +420,34 @@ impl Remote {
         for (id, info) in &packs {
             self.db.pack_put(*id, info.size, info.provider_ref.as_deref(), info.created_ms)?;
         }
+        // Packs the cache relies on that the cloud no longer has (a cleanup on another computer, files
+        // removed from Drive): forget them, so nothing new deduplicates against them, and have every
+        // instance re-read its files and check its next publication in full.
+        let cutoff = crate::db::now_ms() - self.vanish_grace_ms;
+        for (id, seen_ms) in self.db.packs_seen()? {
+            if packs.contains_key(&id) {
+                continue;
+            }
+            if seen_ms <= cutoff {
+                self.db.blobs_forget_pack(id)?;
+                stats.packs_vanished += 1;
+            } else {
+                stats.unlisted_recent.push(id);
+            }
+        }
+        if stats.packs_vanished > 0 {
+            self.db.mark_cloud_data_lost()?;
+            self.db.event(
+                None,
+                "warn",
+                "cloud_data_lost",
+                &format!(
+                    "{} data pack(s) this computer knew about are no longer in the cloud (a cleanup on another computer?); \
+                     the next save re-reads every file and re-uploads what is missing",
+                    stats.packs_vanished
+                ),
+            );
+        }
         let mut superseded: HashSet<Hash> = HashSet::new();
         let ids = self.list_index_ids(ctx)?;
         for id in ids {
@@ -446,6 +490,22 @@ impl Remote {
         Ok(stats)
     }
 
+    /// Look up, directly, the cached packs a listing did not show ([`IndexSyncStats::unlisted_recent`]) and
+    /// forget those that are really gone. Returns how many were gone.
+    pub fn confirm_unlisted(&self, stats: &IndexSyncStats, ctx: &OpCtx) -> Result<usize> {
+        let mut gone = 0;
+        for p in &stats.unlisted_recent {
+            if self.stat_pack(*p, ctx)?.is_none() {
+                self.db.blobs_forget_pack(*p)?;
+                gone += 1;
+            }
+        }
+        if gone > 0 {
+            self.db.mark_cloud_data_lost()?;
+        }
+        Ok(gone)
+    }
+
     /// Record that this computer wrote index `id` itself: every pack it lists was just uploaded (or found
     /// present with the right size) and its blobs are already in the local cache through
     /// [`Self::note_uploaded_pack`], so the next `sync_index_cache` must not download it again. Only call
@@ -486,6 +546,7 @@ impl Remote {
     fn missing_pack_is_corruption(&self, pack: Hash, e: Error) -> Error {
         if matches!(e, Error::Storage(StorageError::NotFound(_))) {
             let _ = self.db.blobs_forget_pack(pack);
+            let _ = self.db.mark_cloud_data_lost();
             return Error::Corrupt(format!(
                 "pack {} is missing from the cloud (deleted outside PackSync?)",
                 pack.short()

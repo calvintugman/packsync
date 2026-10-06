@@ -4,7 +4,9 @@
 //! any point is safe and *never* exposes an incomplete snapshot:
 //!
 //! 1. parents must already be in the cloud;
-//! 2. verify packs the snapshot depends on but did not create still exist (cache ≠ authority);
+//! 2. verify packs the snapshot depends on but did not create still exist (cache ≠ authority), and that
+//!    every file of the tree has its data either in this snapshot's packs or in the cloud — in full
+//!    (chunk lists included) for derived snapshots and after cloud data was found missing;
 //! 3. upload the staged packs (skipping ones already stored with the right size);
 //! 4. upload the pack index;
 //! 5. re-verify every pack of the snapshot;
@@ -15,7 +17,7 @@
 //! There is no shared mutable pointer to overwrite, so concurrent publications from the same
 //! parent produce two commits (two heads), never a lost update.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,7 +32,7 @@ use crate::manifest::{Manifest, now_rfc3339};
 use crate::pack::IndexPack;
 use crate::progress::{Level, OpCtx, Phase};
 use crate::remote::{HEAD_FORMAT, HEAD_WINDOW, HeadRecord, RecentCommit, Remote};
-use crate::snapshot::{load_staged_meta, manifest_path, snapshot_staging_dir};
+use crate::snapshot::{LocalBlobs, load_staged_meta, manifest_path, snapshot_staging_dir};
 use crate::storage::StorageError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +52,75 @@ pub struct Uploader<'a> {
     pub state_dir: &'a Path,
     pub device: (DeviceId, String),
     pub concurrency: usize,
+}
+
+/// Files of a snapshot whose data is neither in the snapshot's own packs nor in the cloud.
+#[derive(Debug, Default, Clone)]
+pub struct Gaps {
+    pub paths: BTreeSet<String>,
+    pub blobs: usize,
+}
+
+impl Gaps {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+    pub fn describe(&self) -> String {
+        let first: Vec<&str> = self.paths.iter().take(3).map(String::as_str).collect();
+        format!(
+            "{} file(s) of this version have data that is no longer in the cloud (for example {}{})",
+            self.paths.len(),
+            first.join(", "),
+            if self.paths.len() > first.len() { ", …" } else { "" }
+        )
+    }
+}
+
+/// Which files of `m` have data that is neither in `own` (blobs staged on this computer that are uploaded
+/// with the snapshot or before it) nor known to be in the cloud. With `deep`, every chunked file's chunk
+/// list is read (from `own` or the cloud) and each chunk is checked too; without it only each file's
+/// top-level blob is.
+pub fn completeness_gaps(remote: &Remote, m: &Manifest, own: &LocalBlobs, deep: bool, ctx: &OpCtx) -> Result<Gaps> {
+    let db = &remote.db;
+    let have = |h: Hash| -> Result<bool> { Ok(own.contains(&h) || db.blob_lookup(h)?.is_some()) };
+    let mut g = Gaps::default();
+    for e in m.entries.iter().filter(|e| e.is_file() && e.s > 0) {
+        ctx.check()?;
+        let top = match (e.r, e.h) {
+            (Some(r), _) => r,
+            (None, Some(h)) => h,
+            _ => continue,
+        };
+        if !have(top)? {
+            g.blobs += 1;
+            g.paths.insert(e.p.clone());
+            continue;
+        }
+        let Some(r) = e.r.filter(|_| deep) else { continue };
+        let recipe = match own.read(&r)? {
+            Some(b) => Ok(b),
+            None => remote.read_blob(r, ctx),
+        };
+        match recipe.and_then(|b| crate::manifest::Recipe::decode(&b, e.s)) {
+            Ok(rc) => {
+                for (c, _) in rc.chunks {
+                    if !have(c)? {
+                        g.blobs += 1;
+                        g.paths.insert(e.p.clone());
+                    }
+                }
+            }
+            // the recipe's pack is gone (read_blob forgets it) or the recipe is damaged
+            Err(err)
+                if matches!(err.code(), crate::error::ErrorCode::CorruptRemote | crate::error::ErrorCode::Invalid) =>
+            {
+                g.blobs += 1;
+                g.paths.insert(e.p.clone());
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(g)
 }
 
 /// Persisted retry delay after `attempts` failures: 30 s doubling to one hour, with jitter.
@@ -104,20 +175,30 @@ impl Uploader<'_> {
 
             // ---- 2. dependencies exist ------------------------------------------------------------------
             let meta = load_staged_meta(self.state_dir, id)?;
-            self.remote.sync_index_cache(ctx)?;
+            let sync = self.remote.sync_index_cache(ctx)?;
+            // cached packs the listing did not show may have just been removed: a direct lookup decides
+            let mut lost_dep = self.remote.confirm_unlisted(&sync, ctx)? > 0;
             let deps: HashSet<Hash> = meta.required_packs.iter().chain(meta.reused_packs.iter()).copied().collect();
             for p in deps {
-                match self.remote.stat_pack(p, ctx)? {
-                    Some(_) => {}
-                    None => {
-                        self.db.blobs_forget_pack(p)?;
-                        return Err(Error::Corrupt(format!(
-                            "pack {} that this snapshot relies on is missing from the cloud (deleted outside PackSync?). \
-                             Run `packsync verify --remote --repair` to re-upload the affected data",
-                            p.short()
-                        )));
-                    }
+                if self.remote.stat_pack(p, ctx)?.is_none() {
+                    // gone (a cleanup on another computer, or removed outside PackSync): forget it and let the
+                    // full check below decide whether this version still has all its data somewhere
+                    self.db.blobs_forget_pack(p)?;
+                    self.db.mark_cloud_data_lost()?;
+                    lost_dep = true;
                 }
+            }
+            // The whole tree, not just what changed: unchanged files inherit their data from older versions,
+            // and that data may have been removed since (a cleanup elsewhere while this computer was away).
+            let deep_due = self.db.deep_check_due(inst)?;
+            let deep = meta.derived || lost_dep || deep_due.is_some();
+            let own = LocalBlobs::of_snapshot(self.state_dir, id, &meta.packs);
+            let gaps = completeness_gaps(self.remote, &m, &own, deep, ctx)?;
+            if !gaps.is_empty() {
+                return Err(self.blocked(inst, format!("{}; nothing was published", gaps.describe())));
+            }
+            if let Some(t) = deep_due {
+                self.db.set_deep_checked(inst, t)?;
             }
             crate::failpoint!("upload.before_packs")?;
 
@@ -156,6 +237,7 @@ impl Uploader<'_> {
 
             // ---- 7. record -----------------------------------------------------------------------------------------
             db.snapshot_set_state(inst, id, SnapshotState::Published)?;
+            db.set_publish_blocked(inst, None)?;
             report.state = SnapshotState::Published;
             db.instance_update(inst, |r| {
                 r.last_synced_ms = Some(now_ms());
@@ -196,6 +278,12 @@ impl Uploader<'_> {
         let _ = std::fs::remove_dir_all(dir);
         db.staged_remove_snapshot(id)?;
         Ok(report)
+    }
+
+    /// Remember why publishing is blocked (the status shows it) and build the error.
+    fn blocked(&self, inst: InstanceId, why: String) -> Error {
+        let _ = self.db.set_publish_blocked(inst, Some(&why));
+        Error::CloudDataMissing(why)
     }
 
     fn require_parents_in_cloud(&self, m: &Manifest, inst: InstanceId, ctx: &OpCtx) -> Result<()> {

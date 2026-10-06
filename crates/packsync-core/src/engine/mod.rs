@@ -9,6 +9,7 @@ mod conflict;
 mod gc;
 mod instances;
 mod lifecycle;
+mod repair;
 mod sync;
 mod types;
 
@@ -34,6 +35,7 @@ use crate::rules::RuleSet;
 use crate::snapshot::{SnapshotConfig, manifest_path, manifests_dir};
 use crate::storage::Storage;
 
+pub use repair::{RepairOpts, RepairReport};
 pub use types::*;
 
 #[derive(Debug, Clone)]
@@ -46,6 +48,9 @@ pub struct EngineConfig {
     pub lease_ttl_secs: u32,
     /// Name this computer is known by (persisted in the database). `None` keeps the stored/default name.
     pub device_name: Option<String>,
+    /// How long a cached pack must be missing from listings before it counts as gone
+    /// ([`crate::remote::PACK_VANISH_GRACE_MS`]; tests shorten it).
+    pub pack_vanish_grace_ms: i64,
 }
 
 impl EngineConfig {
@@ -57,6 +62,7 @@ impl EngineConfig {
             upload_concurrency: 4,
             lease_ttl_secs: 120,
             device_name: None,
+            pack_vanish_grace_ms: crate::remote::PACK_VANISH_GRACE_MS,
         }
     }
 }
@@ -157,7 +163,8 @@ impl Engine {
     }
 
     pub(crate) fn remote(&self) -> Result<Remote> {
-        Ok(Remote::new(self.storage()?, self.db.clone(), self.sleeper.clone()))
+        Ok(Remote::new(self.storage()?, self.db.clone(), self.sleeper.clone())
+            .with_vanish_grace(self.cfg.pack_vanish_grace_ms))
     }
 
     // ------------------------------------------------------------------------------- guards

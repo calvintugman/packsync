@@ -374,8 +374,27 @@ impl Engine {
             concurrency: self.cfg.upload_concurrency,
         };
         let mut summary = UploadSummary::default();
+        let mut repaired = false;
         for (i, sid) in order.iter().enumerate() {
-            let rep = up.publish(id, *sid, force, ctx)?;
+            let rep = match up.publish(id, *sid, force, ctx) {
+                // Data this version builds on is no longer in the cloud: upload it again from this computer's
+                // files (once), then try again. Nothing is published with a hole.
+                Err(Error::CloudDataMissing(why)) if !repaired => {
+                    repaired = true;
+                    ctx.note(Phase::Upload, Level::Warn, format!("{why}; uploading the missing data again"));
+                    let r = self.repair_with(&remote, id, None, ctx)?;
+                    if !r.complete() {
+                        return Err(Error::CloudDataMissing(format!(
+                            "{why}. This computer no longer has the data of {} of those file(s) (first: {}), so it cannot \
+                             put it back; the version stays on this computer only",
+                            r.unrepairable.len(),
+                            r.unrepairable[0]
+                        )));
+                    }
+                    up.publish(id, *sid, force, ctx)?
+                }
+                other => other?,
+            };
             summary.bytes_uploaded += rep.bytes_uploaded;
             if let Some(t) = rep.deferred_until_ms {
                 summary.deferred_until_ms = Some(t);

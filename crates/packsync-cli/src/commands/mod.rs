@@ -85,8 +85,12 @@ pub fn run(cli: Cli) -> Result<i32> {
 pub fn report_error(e: &Error, json: bool) -> i32 {
     let view = packsync_app::ErrorView::from(e);
     if json {
-        let doc = serde_json::json!({ "ok": false, "error": view });
-        println!("{}", serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{\"ok\":false}".into()));
+        let mut doc = serde_json::json!({ "ok": false, "error": view });
+        // what the command found before it failed (for example `verify --remote`'s report)
+        if let Some(result) = crate::ui::take_pending_result() {
+            doc["result"] = result;
+        }
+        crate::ui::print_json(&doc);
     } else {
         eprintln!("error: {}", view.message);
         if let Some(a) = &view.advice {

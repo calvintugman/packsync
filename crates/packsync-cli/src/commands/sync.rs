@@ -201,18 +201,28 @@ pub fn verify(cx: &Cx, a: VerifyArgs) -> Result<i32> {
     let id = resolve::instance(&cx.app, &a.instance)?;
     let ctx = cx.out.ctx();
     let local = cx.app.engine().verify_local(id, &ctx)?;
-    let remote = if a.remote {
-        let snap = match &a.snapshot {
-            Some(t) => Some(resolve::snapshot(&cx.app, id, t, true, &ctx)?),
-            None => None,
-        };
-        Some(cx.app.engine().verify_remote(id, snap, a.deep, &ctx)?)
+    let snap = match (&a.snapshot, a.remote) {
+        (Some(t), true) => Some(resolve::snapshot(&cx.app, id, t, true, &ctx)?),
+        _ => None,
+    };
+    let repair = if a.repair {
+        let also = snap.or(cx.app.engine().instance(id)?.base_snapshot);
+        Some(cx.app.engine().repair_cloud_data(
+            id,
+            packsync_core::engine::RepairOpts { also, discard_unrepairable: a.discard_unrepairable },
+            &ctx,
+        )?)
     } else {
         None
     };
+    let remote = if a.remote { Some(cx.app.engine().verify_remote(id, snap, a.deep, &ctx)?) } else { None };
     let local_ok = local.changed.is_empty() && local.missing.is_empty() && local.extra.is_empty();
-    let remote_ok = remote.as_ref().map(|r| r.missing_packs.is_empty() && r.damaged_blobs.is_empty()).unwrap_or(true);
-    cx.out.emit(&serde_json::json!({ "local": local, "remote": remote }), |w| {
+    let remote_ok = remote
+        .as_ref()
+        .map(|r| r.missing_packs.is_empty() && r.damaged_blobs.is_empty() && r.unlisted_blobs.is_empty())
+        .unwrap_or(true);
+    let repaired_ok = repair.as_ref().is_none_or(|r| r.complete() || !r.discarded.is_empty());
+    cx.out.emit(&serde_json::json!({ "local": local, "remote": remote, "repair": repair }), |w| {
         writeln!(
             w,
             "Local: {} files checked; {} changed, {} missing, {} not in the snapshot.",
@@ -238,9 +248,46 @@ pub fn verify(cx: &Cx, a: VerifyArgs) -> Result<i32> {
             for p in r.missing_packs.iter().take(20) {
                 writeln!(w, "  missing pack: {p}")?;
             }
+            if !r.unlisted_blobs.is_empty() {
+                writeln!(w, "  {} object(s) are not described by any index in the cloud", r.unlisted_blobs.len())?;
+            }
+        }
+        if let Some(r) = &repair {
+            if r.files_missing == 0 {
+                writeln!(w, "Repair: nothing was missing.")?;
+            } else {
+                writeln!(
+                    w,
+                    "Repair: {} file(s) had data missing from the cloud; {} object(s) ({}) uploaded again from this computer.",
+                    r.files_missing,
+                    r.blobs_uploaded,
+                    bytes(r.bytes_uploaded)
+                )?;
+            }
+            for p in r.unrepairable.iter().take(20) {
+                writeln!(w, "  not on this computer any more: {p}")?;
+            }
+            if !r.discarded.is_empty() {
+                writeln!(
+                    w,
+                    "  {} version(s) that could never be uploaded were dropped; run `packsync sync` to save the files as they are now.",
+                    r.discarded.len()
+                )?;
+            } else if !r.unrepairable.is_empty() {
+                writeln!(
+                    w,
+                    "  Another computer that still has these files can repair them, or use --discard-unrepairable to drop \
+                     the versions that only exist here."
+                )?;
+            }
         }
         Ok(())
     })?;
+    if !repaired_ok {
+        return Err(Error::CloudDataMissing(
+            "some data is neither in the cloud nor on this computer; see the list above".into(),
+        ));
+    }
     if !remote_ok {
         return Err(Error::Corrupt("the cloud is missing or has damaged data that this snapshot needs".into()));
     }

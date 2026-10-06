@@ -193,6 +193,10 @@ impl Engine {
                 }
             }
         }
+        // a publication refused because data it builds on is missing from the cloud
+        if last_error.is_none() && !unpublished.is_empty() {
+            last_error = self.db.publish_blocked(id)?;
+        }
         let mut phase = if !inst.sync_enabled {
             SyncPhase::NotEnabled
         } else {

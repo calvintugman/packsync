@@ -257,6 +257,58 @@ impl Db {
         })
     }
 
+    pub fn meta_delete(&self, key: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute("DELETE FROM meta WHERE key=?1", [key])?;
+            Ok(())
+        })
+    }
+
+    // ------------------------------------------------------------------ lost cloud data
+    /// Cloud packs this computer knew about have disappeared (a cleanup on another computer, files removed
+    /// from Drive). Every instance re-reads its files at its next snapshot — so data that is gone is offered
+    /// and uploaded again instead of being assumed present — and checks its next publication in full.
+    pub fn mark_cloud_data_lost(&self) -> Result<()> {
+        self.with(|c| {
+            c.execute("UPDATE instances SET needs_full_scan=1", [])?;
+            c.execute(
+                "INSERT INTO meta(key,value) VALUES('cloud_data_lost_ms',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                [now_ms().to_string()],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// When cloud data was last found missing, if ever.
+    pub fn cloud_data_lost_ms(&self) -> Result<Option<i64>> {
+        Ok(self.meta_get("cloud_data_lost_ms")?.and_then(|v| v.parse().ok()))
+    }
+
+    /// Whether `inst`'s next publication must check its whole tree against the cloud (data was lost after
+    /// the last such check). Returns the loss time to record once the check passed.
+    pub fn deep_check_due(&self, inst: InstanceId) -> Result<Option<i64>> {
+        let Some(lost) = self.cloud_data_lost_ms()? else { return Ok(None) };
+        let checked: i64 =
+            self.meta_get(&format!("deep_checked_ms:{inst}"))?.and_then(|v| v.parse().ok()).unwrap_or(i64::MIN);
+        Ok((checked < lost).then_some(lost))
+    }
+
+    pub fn set_deep_checked(&self, inst: InstanceId, lost_ms: i64) -> Result<()> {
+        self.meta_set(&format!("deep_checked_ms:{inst}"), &lost_ms.to_string())
+    }
+
+    /// Why the last publication of `inst` was refused (shown in its status until a publication succeeds).
+    pub fn publish_blocked(&self, inst: InstanceId) -> Result<Option<String>> {
+        self.meta_get(&format!("publish_blocked:{inst}"))
+    }
+    pub fn set_publish_blocked(&self, inst: InstanceId, why: Option<&str>) -> Result<()> {
+        let key = format!("publish_blocked:{inst}");
+        match why {
+            Some(w) => self.meta_set(&key, w),
+            None => self.meta_delete(&key),
+        }
+    }
+
     /// This installation's identity, created on first use.
     pub fn device(&self) -> Result<(DeviceId, String)> {
         if let Some(id) = self.meta_get("device_id")? {
@@ -699,6 +751,17 @@ impl Db {
             c.execute("DELETE FROM remote_blobs WHERE pack=?1", [pack.0.to_vec()])?;
             c.execute("DELETE FROM remote_packs WHERE id=?1", [pack.0.to_vec()])?;
             Ok(())
+        })
+    }
+
+    /// Cached packs with the time a listing last showed them (or this computer uploaded them).
+    pub fn packs_seen(&self) -> Result<Vec<(Hash, i64)>> {
+        self.with(|c| {
+            let mut st = c.prepare("SELECT id,seen_ms FROM remote_packs")?;
+            let rows = st
+                .query_map([], |r| Ok((blob_hash(r.get(0)?)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
         })
     }
 

@@ -32,6 +32,10 @@ pub enum Error {
     Corrupt(String),
     #[error("operation cancelled")]
     Cancelled,
+    /// A snapshot refers to data that is not in the cloud (any more): publishing it would leave a version
+    /// that other computers cannot restore. Nothing was published.
+    #[error("{0}")]
+    CloudDataMissing(String),
     /// Another job holds the instance lock / an equivalent job is already running.
     #[error("busy: {0}")]
     Busy(String),
@@ -81,6 +85,7 @@ pub enum ErrorCode {
     Database,
     Invalid,
     CorruptRemote,
+    CloudDataMissing,
     Cancelled,
     Busy,
     GameRunning,
@@ -113,6 +118,7 @@ impl ErrorCode {
             ErrorCode::Database => "database",
             ErrorCode::Invalid => "invalid",
             ErrorCode::CorruptRemote => "corrupt_remote",
+            ErrorCode::CloudDataMissing => "cloud_data_missing",
             ErrorCode::Cancelled => "cancelled",
             ErrorCode::Busy => "busy",
             ErrorCode::GameRunning => "game_running",
@@ -195,6 +201,7 @@ impl Error {
             Error::Invalid { .. } => ErrorCode::Invalid,
             Error::Corrupt(_) => ErrorCode::CorruptRemote,
             Error::Cancelled => ErrorCode::Cancelled,
+            Error::CloudDataMissing(_) => ErrorCode::CloudDataMissing,
             Error::Busy(_) => ErrorCode::Busy,
             Error::GameRunning(_) => ErrorCode::GameRunning,
             Error::Conflict(_) => ErrorCode::Conflict,
@@ -218,7 +225,7 @@ impl Error {
             Conflict => exit::CONFLICT,
             Busy => exit::BUSY,
             GameRunning => exit::GAME_RUNNING,
-            CorruptRemote => exit::CORRUPT,
+            CorruptRemote | CloudDataMissing => exit::CORRUPT,
             NoSpace => exit::NO_SPACE,
             Cancelled => exit::CANCELLED,
             SafetyGuard | InstanceUnavailable | CrashPending => exit::SAFETY_GUARD,
@@ -250,6 +257,11 @@ impl Error {
             }
             CorruptRemote => {
                 "Some cloud data is missing or damaged. Your instance was not modified. Run `packsync verify --remote` to see what is affected."
+            }
+            CloudDataMissing => {
+                "Data this version builds on is no longer in the cloud (a cleanup on another computer, or files removed from Drive). \
+                 Nothing was published. PackSync re-uploads it from this computer's files when they still match; \
+                 `packsync verify <instance> --remote --repair` does the same on request and says what could not be repaired."
             }
             GameRunning => "Close Minecraft (and any tool using the instance), then try again.",
             Busy => "Another PackSync operation is already working on this instance. Wait for it to finish.",

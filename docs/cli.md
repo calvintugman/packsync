@@ -33,7 +33,7 @@ Instances are named by their **ID** (or a unique prefix of at least 4 characters
 | 13 | Busy — another PackSync operation holds the instance | wait |
 | 14 | A game (or another writer) is using the instance | close it |
 | 15 | Local snapshot saved, cloud copy not published yet | `packsync upload` |
-| 16 | Cloud data missing or damaged | `packsync verify --remote` |
+| 16 | Cloud data missing or damaged (`corrupt_remote`, `cloud_data_missing`) | `packsync verify INSTANCE --remote --repair` |
 | 17 | Not enough disk space | free space |
 | 18 | Cancelled (Ctrl-C) | |
 | 19 | Safety guard (mass deletion, instance unavailable) **or a crash waiting for a decision** | `packsync crash show` |
@@ -71,7 +71,7 @@ Instances are named by their **ID** (or a unique prefix of at least 4 characters
 | `upload INSTANCE [--force]` | Upload saved snapshots (honours the persisted backoff unless `--force`). |
 | `reconcile INSTANCE [--no-fast-forward] [--no-upload]` | Compare with the cloud: apply a newer version if this computer is clean, upload local snapshots, report conflicts. |
 | `launch INSTANCE [--offline-player N] [--profile P] [--skip-sync] [--no-upload]` | Sync, start Prism, track the game process, save and upload when it ends. |
-| `verify INSTANCE [--remote [--deep]] [--snapshot ID]` | Check local files against the last snapshot; with `--remote` check the cloud has everything (`--deep` downloads and hashes every object). |
+| `verify INSTANCE [--remote [--deep] [--repair [--discard-unrepairable]]] [--snapshot ID]` | Check local files against the last snapshot; with `--remote` check the cloud has everything (`--deep` downloads and hashes every object). `--repair` uploads again, from this computer's files, any data the cloud is missing (for that snapshot and for versions not uploaded yet) — nothing in the instance or its history changes. What this computer no longer has is listed; `--discard-unrepairable` then drops the versions that exist only here and can never be uploaded (files untouched; `packsync sync` saves them as they are). |
 
 ### Other computers, history, recovery
 
@@ -137,7 +137,10 @@ tag shown in the examples (`{"outcome":"fast_forwarded", …}`). Errors:
 {"ok":false,"error":{"code":"conflict","message":"…","advice":"Two devices changed this instance independently. …","exit_code":12}}
 ```
 
+Every command prints exactly one JSON document. When a command produced a report before it failed (for
+example `verify --remote` finding missing data), the report is included as `"result"` next to `"error"`.
+
 Error `code` values: `io offline auth_required auth_revoked auth_scope quota_exceeded rate_limited
 storage_unavailable storage_not_found storage_conflict storage_permission database invalid corrupt_remote
-cancelled busy game_running conflict no_space instance_unavailable safety_guard not_found unsupported
+cloud_data_missing cancelled busy game_running conflict no_space instance_unavailable safety_guard not_found unsupported
 config crash_pending internal`.

@@ -154,6 +154,10 @@ pub struct StagedMeta {
     /// Packs of the blobs referenced by entries that changed relative to the first parent
     /// (verified present in the cloud at publish time).
     pub required_packs: Vec<Hash>,
+    /// Built from another snapshot's tree (merge, fork, promotion, rollback) rather than from a scan: its
+    /// whole tree is checked against the cloud before it is published.
+    #[serde(default)]
+    pub derived: bool,
 }
 
 /// Blobs staged by earlier local snapshots of this device that are not published yet **and that the new
@@ -166,27 +170,74 @@ pub fn load_known_local_blobs(
     instance: InstanceId,
     parents: &[SnapshotId],
 ) -> Result<HashSet<Hash>> {
-    let mut out = HashSet::new();
-    let graph = crate::graph::Graph::load(db, instance)?;
-    let mut lineage: HashSet<SnapshotId> = parents.iter().copied().collect();
-    for p in parents {
-        lineage.extend(graph.ancestors(*p));
-    }
-    for s in db
-        .snapshots_in_state(instance, &[SnapshotState::LocalComplete, SnapshotState::Uploading])?
-        .into_iter()
-        .filter(|s| lineage.contains(&s.id))
-    {
-        let meta = snapshot_staging_dir(state_dir, s.id).join("staged.json");
-        if let Ok(b) = fs::read(&meta)
-            && let Ok(m) = serde_json::from_slice::<StagedMeta>(&b)
+    Ok(LocalBlobs::of_lineage(db, state_dir, instance, parents)?.map.into_keys().collect())
+}
+
+/// Blobs that are staged on this computer and not uploaded yet, with where to read them: the packs of
+/// unpublished snapshots, read locally (for example a chunk list that is not in the cloud yet).
+#[derive(Default)]
+pub struct LocalBlobs {
+    map: HashMap<Hash, (PathBuf, crate::pack::BlobEntry)>,
+}
+
+impl LocalBlobs {
+    /// The staged packs of `parents` and their ancestors that are not published.
+    pub fn of_lineage(db: &Db, state_dir: &Path, instance: InstanceId, parents: &[SnapshotId]) -> Result<LocalBlobs> {
+        let graph = crate::graph::Graph::load(db, instance)?;
+        let mut lineage: HashSet<SnapshotId> = parents.iter().copied().collect();
+        for p in parents {
+            lineage.extend(graph.ancestors(*p));
+        }
+        let mut out = LocalBlobs::default();
+        for s in db
+            .snapshots_in_state(instance, &[SnapshotState::LocalComplete, SnapshotState::Uploading])?
+            .into_iter()
+            .filter(|s| lineage.contains(&s.id))
         {
-            for p in m.packs {
-                out.extend(p.blobs.iter().map(|e| e.hash));
+            let meta = snapshot_staging_dir(state_dir, s.id).join("staged.json");
+            if let Ok(b) = fs::read(&meta)
+                && let Ok(m) = serde_json::from_slice::<StagedMeta>(&b)
+            {
+                out.add(state_dir, s.id, &m.packs);
+            }
+        }
+        Ok(out)
+    }
+
+    /// The packs staged with snapshot `id`.
+    pub fn of_snapshot(state_dir: &Path, id: SnapshotId, packs: &[IndexPack]) -> LocalBlobs {
+        let mut out = LocalBlobs::default();
+        out.add(state_dir, id, packs);
+        out
+    }
+
+    fn add(&mut self, state_dir: &Path, id: SnapshotId, packs: &[IndexPack]) {
+        for p in packs {
+            let path = snapshot_staging_dir(state_dir, id).join(format!("{}.pack", p.id.to_hex()));
+            for e in &p.blobs {
+                self.map.insert(e.hash, (path.clone(), e.clone()));
             }
         }
     }
-    Ok(out)
+
+    pub fn contains(&self, h: &Hash) -> bool {
+        self.map.contains_key(h)
+    }
+
+    pub fn hashes(&self) -> HashSet<Hash> {
+        self.map.keys().copied().collect()
+    }
+
+    /// Read and verify one staged blob.
+    pub fn read(&self, h: &Hash) -> Result<Option<Vec<u8>>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let Some((path, e)) = self.map.get(h) else { return Ok(None) };
+        let mut f = fs::File::open(path).map_err(|err| Error::io(format!("reading {}", path.display()), err))?;
+        f.seek(SeekFrom::Start(e.offset)).map_err(|err| Error::io(format!("reading {}", path.display()), err))?;
+        let mut buf = vec![0u8; e.stored_len as usize];
+        f.read_exact(&mut buf).map_err(|err| Error::io(format!("reading {}", path.display()), err))?;
+        crate::remote::verify_blob(e, &buf).map(Some)
+    }
 }
 
 fn entry_from(h: &HashedFile) -> Entry {
@@ -466,6 +517,7 @@ pub fn create(
         packs: staged.packs.iter().map(|p| IndexPack { id: p.id, size: p.size, blobs: p.entries.clone() }).collect(),
         reused_packs: staged.reused_packs.iter().copied().collect(),
         required_packs: required,
+        derived: false,
     };
     fs::write(tmp_dir.join("staged.json"), serde_json::to_vec(&meta)?)
         .map_err(|e| Error::io("writing staged metadata", e))?;
@@ -615,6 +667,7 @@ pub fn create_derived(db: &Db, state_dir: &Path, req: &DeriveRequest<'_>) -> Res
         packs: vec![],
         reused_packs: vec![],
         required_packs: vec![],
+        derived: true,
     };
     fs::write(dir.join("staged.json"), serde_json::to_vec(&meta)?)
         .map_err(|e| Error::io("writing staged metadata", e))?;

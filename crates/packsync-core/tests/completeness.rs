@@ -204,3 +204,156 @@ fn identical_content_is_saved_again_after_a_crash_save_was_discarded() {
     a.engine.upload_pending(en.instance, true, &a.ctx()).unwrap();
     assert_restorable_from_scratch(&w, &a, "laptop", en.instance);
 }
+
+fn cloud_pack_path(w: &TestWorld, pack: packsync_core::hash::Hash) -> std::path::PathBuf {
+    w.remote_dir.join("packs").join(format!("{}.pack", pack.to_hex()))
+}
+
+/// A pack the local cache still lists disappears from the cloud; then a file with exactly that content
+/// comes back (a mod rolled back, a config restored). The new snapshot deduplicated against the stale
+/// cache, so publishing failed — forever, with an error naming a repair command that did not exist, and
+/// every later snapshot queued behind it. Now the data is uploaded again from the file and it publishes.
+#[test]
+fn a_pack_that_vanished_behind_the_cache_is_uploaded_again_instead_of_blocking_every_later_upload() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    let f = root.join("config/precious.toml");
+    let content = unique_bytes(5, 100_000);
+    fs::write(&f, &content).unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    fs::remove_file(&f).unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let (pack, _) = a.engine.db().blob_lookup(packsync_core::hash::Hash::of(&content)).unwrap().unwrap();
+    fs::remove_file(cloud_pack_path(&w, pack)).unwrap();
+
+    fs::write(&f, &content).unwrap();
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    a.engine.upload_pending(en.instance, true, &a.ctx()).unwrap();
+    // the version just published is complete (checked before anything else re-uploads the content)
+    assert_restorable_from_scratch(&w, &a, "tablet", en.instance);
+    // later snapshots are not stuck either
+    fs::write(root.join("config/later.toml"), b"n = 1\n").unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let st = a.engine.status(en.instance, true, &a.ctx()).unwrap();
+    assert_eq!((st.phase, st.pending_snapshots, st.last_error.as_deref()), (SyncPhase::ReadyOnOtherDevices, 0, None));
+    assert_restorable_from_scratch(&w, &a, "laptop", en.instance);
+    let l = w.device("laptop2");
+    let rl = restore(&l, en.instance, "pack");
+    assert_eq!(fs::read(rl.join("config/precious.toml")).unwrap(), content);
+}
+
+/// A computer that was put away for a while comes back with offline progress. Meanwhile another computer
+/// ran a retention cleanup that released the content of the version the away computer is based on. Its
+/// unchanged files inherit that (now deleted) data, so its new snapshot used to be published with holes —
+/// and, kept as the conflict resolution, became a head nobody could restore. Now the missing data is
+/// uploaded again from its files before anything is published.
+#[test]
+fn a_computer_back_from_a_long_break_does_not_publish_data_a_cleanup_released_meanwhile() {
+    use packsync_core::gc::{GcParams, RetentionPolicy};
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let root = a.instances_dir().join("pack");
+    fs::create_dir_all(root.join("config")).unwrap();
+    for k in 1..=4u64 {
+        fs::write(root.join(format!("config/big{k}.toml")), unique_bytes(k, 300_000)).unwrap();
+    }
+    let en = a.enable(&root);
+    a.upload(en.instance);
+    // listings in this test are exact: let a pack count as gone as soon as a listing does not show it
+    let away = w.device_with("away", |c| c.pack_vanish_grace_ms = 0);
+    let ra = restore(&away, en.instance, "pack");
+    // one quiet start after the restore: the file index is trusted from now on (past the racy-timestamp window)
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    away.engine.snapshot(en.instance, SnapshotOpts::default(), &away.ctx()).unwrap();
+
+    // the desktop keeps playing: big1..3 are rewritten six times
+    for n in 1..=6u64 {
+        for k in 1..=3u64 {
+            fs::write(root.join(format!("config/big{k}.toml")), unique_bytes(1000 * n + k, 300_000)).unwrap();
+        }
+        a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+        a.upload(en.instance);
+    }
+    // the away computer plays offline on top of the OLD version: its big files are unchanged
+    fs::write(ra.join("config/away-progress.toml"), unique_bytes(77, 20_000)).unwrap();
+    away.plan.set_offline(true);
+    let _ = away.engine.sync_now(en.instance, &away.ctx());
+    away.plan.set_offline(false);
+
+    // the desktop cleans up: only the newest two versions keep their data
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
+    for sub in ["packs", "index"] {
+        for e in walkdir::WalkDir::new(w.remote_dir.join(sub)).into_iter().flatten().filter(|e| e.file_type().is_file())
+        {
+            filetime::set_file_mtime(e.path(), filetime::FileTime::from_system_time(t)).unwrap();
+        }
+    }
+    let params = GcParams {
+        retention: Some(RetentionPolicy { keep_snapshots: 2, keep_days: 0, keep_crash_days: 90 }),
+        ..Default::default()
+    };
+    let plan = a.engine.gc_plan(&params, &a.ctx()).unwrap();
+    let rep = a.engine.gc_run(&plan.id, &params, &a.ctx()).unwrap();
+    assert!(rep.deleted_packs > 0, "the cleanup released the old version's data: {rep:?}");
+
+    // the away computer comes back: two versions → the person keeps this computer's
+    let r = away
+        .engine
+        .reconcile(en.instance, ReconcileOpts { apply_fast_forward: true, upload_local: false }, &away.ctx())
+        .unwrap();
+    assert!(matches!(r, ReconcileReport::Conflict(_)), "{r:?}");
+    let res = away.engine.resolve_conflict(en.instance, Resolution::KeepLocal, &away.ctx()).unwrap();
+    assert!(res.uploaded);
+    assert_restorable_from_scratch(&w, &away, "tablet", en.instance);
+    // and the desktop can follow the new head
+    let ra2 = a.engine.reconcile(en.instance, ReconcileOpts::default(), &a.ctx()).unwrap();
+    assert!(matches!(ra2, ReconcileReport::FastForwarded { .. }), "{ra2:?}");
+    assert_eq!(fs::read(root.join("config/big1.toml")).unwrap(), unique_bytes(1, 300_000));
+    assert!(root.join("config/away-progress.toml").exists());
+}
+
+/// When this computer no longer has the data either (the file changed after the version was saved),
+/// nothing is published, the status says why, and the person can choose to drop the versions that can
+/// never be uploaded; the next sync saves the files as they are now.
+#[test]
+fn data_that_is_gone_everywhere_is_reported_and_never_published_with_a_hole() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    let f = root.join("config/precious.toml");
+    let content = unique_bytes(9, 100_000);
+    fs::write(&f, &content).unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    a.upload(en.instance);
+    let published = a.engine.instance(en.instance).unwrap().base_snapshot.unwrap();
+    let (pack, _) = a.engine.db().blob_lookup(packsync_core::hash::Hash::of(&content)).unwrap().unwrap();
+    fs::remove_file(cloud_pack_path(&w, pack)).unwrap();
+    // a version that still refers to that content (the file is unchanged in it)…
+    fs::write(root.join("config/other.toml"), b"x = 1\n").unwrap();
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    // …and then the file changes on disk, so this computer no longer has the old content
+    fs::write(&f, b"rewritten\n").unwrap();
+
+    let err = a.engine.upload_pending(en.instance, true, &a.ctx()).unwrap_err();
+    assert_eq!(err.code(), packsync_core::error::ErrorCode::CloudDataMissing, "{err}");
+    assert!(err.to_string().contains("config/precious.toml"), "{err}");
+    let st = a.engine.status(en.instance, false, &a.ctx()).unwrap();
+    assert_eq!(st.phase, SyncPhase::UploadPending);
+    assert!(st.last_error.as_deref().is_some_and(|e| e.contains("cannot be published")), "{st:?}");
+    let heads: Vec<_> = a.engine.cloud_instances(&a.ctx()).unwrap()[0].heads.iter().map(|h| h.id).collect();
+    assert_eq!(heads, vec![published], "nothing new was published");
+
+    // the explicit way out: drop what can never be uploaded, then sync the files as they are
+    let rep = a
+        .engine
+        .repair_cloud_data(en.instance, RepairOpts { also: None, discard_unrepairable: true }, &a.ctx())
+        .unwrap();
+    assert_eq!(rep.discarded.len(), 1, "{rep:?}");
+    assert_eq!(fs::read(&f).unwrap(), b"rewritten\n", "the files were not touched");
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let st = a.engine.status(en.instance, true, &a.ctx()).unwrap();
+    assert_eq!((st.phase, st.last_error.as_deref()), (SyncPhase::ReadyOnOtherDevices, None));
+    assert_restorable_from_scratch(&w, &a, "laptop", en.instance);
+}
