@@ -15,6 +15,8 @@ use crate::stats::StatsHandle;
 
 pub(crate) struct Api {
     pub transport: Transport,
+    /// The last few (redacted) retry reasons, for diagnostics.
+    pub recent: parking_lot::Mutex<std::collections::VecDeque<String>>,
     pub tokens: Arc<dyn AccessTokenSource>,
     pub sleeper: Arc<dyn Sleeper>,
     pub retry: RetryPolicy,
@@ -78,6 +80,13 @@ impl Api {
         ))
         .into_owned();
         tracing::warn!(target: "packsync_drive", "{msg}");
+        {
+            let mut r = self.recent.lock();
+            if r.len() >= 16 {
+                r.pop_front();
+            }
+            r.push_back(msg.clone());
+        }
         ctx.note(phase, Level::Warn, msg);
         if !self.sleeper.sleep(delay, ctx) {
             return Err(StorageError::Cancelled);

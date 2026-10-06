@@ -181,9 +181,14 @@ fn is_valid_component(name: &str) -> bool {
 /// `appProperties` for an object: the `ps=1` marker plus validated caller tags. Keys must be
 /// `[A-Za-z0-9._-]{1,64}` and not reserved; values are truncated (on a UTF-8 boundary) so that
 /// key + value fit Drive's 124-byte limit; at most 29 tags (Drive allows 30 per app per file).
-pub(crate) fn app_properties(tags: &BTreeMap<String, String>) -> StorageResult<serde_json::Map<String, serde_json::Value>> {
+pub(crate) fn app_properties(
+    tags: &BTreeMap<String, String>,
+) -> StorageResult<serde_json::Map<String, serde_json::Value>> {
     if tags.len() > 29 {
-        return Err(StorageError::Other(format!("{} tags given; Drive allows at most 29 besides PackSync's marker", tags.len())));
+        return Err(StorageError::Other(format!(
+            "{} tags given; Drive allows at most 29 besides PackSync's marker",
+            tags.len()
+        )));
     }
     let mut m = serde_json::Map::new();
     m.insert(PROP_MARKER.into(), "1".into());
@@ -191,8 +196,13 @@ pub(crate) fn app_properties(tags: &BTreeMap<String, String>) -> StorageResult<s
         if is_reserved_tag(k) {
             return Err(StorageError::Other(format!("tag key {k:?} is reserved by the Drive adapter")));
         }
-        if k.is_empty() || k.len() > 64 || !k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')) {
-            return Err(StorageError::Other(format!("tag key {k:?} is not allowed (use [A-Za-z0-9._-], at most 64 bytes)")));
+        if k.is_empty()
+            || k.len() > 64
+            || !k.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        {
+            return Err(StorageError::Other(format!(
+                "tag key {k:?} is not allowed (use [A-Za-z0-9._-], at most 64 bytes)"
+            )));
         }
         m.insert(k.clone(), truncate_utf8(v, 124 - k.len()).into());
     }
@@ -221,7 +231,14 @@ impl DriveStorage {
         let transport = crate::http::Transport::new(cfg.timeouts, &cfg.user_agent, cfg.stats.clone());
         let account = if cfg.account.is_empty() { "unknown" } else { cfg.account.as_str() };
         let pid = format!("gdrive:{account}:{}:{}", cfg.space.tag(), cfg.root_folder_name);
-        let api = Api { transport, tokens, sleeper, retry: cfg.retry.clone(), max_retry_after: cfg.max_retry_after };
+        let api = Api {
+            transport,
+            recent: Default::default(),
+            tokens,
+            sleeper,
+            retry: cfg.retry.clone(),
+            max_retry_after: cfg.max_retry_after,
+        };
         Ok(Self {
             inner: Arc::new(Inner {
                 cfg,
@@ -246,6 +263,11 @@ impl DriveStorage {
     /// HTTP request counters.
     pub fn stats(&self) -> RequestStats {
         self.inner.api.stats().snapshot()
+    }
+
+    /// The last (up to 16) retry reasons, redacted, oldest first (diagnostics).
+    pub fn recent_retries(&self) -> Vec<String> {
+        self.inner.api.recent.lock().iter().cloned().collect()
     }
 
     /// The shared counter handle.
@@ -474,7 +496,14 @@ impl Inner {
     }
 
     /// Create a folder with a pre-generated ID (so a retried create cannot duplicate it).
-    fn create_folder(&self, parent: Option<&str>, name: &str, key: &str, root: bool, ctx: &OpCtx) -> StorageResult<DriveFile> {
+    fn create_folder(
+        &self,
+        parent: Option<&str>,
+        name: &str,
+        key: &str,
+        root: bool,
+        ctx: &OpCtx,
+    ) -> StorageResult<DriveFile> {
         let mut props = serde_json::Map::new();
         props.insert(PROP_MARKER.into(), "1".into());
         if root {
@@ -507,7 +536,9 @@ impl Inner {
                         crate::http::discard(resp, self.api.stats());
                         Ok(None)
                     }
-                    _ => Err(crate::http::classify(&crate::http::api_error(resp, self.api.stats()), "creating a folder")),
+                    _ => {
+                        Err(crate::http::classify(&crate::http::api_error(resp, self.api.stats()), "creating a folder"))
+                    }
                 }
             })?;
             let folder = match created {
@@ -520,7 +551,9 @@ impl Inner {
                     self.record_created(&f.id, key, true);
                     return Ok(f);
                 }
-                Some(_) => return Err(StorageError::Other("the server created an unexpected object for a folder".into())),
+                Some(_) => {
+                    return Err(StorageError::Other("the server created an unexpected object for a folder".into()));
+                }
                 None => continue, // the ID is unusable; try a fresh one
             }
         }
@@ -794,7 +827,8 @@ impl Inner {
             let body = br#"{"trashed":true}"#;
             let url = with_query(&url, &[("fields", "id")]);
             let resp = self.api.call(ctx, Phase::Cleanup, "moving an object to the trash", &[200, 404], || {
-                Request::new(Method::Patch, url.clone(), RequestKind::Update).body(body, "application/json; charset=UTF-8")
+                Request::new(Method::Patch, url.clone(), RequestKind::Update)
+                    .body(body, "application/json; charset=UTF-8")
             })?;
             crate::http::discard(resp, self.api.stats());
         } else {

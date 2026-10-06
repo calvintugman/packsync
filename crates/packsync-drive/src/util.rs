@@ -140,9 +140,7 @@ pub(crate) fn parse_rfc3339_ms(s: &str) -> Option<i64> {
 /// Milliseconds since the epoch → `2026-10-06T12:00:00.123Z` (the format Drive returns).
 #[cfg_attr(not(feature = "mock"), allow(dead_code))]
 pub(crate) fn format_rfc3339_ms(ms: i64) -> String {
-    let fmt = time::macros::format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
-    );
+    let fmt = time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
     time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
         .ok()
         .and_then(|t| t.format(&fmt).ok())
@@ -269,7 +267,10 @@ mod tests {
 
     #[test]
     fn pkce_matches_rfc7636_appendix_b() {
-        assert_eq!(pkce_s256("dBjftJeZ4CVP-mJ92K9pD7cK-xNjSyxSxLc-5cTE0sc"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(
+            pkce_s256("dBjftJeZ4CVP-mJ92K9pD7cK-xNjSyxSxLc-5cTE0sc"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]

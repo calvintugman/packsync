@@ -120,11 +120,8 @@ impl Transport {
 
         macro_rules! prepare {
             ($b:expr) => {{
-                let mut b = $b
-                    .config()
-                    .timeout_send_body(Some(send_budget))
-                    .timeout_recv_body(Some(recv_budget))
-                    .build();
+                let mut b =
+                    $b.config().timeout_send_body(Some(send_budget)).timeout_recv_body(Some(recv_budget)).build();
                 for (k, v) in &req.headers {
                     b = b.header(*k, v.as_str());
                 }
@@ -349,7 +346,10 @@ mod tests {
         for r in ["insufficientFilePermissions", "appNotAuthorizedToFile", "domainPolicy"] {
             assert!(matches!(classify(&drive(403, r), "x"), E::Permission(_)), "{r}");
         }
-        assert!(matches!(classify(&drive(403, "insufficientPermissions"), "x"), E::Auth(AuthProblem::InsufficientScope)));
+        assert!(matches!(
+            classify(&drive(403, "insufficientPermissions"), "x"),
+            E::Auth(AuthProblem::InsufficientScope)
+        ));
         assert!(matches!(classify(&drive(404, "notFound"), "x"), E::NotFound(_)));
         assert!(matches!(classify(&drive(429, "rateLimitExceeded"), "x"), E::RateLimited { .. }));
         for s in [500, 502, 503, 504] {
@@ -378,7 +378,8 @@ mod tests {
 
     #[test]
     fn messages_are_redacted() {
-        let e = err(500, r#"{"error":{"code":500,"message":"failed for upload_id=SECRETSESSION access_token=ya29.zzz"}}"#);
+        let e =
+            err(500, r#"{"error":{"code":500,"message":"failed for upload_id=SECRETSESSION access_token=ya29.zzz"}}"#);
         let s = classify(&e, "upload").to_string();
         assert!(!s.contains("SECRETSESSION") && !s.contains("ya29"), "{s}");
     }

@@ -133,8 +133,8 @@ pub(super) fn run_login(
         return Err(AuthError::Listener("the redirect listener must use a loopback address".into()));
     }
 
-    let server = tiny_http::Server::http(SocketAddr::new(opts.listen_ip, 0))
-        .map_err(|e| AuthError::Listener(e.to_string()))?;
+    let server =
+        tiny_http::Server::http(SocketAddr::new(opts.listen_ip, 0)).map_err(|e| AuthError::Listener(e.to_string()))?;
     let port = server
         .server_addr()
         .to_ip()

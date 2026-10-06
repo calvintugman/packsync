@@ -156,7 +156,9 @@ pub enum AuthError {
     #[error("could not start the local sign-in listener: {0}")]
     Listener(String),
     /// The user unchecked the Drive permission on Google's consent screen.
-    #[error("Google did not grant the Drive permission PackSync needs ({needed}); sign in again and keep that permission checked")]
+    #[error(
+        "Google did not grant the Drive permission PackSync needs ({needed}); sign in again and keep that permission checked"
+    )]
     InsufficientScope {
         /// The scope that is required.
         needed: String,
@@ -164,7 +166,9 @@ pub enum AuthError {
         granted: Vec<String>,
     },
     /// The token response had no refresh token.
-    #[error("Google did not return a refresh token; remove PackSync's access at https://myaccount.google.com/permissions and sign in again")]
+    #[error(
+        "Google did not return a refresh token; remove PackSync's access at https://myaccount.google.com/permissions and sign in again"
+    )]
     NoRefreshToken,
     /// The token endpoint rejected the code exchange.
     #[error("the authorization could not be completed: {0}")]
@@ -474,7 +478,8 @@ impl Authenticator {
         st.grant = Some(grant);
         st.loaded = true;
         st.revoked = false;
-        st.access = access.map(|(token, expires_in)| CachedToken { token, refresh_at: self.refresh_deadline(expires_in) });
+        st.access =
+            access.map(|(token, expires_in)| CachedToken { token, refresh_at: self.refresh_deadline(expires_in) });
         Ok(())
     }
 
@@ -519,21 +524,25 @@ impl Authenticator {
             } else if status == 429 || status >= 500 {
                 http::classify(&e, "the Google token endpoint")
             } else {
-                StorageError::Auth(AuthProblem::Other(format!("the Google token endpoint refused the request ({desc})")))
+                StorageError::Auth(AuthProblem::Other(format!(
+                    "the Google token endpoint refused the request ({desc})"
+                )))
             };
             return Err(TokenFailure::Other(err));
         }
         // Never quote the body in errors: it contains tokens.
-        let raw: RawToken = http::read_json(&mut resp, 64 * 1024, self.transport.stats(), "token response").map_err(
-            |e| match e {
+        let raw: RawToken =
+            http::read_json(&mut resp, 64 * 1024, self.transport.stats(), "token response").map_err(|e| match e {
                 StorageError::Offline(m) => TokenFailure::Other(StorageError::Offline(m)),
                 _ => TokenFailure::Other(StorageError::Auth(AuthProblem::Other(
                     "the token endpoint returned a malformed response".into(),
                 ))),
-            },
-        )?;
-        let malformed =
-            || TokenFailure::Other(StorageError::Auth(AuthProblem::Other("the token endpoint returned an unusable token".into())));
+            })?;
+        let malformed = || {
+            TokenFailure::Other(StorageError::Auth(AuthProblem::Other(
+                "the token endpoint returned an unusable token".into(),
+            )))
+        };
         let access = raw.access_token.filter(|t| plausible_token(t)).ok_or_else(malformed)?;
         if let Some(tt) = &raw.token_type
             && !tt.eq_ignore_ascii_case("bearer")
@@ -568,7 +577,10 @@ impl Authenticator {
                 Ok(t) => {
                     let mut st = self.state.lock();
                     st.revoked = false;
-                    st.access = Some(CachedToken { token: t.access_token.clone(), refresh_at: self.refresh_deadline(t.expires_in) });
+                    st.access = Some(CachedToken {
+                        token: t.access_token.clone(),
+                        refresh_at: self.refresh_deadline(t.expires_in),
+                    });
                     tracing::debug!(target: "packsync_drive::oauth", expires_in = t.expires_in, "access token refreshed");
                     return Ok(t.access_token);
                 }

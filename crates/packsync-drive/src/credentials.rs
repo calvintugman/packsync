@@ -57,7 +57,9 @@ fn map_err(e: keyring::Error) -> CredentialError {
         K::BadEncoding(_) | K::BadDataFormat(..) => {
             CredentialError::Other("the stored credential is unreadable; disconnect and reconnect the account".into())
         }
-        K::TooLong(name, max) => CredentialError::Other(format!("the credential is too long for the store ({name} > {max})")),
+        K::TooLong(name, max) => {
+            CredentialError::Other(format!("the credential is too long for the store ({name} > {max})"))
+        }
         K::Invalid(attr, reason) => CredentialError::Other(format!("invalid credential attribute {attr}: {reason}")),
         K::Ambiguous(v) => CredentialError::Other(format!(
             "{} matching credentials exist; remove the duplicates in the OS keychain",

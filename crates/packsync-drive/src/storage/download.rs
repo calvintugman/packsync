@@ -37,7 +37,14 @@ fn parse_content_range(v: &str) -> Option<(u64, u64, Option<u64>)> {
 
 impl Inner {
     /// Open `[start, end)` of file `id` (of `size` bytes) and return a body positioned at `start`.
-    pub(super) fn open_media(&self, id: &str, size: u64, start: u64, end: u64, ctx: &OpCtx) -> StorageResult<Box<dyn Read + Send>> {
+    pub(super) fn open_media(
+        &self,
+        id: &str,
+        size: u64,
+        start: u64,
+        end: u64,
+        ctx: &OpCtx,
+    ) -> StorageResult<Box<dyn Read + Send>> {
         let ranged = start > 0 || end < size;
         let base = format!("{}/files/{id}", self.cfg.endpoints.api_base);
         let mut acknowledge_abuse = false;
@@ -60,7 +67,9 @@ impl Inner {
                         let cr = http::header(&resp, "content-range").and_then(|v| parse_content_range(&v));
                         match cr {
                             Some((a, b, total))
-                                if a == start && b + 1 == end && total.is_none_or(|t| t == size)
+                                if a == start
+                                    && b + 1 == end
+                                    && total.is_none_or(|t| t == size)
                                     && content_length.is_none_or(|l| l == end - start) => {}
                             _ => {
                                 return Err(StorageError::Corrupt(

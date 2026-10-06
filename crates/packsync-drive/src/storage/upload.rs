@@ -133,12 +133,16 @@ impl<'a> Source<'a> {
                     }
                     total += n as u64;
                     if total > *len {
-                        return Err(StorageError::Corrupt(format!("the source file is larger than the declared {len} bytes")));
+                        return Err(StorageError::Corrupt(format!(
+                            "the source file is larger than the declared {len} bytes"
+                        )));
                     }
                     feed(&buf[..n]);
                 }
                 if total != *len {
-                    return Err(StorageError::Corrupt(format!("the source file has {total} bytes, {len} were declared")));
+                    return Err(StorageError::Corrupt(format!(
+                        "the source file has {total} bytes, {len} were declared"
+                    )));
                 }
             }
         }
@@ -244,7 +248,13 @@ enum VerifyErr {
     Failed(StorageError),
 }
 
-pub(super) fn put(inner: &Arc<Inner>, key: &str, src: PutSource<'_>, opts: &PutOptions, ctx: &OpCtx) -> StorageResult<ObjectInfo> {
+pub(super) fn put(
+    inner: &Arc<Inner>,
+    key: &str,
+    src: PutSource<'_>,
+    opts: &PutOptions,
+    ctx: &OpCtx,
+) -> StorageResult<ObjectInfo> {
     if ctx.is_cancelled() {
         return Err(StorageError::Cancelled);
     }
@@ -344,7 +354,9 @@ fn download_md5(inner: &Arc<Inner>, id: &str, len: u64, ctx: &OpCtx) -> StorageR
             if ctx.is_cancelled() {
                 return Err(StorageError::Cancelled);
             }
-            let n = body.read(&mut buf).map_err(|e| StorageError::Offline(format!("reading back an object failed: {e}")))?;
+            let n = body
+                .read(&mut buf)
+                .map_err(|e| StorageError::Offline(format!("reading back an object failed: {e}")))?;
             if n == 0 {
                 break;
             }
@@ -362,7 +374,15 @@ fn download_md5(inner: &Arc<Inner>, id: &str, len: u64, ctx: &OpCtx) -> StorageR
     Ok(hex::encode(md5.finalize()))
 }
 
-fn verify(inner: &Arc<Inner>, file: &DriveFile, expect_id: &str, name: &str, h: &Hashes, len: u64, ctx: &OpCtx) -> Result<(), VerifyErr> {
+fn verify(
+    inner: &Arc<Inner>,
+    file: &DriveFile,
+    expect_id: &str,
+    name: &str,
+    h: &Hashes,
+    len: u64,
+    ctx: &OpCtx,
+) -> Result<(), VerifyErr> {
     if file.id != expect_id {
         return Err(VerifyErr::Bad("the server stored the object under an unexpected ID".into()));
     }
@@ -396,9 +416,10 @@ fn verify(inner: &Arc<Inner>, file: &DriveFile, expect_id: &str, name: &str, h: 
 /// Permanently delete an object this call just created and that failed verification.
 fn delete_created_object(inner: &Arc<Inner>, id: &str, ctx: &OpCtx) -> bool {
     let url = format!("{}/files/{id}", inner.cfg.endpoints.api_base);
-    let res = inner.api.call(ctx, Phase::Cleanup, "removing an object that failed verification", &[200, 204, 404], || {
-        Request::new(Method::Delete, url.clone(), RequestKind::Delete)
-    });
+    let res =
+        inner.api.call(ctx, Phase::Cleanup, "removing an object that failed verification", &[200, 204, 404], || {
+            Request::new(Method::Delete, url.clone(), RequestKind::Delete)
+        });
     match res {
         Ok(resp) => {
             http::discard(resp, inner.api.stats());
@@ -523,7 +544,9 @@ fn update_existing(
     };
     let (file, streamed) = match outcome {
         Ok(Outcome::Done(f, s)) => (f, s),
-        Ok(Outcome::AlreadyExists) => return Err(PutErr::Fail(StorageError::Other("unexpected conflict while updating".into()))),
+        Ok(Outcome::AlreadyExists) => {
+            return Err(PutErr::Fail(StorageError::Other("unexpected conflict while updating".into())));
+        }
         Err(StorageError::NotFound(_)) => {
             inner.state.clear(&skey);
             inner.forget_file(key);
@@ -592,7 +615,8 @@ fn multipart_create(
     data: &[u8],
     ctx: &OpCtx,
 ) -> StorageResult<Outcome> {
-    let meta = serde_json::json!({"id": id, "name": name, "parents": [parent], "mimeType": OCTET, "appProperties": props});
+    let meta =
+        serde_json::json!({"id": id, "name": name, "parents": [parent], "mimeType": OCTET, "appProperties": props});
     let (body, ct) = multipart_body(&meta, data)?;
     let url = with_query(
         &format!("{}/files", inner.cfg.endpoints.upload_base),
@@ -673,7 +697,13 @@ fn session_response(inner: &Inner, mut resp: http::Response, total: u64, sent_en
 }
 
 /// Start a session. `Ok(None)` = `409` (the pre-generated ID already exists).
-fn init_session(inner: &Inner, st: &UploadState, target: &Target<'_>, total: u64, ctx: &OpCtx) -> StorageResult<Option<String>> {
+fn init_session(
+    inner: &Inner,
+    st: &UploadState,
+    target: &Target<'_>,
+    total: u64,
+    ctx: &OpCtx,
+) -> StorageResult<Option<String>> {
     let (method, url, meta) = match target {
         Target::Create { parent, name, props } => (
             Method::Post,
@@ -705,7 +735,8 @@ fn init_session(inner: &Inner, st: &UploadState, target: &Target<'_>, total: u64
             match loc {
                 Some(l) if l.len() <= 8192 && inner.cfg.endpoints.url_rules().allows(&l) => Ok(Some(l)),
                 _ => Err(StorageError::Other(
-                    "the server returned an unusable upload session address (missing, or not on an allowed host)".into(),
+                    "the server returned an unusable upload session address (missing, or not on an allowed host)"
+                        .into(),
                 )),
             }
         }

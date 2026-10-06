@@ -305,7 +305,11 @@ pub struct OAuthEndpoints {
 
 impl Default for OAuthEndpoints {
     fn default() -> Self {
-        Self { auth_url: GOOGLE_AUTH_URL.into(), token_url: GOOGLE_TOKEN_URL.into(), revoke_url: GOOGLE_REVOKE_URL.into() }
+        Self {
+            auth_url: GOOGLE_AUTH_URL.into(),
+            token_url: GOOGLE_TOKEN_URL.into(),
+            revoke_url: GOOGLE_REVOKE_URL.into(),
+        }
     }
 }
 
@@ -423,7 +427,12 @@ impl OAuthClientConfig {
         if let Some(s) = &client_secret {
             validate_secret(s.expose())?;
         }
-        Ok(Self { client_id, client_secret, endpoints: OAuthEndpoints::default(), source: ClientConfigSource::Explicit })
+        Ok(Self {
+            client_id,
+            client_secret,
+            endpoints: OAuthEndpoints::default(),
+            source: ClientConfigSource::Explicit,
+        })
     }
 
     /// Use different endpoints (tests).
