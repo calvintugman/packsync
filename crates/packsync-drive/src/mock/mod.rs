@@ -1090,6 +1090,9 @@ impl Shared {
                     return (Resp::oauth_error(400, "redirect_uri_mismatch", "Bad Request"), Some(grant));
                 }
                 let verifier = get("code_verifier");
+                if !verifier.is_empty() {
+                    st.secrets.push(verifier.clone());
+                }
                 if verifier.len() < 43 || pkce_s256(&verifier) != c.challenge {
                     return (Resp::oauth_error(400, "invalid_grant", "Invalid code verifier."), Some(grant));
                 }
