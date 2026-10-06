@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#34a96d"/>
+      <stop offset="1" stop-color="#17583a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <!-- a block (the pack) ... -->
+  <g fill="none" stroke="#ffffff" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M512 214 L760 352 V628 L512 766 L264 628 V352 Z"/>
+    <path d="M264 352 L512 490 L760 352"/>
+    <path d="M512 490 V766"/>
+  </g>
+  <!-- ... and the sync arrows around it -->
+  <g fill="none" stroke="#bdf0d4" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M180 560 A340 340 0 0 0 330 810"/>
+    <path d="M330 810 L330 726 M330 810 L414 810"/>
+    <path d="M844 464 A340 340 0 0 0 694 214"/>
+    <path d="M694 214 L694 298 M694 214 L610 214"/>
+  </g>
+</svg>

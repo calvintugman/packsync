@@ -257,12 +257,10 @@ pub fn unescape_value(raw: &[u8]) -> QtValue {
                                 break 'skip_spaces;
                             }
                             continue 'normal;
-                        } else if ch == b'\n' || ch == b'\r' {
-                            if i < n {
-                                let ch2 = raw[i];
-                                if (ch2 == b'\n' || ch2 == b'\r') && ch2 != ch {
-                                    i += 1;
-                                }
+                        } else if (ch == b'\n' || ch == b'\r') && i < n {
+                            let ch2 = raw[i];
+                            if (ch2 == b'\n' || ch2 == b'\r') && ch2 != ch {
+                                i += 1;
                             }
                         }
                         // any other escaped character is dropped together with its backslash
@@ -312,11 +310,11 @@ pub fn unescape_value(raw: &[u8]) -> QtValue {
         let strs: Vec<String> = list.iter().map(|u| to_string(u)).collect();
         let mut out = strs.clone();
         for (idx, s) in strs.iter().enumerate() {
-            if s.starts_with('@') {
-                if s.len() < 2 || !s[1..].starts_with('@') {
+            if let Some(rest) = s.strip_prefix('@') {
+                if !rest.starts_with('@') {
                     return QtValue::Special(strs.join(","));
                 }
-                out[idx] = s[1..].to_string();
+                out[idx] = rest.to_string();
             }
         }
         return QtValue::List(out);
@@ -689,8 +687,7 @@ pub fn apply_edits(data: &[u8], edits: &[KeyEdit]) -> Result<Vec<u8>> {
         let last_general = doc
             .entries
             .iter()
-            .filter(|e| e.section.is_empty() && matches!(e.kind, EntryKind::Pair { .. } | EntryKind::Other))
-            .next_back();
+            .rfind(|e| e.section.is_empty() && matches!(e.kind, EntryKind::Pair { .. } | EntryKind::Other));
         let header_general = doc
             .entries
             .iter()
@@ -719,7 +716,7 @@ pub fn apply_edits(data: &[u8], edits: &[KeyEdit]) -> Result<Vec<u8>> {
                     text.push_str(l);
                     text.push_str(eol);
                 }
-                if doc.entries.first().is_some() {
+                if !doc.entries.is_empty() {
                     text.push_str(eol);
                 }
                 insert = Some((doc.bom, text));

@@ -84,9 +84,11 @@ export function EnableDialog({
       {preview ? <PreviewView report={preview} /> : null}
       {preview ? (
         <div className="col">
-          <Button size="sm" variant="ghost" onClick={() => setShowRules((v) => !v)} aria-expanded={showRules}>
-            {showRules ? "Hide custom rules" : "Custom rules (advanced)"}
-          </Button>
+          <div className="row">
+            <Button size="sm" variant="ghost" onClick={() => setShowRules((v) => !v)} aria-expanded={showRules}>
+              {showRules ? "Hide custom rules" : "Custom rules (advanced)"}
+            </Button>
+          </div>
           {showRules ? (
             <>
               <TextArea

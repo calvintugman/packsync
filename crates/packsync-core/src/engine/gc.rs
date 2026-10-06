@@ -47,7 +47,7 @@ impl Engine {
             match (e.r, e.h) {
                 (Some(r), _) => {
                     live.blobs.insert(r);
-                    if !live.recipes.contains_key(&r) {
+                    if let std::collections::hash_map::Entry::Vacant(slot) = live.recipes.entry(r) {
                         let bytes = remote.read_blob(r, ctx).map_err(|err| {
                             Error::Corrupt(format!(
                                 "cleanup refused: the recipe of {} (needed by a snapshot that is kept) cannot be read: {err}. Run `packsync verify --remote` first",
@@ -55,7 +55,7 @@ impl Engine {
                             ))
                         })?;
                         let recipe = Recipe::decode(&bytes, e.s)?;
-                        live.recipes.insert(r, recipe.chunks.iter().map(|(h, _)| *h).collect());
+                        slot.insert(recipe.chunks.iter().map(|(h, _)| *h).collect());
                     }
                     live.blobs.extend(live.recipes[&r].iter().copied());
                 }

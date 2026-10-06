@@ -15,17 +15,29 @@ function Harness({ onClose, locked }: { onClose: () => void; locked?: boolean })
 }
 
 describe("Dialog", () => {
-  it("is a labelled modal dialog and focuses its first control", () => {
+  it("is a labelled modal dialog and takes focus itself, not a button", () => {
     render(<Harness onClose={() => {}} />);
     const d = screen.getByRole("dialog", { name: "Hello" });
     expect(d).toHaveAttribute("aria-modal", "true");
-    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    expect(d).toHaveFocus();
+  });
+
+  it("focuses the control that asks for it", () => {
+    render(
+      <Dialog title="Sure?" onClose={() => {}}>
+        <button>no</button>
+        <button data-autofocus>cancel</button>
+      </Dialog>,
+    );
+    expect(screen.getByRole("button", { name: "cancel" })).toHaveFocus();
   });
 
   it("keeps Tab inside the dialog", async () => {
     const u = userEvent.setup();
     render(<Harness onClose={() => {}} />);
-    await u.tab(); // first input
+    await u.tab(); // the close button comes first
+    expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();
+    await u.tab(); // then the input
     expect(screen.getByLabelText("first")).toHaveFocus();
     await u.tab(); // confirm
     expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();

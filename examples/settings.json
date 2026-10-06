@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "device_name": "Study PC",
+  "storage": { "kind": "google", "space": "visible_folder", "account": null },
+  "google_client_file": null,
+  "prism_executable": null,
+  "prism_data_dirs": [],
+  "cli_path": null,
+  "hook_offline_policy": "play_local",
+  "hook_block_on_problem": true,
+  "upload_concurrency": 4,
+  "recovery_point_days": 14,
+  "lease_ttl_secs": 120
+}

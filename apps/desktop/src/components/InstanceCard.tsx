@@ -19,8 +19,11 @@ export function useSyncNow(inst: { id: string; name: string }, openConflict: () 
   return useAction(async () => {
     const r = await store.runJob("instance.sync", { instance: inst.id });
     const o = describeSync(r);
-    if (r.reconcile.outcome === "conflict") openConflict();
-    store.toast(o.tone === "danger" ? "error" : o.tone === "warn" ? "warn" : "success", o.text, inst.name);
+    if (r.reconcile.outcome === "conflict") {
+      openConflict(); // the dialog says it all; a toast on top of it would only be in the way
+    } else {
+      store.toast(o.tone === "danger" ? "error" : o.tone === "warn" ? "warn" : "success", o.text, inst.name);
+    }
     await store.refreshInstances();
     return r;
   });

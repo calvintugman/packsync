@@ -1,0 +1,39 @@
+# Extra rules for one instance. Pass them with:
+#   packsync preview "<instance folder>" --rules-file examples/rules-extra.toml
+#   packsync enable  "<instance folder>" --rules-file examples/rules-extra.toml
+# They are appended after the built-in rules, and the last matching rule wins. The complete rules text
+# is stored in every snapshot, so all your computers agree on it. See docs/rules.md.
+version = 1
+
+# Keep screenshots on every computer (excluded by default: they are large and rarely needed).
+[[rule]]
+id = "keep-screenshots"
+match = ["$GAME/screenshots/**"]
+action = "include"
+category = "screenshot"
+reason = "I want my screenshots on every computer."
+
+# Leave an old archived world on this computer only.
+[[rule]]
+id = "skip-archived-worlds"
+match = ["$GAME/saves/Archive*/**"]
+action = "exclude"
+category = "world"
+reason = "Archived worlds stay on this computer."
+prune = true            # skip the whole folder without walking it
+
+# Sync a graphics setting that is excluded by default because it is tuned for one GPU.
+[[rule]]
+id = "share-sodium-options"
+match = ["$GAME/config/sodium-options.json"]
+action = "include"
+category = "settings"
+reason = "Same graphics settings on both of my computers."
+
+# Store big region files in 8 KiB blocks instead of the default 16 KiB (smaller uploads, more objects).
+[[rule]]
+id = "finer-region-blocks"
+match = ["$GAME/saves/**/region/*.mca"]
+action = "include"
+category = "world"
+strategy = "fixed:8192"

@@ -1,0 +1,37 @@
+# The desktop shell is its own Cargo workspace: building the engine, the CLI and their tests never needs
+# the system WebView libraries that Tauri links against.
+[workspace]
+
+[package]
+name = "packsync-desktop"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT"
+publish = false
+description = "PackSync desktop app: a Tauri shell around the PackSync application layer"
+
+[lib]
+name = "packsync_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+packsync-app = { path = "../../../crates/packsync-app" }
+packsync-core = { path = "../../../crates/packsync-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.12", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = "debuginfo"
+panic = "unwind"           # the engine catches panics at job boundaries
+
+[profile.dev.package."*"]
+opt-level = 1              # hashing and compression are unusably slow at opt-level 0

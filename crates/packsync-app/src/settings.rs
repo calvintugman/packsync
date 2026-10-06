@@ -108,12 +108,13 @@ impl Settings {
         if !(30..=3600).contains(&self.lease_ttl_secs) {
             return Err(Error::Config("lease_ttl_secs must be between 30 and 3600".into()));
         }
-        if let StorageSetting::Google { space, .. } = &self.storage {
-            if space != "visible_folder" && space != "app_data" {
-                return Err(Error::Config(format!(
-                    "unknown Google Drive space {space:?} (use visible_folder or app_data)"
-                )));
-            }
+        if let StorageSetting::Google { space, .. } = &self.storage
+            && space != "visible_folder"
+            && space != "app_data"
+        {
+            return Err(Error::Config(format!(
+                "unknown Google Drive space {space:?} (use visible_folder or app_data)"
+            )));
         }
         Ok(())
     }
@@ -134,8 +135,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s/settings.json");
         assert_eq!(Settings::load(&p).unwrap().storage, StorageSetting::None);
-        let mut s = Settings::default();
-        s.storage = StorageSetting::Local { path: "/tmp/cloud".into() };
+        let s = Settings { storage: StorageSetting::Local { path: "/tmp/cloud".into() }, ..Settings::default() };
         s.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().storage, s.storage);
         std::fs::write(&p, r#"{"version":1,"future_field":42,"hook_block_on_problem":false}"#).unwrap();

@@ -256,7 +256,9 @@ fn tags_are_stored_and_update_tags_changes_only_properties() {
     assert_eq!(env.mock.count(Endpoint::FilesUpdateMedia), updates_before, "no new content revision");
     let stat = env.drive.stat("leases/l.json", &ctx).unwrap().unwrap();
     assert_eq!(stat.tags.get("hb").map(String::as_str), Some("2"));
-    assert!(!stat.tags.contains_key("ps"), "internal markers are not exposed as tags");
+    // the PackSync marker is reported (retention relies on it); the adapter's private folder marker is not
+    assert_eq!(stat.tags.get("ps").map(String::as_str), Some("1"));
+    assert!(!stat.tags.contains_key("psk"), "the private marker is not exposed as a tag");
 }
 
 #[test]

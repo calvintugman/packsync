@@ -23,8 +23,9 @@ export function Dialog({ title, onClose, children, footer, wide, locked }: Dialo
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const node = ref.current;
-    const first = node?.querySelector<HTMLElement>("[data-autofocus]") ?? node?.querySelector<HTMLElement>(FOCUSABLE);
-    (first ?? node)?.focus();
+    // Focus lands on the dialog itself (so its title is announced) or on the control that asked for it;
+    // never on a button that an accidental Enter would press.
+    (node?.querySelector<HTMLElement>("[data-autofocus]") ?? node)?.focus();
     return () => previous?.focus?.();
   }, []);
 

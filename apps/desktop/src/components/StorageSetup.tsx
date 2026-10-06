@@ -20,10 +20,13 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
   const [folder, setFolder] = useState(settings?.storage.kind === "local" ? settings.storage.path : "");
   const [clientFile, setClientFile] = useState(settings?.google_client_file ?? "");
   const [needsClient, setNeedsClient] = useState(false);
+  const [google, setGoogle] = useState<StorageStatus | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
 
   const signIn = useAction(async () => {
     const status = await store.call("storage.use_google", { space });
+    setGoogle(status);
+    void store.refreshStorage().catch(() => {});
     if (!status.oauth_client_configured) {
       setNeedsClient(true);
       return;
@@ -79,13 +82,15 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
             Files are stored <strong>unencrypted</strong> in your Drive: Google, and anyone with access to your account or
             that folder, can read them. Worlds can contain player names and coordinates.
           </Banner>
-          {needsClient || storage?.oauth_client_configured === false ? (
+          {needsClient || (storage?.kind === "google" && storage.oauth_client_configured === false) ? (
             <div className="card col">
               <h3>PackSync needs a Google OAuth client</h3>
               <p className="muted">
-                {storage?.setup_hint ??
-                  "Google requires every app to identify itself. Create a free OAuth client for your own Google account (about five minutes) — docs/oauth-setup.md in the PackSync repository walks through it."}
+                Google requires every app to identify itself. Create a free OAuth client for your own Google account
+                (about ten minutes); <code>docs/oauth-setup.md</code> in the PackSync repository walks through it. Then
+                choose the downloaded file here.
               </p>
+              {(google ?? storage)?.problem ? <p className="faint">{(google ?? storage)?.problem}</p> : null}
               <PathField
                 label="Downloaded client file (JSON)"
                 value={clientFile}

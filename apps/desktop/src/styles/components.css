@@ -600,7 +600,7 @@ table.table {
 }
 .toasts {
   position: fixed;
-  right: 16px;
+  left: 248px; /* beside the sidebar: never on top of a dialog's buttons, which sit at the right */
   bottom: 16px;
   z-index: 80;
   display: flex;
@@ -651,6 +651,9 @@ table.table {
 }
 
 @media (max-width: 760px) {
+  .toasts {
+    left: 16px;
+  }
   .app {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);

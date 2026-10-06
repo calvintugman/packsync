@@ -229,7 +229,7 @@ function AdvancedSection({ settings }: { settings: Settings }) {
   return (
     <Section id="s-advanced" title="Advanced">
       <div className="row">
-        <TextInput label="Parallel uploads" inputMode="numeric" value={conc} onChange={(e) => setConc(e.target.value)} hint="1–16. More is faster on a fast connection." />
+        <TextInput label="Parallel uploads" inputMode="numeric" value={conc} onChange={(e) => setConc(e.target.value)} hint="1–32. More is faster on a fast connection." />
         <TextInput label="Keep recovery points (days)" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} hint="How long files replaced by a restore are kept." />
       </div>
       {save.error ? <ErrorNote error={save.error} /> : null}

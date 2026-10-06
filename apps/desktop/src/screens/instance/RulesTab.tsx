@@ -53,7 +53,7 @@ export function RulesTab({ inst }: { inst: InstanceStatus }) {
         <h3>Rules in effect</h3>
         {rules.error ? <ErrorNote error={rules.error} /> : null}
         {rules.loading && !rules.data ? <span className="muted">Loading…</span> : null}
-        {rules.data ? <pre className="code" aria-label="Rules in effect" style={{ maxHeight: 420 }}>{rules.data.rules}</pre> : null}
+        {rules.data ? <pre className="code" tabIndex={0} aria-label="Rules in effect" style={{ maxHeight: 420 }}>{rules.data.rules}</pre> : null}
       </div>
       {preview ? <PreviewDialog root={inst.root} onClose={() => setPreview(false)} /> : null}
     </div>

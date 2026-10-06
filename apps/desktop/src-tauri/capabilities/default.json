@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the PackSync window may do: talk to its own application layer (commands and events) and ask for a folder.",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

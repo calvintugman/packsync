@@ -560,7 +560,7 @@ impl App {
             }
         }
         self.bus().emit(AppEvent::InstanceChanged { instance: id });
-        let _ = ctx.note(Phase::Launch, Level::Info, "post-exit hook finished");
+        ctx.note(Phase::Launch, Level::Info, "post-exit hook finished");
         HookOutcome::Proceed { messages, upload }
     }
 }

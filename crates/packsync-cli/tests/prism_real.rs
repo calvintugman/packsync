@@ -580,8 +580,6 @@ fn real_prism_launcher_smoke() {
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
-    let canonical = |t: &str| keys(t).into_iter().map(|l| l.replace("=\\\"", "=\"")).count();
-    let _ = canonical;
     rep.check("uninstalling the hooks restores the user's original commands exactly (Prism had rewritten the file in between)", {
         let b = keys(&cfg_before);
         let a = keys(&cfg_after);

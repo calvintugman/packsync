@@ -28,9 +28,20 @@ struct Args {
     /// The world's folder (created if needed; the caller deletes it).
     #[arg(long)]
     dir: PathBuf,
-    /// The built UI (`apps/desktop/dist`).
+    /// The built UI (`apps/desktop/dist`). Required unless `--prepare-only`.
+    #[arg(long, required_unless_present = "prepare_only")]
+    ui_dir: Option<PathBuf>,
+    /// Only lay the world out on disk and print where everything is, then exit. Point the desktop app
+    /// (or the CLI) at it with PACKSYNC_CONFIG_DIR / PACKSYNC_STATE_DIR.
     #[arg(long)]
-    ui_dir: PathBuf,
+    prepare_only: bool,
+    /// Start syncing (and upload) this desktop instance before anything else. Repeatable.
+    #[arg(long, value_name = "NAME")]
+    enable: Vec<String>,
+    /// After enabling, change a file of this instance and save a snapshot without uploading it, so it
+    /// shows as "saved here, not uploaded yet". Repeatable.
+    #[arg(long, value_name = "NAME")]
+    leave_unuploaded: Vec<String>,
     /// `packsync` CLI binary that launcher hooks will call.
     #[arg(long)]
     cli: Option<PathBuf>,
@@ -80,9 +91,13 @@ fn device(base: &Path, name: &str, cli: Option<&Path>) -> Device {
     )
     .expect("open the application");
     let cli = cli.map(Path::to_path_buf);
+    let (exe, dirs) = (fake.exe.clone(), vec![data_dir.clone()]);
     app.update_settings(|s| {
         s.device_name = Some(name.to_string());
         s.cli_path = cli;
+        // persisted, so a separate process (the real desktop app) finds this Prism and not the user's own
+        s.prism_executable = Some(exe);
+        s.prism_data_dirs = dirs;
     })
     .expect("save settings");
     Device { app, data_dir, fake }
@@ -215,9 +230,44 @@ fn main() {
     }
     let world = Arc::new(World { cloud: cloud.clone(), desktop, laptop });
 
+    let ctx = OpCtx::detached();
+    for name in &args.enable {
+        let root = world.desktop.data_dir.join("instances").join(name);
+        let out = world.desktop.app.enable_sync("prism", &root, String::new(), &ctx).expect("enable the instance");
+        world.desktop.app.engine().upload_pending(out.instance, false, &ctx).expect("upload the first snapshot");
+    }
+    for name in &args.leave_unuploaded {
+        let root = world.desktop.data_dir.join("instances").join(name);
+        let id = world
+            .desktop
+            .app
+            .engine()
+            .find_instance_by_root(&root)
+            .expect("look up the instance")
+            .map(|r| r.id)
+            .expect("--leave-unuploaded needs --enable for the same instance");
+        std::fs::write(root.join(".minecraft/config/evening-session.toml"), "played = true\n").expect("edit a file");
+        world.desktop.app.engine().snapshot(id, Default::default(), &ctx).expect("snapshot");
+    }
+
+    if args.prepare_only {
+        println!(
+            "{}",
+            json!({
+                "dir": dir,
+                "cloud": cloud,
+                "config_dir": dir.join("desktop/app/config"),
+                "state_dir": dir.join("desktop/app/state"),
+                "desktop_prism": world.desktop.data_dir,
+            })
+        );
+        return;
+    }
+    let ui_dir = args.ui_dir.clone().expect("--ui-dir is required");
+
     let b = bridge::start(
         world.desktop.app.clone(),
-        BridgeConfig { port: args.port, ui_dir: Some(args.ui_dir.clone()), allow_origin: None },
+        BridgeConfig { port: args.port, ui_dir: Some(ui_dir), allow_origin: None },
     )
     .expect("start the bridge");
 

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PackSync",
+  "version": "0.1.0",
+  "identifier": "org.example.packsync",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "PackSync",
+        "width": 1120,
+        "height": 780,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "rpm", "appimage", "nsis", "msi", "dmg", "app"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "category": "Utility",
+    "shortDescription": "Continue your Minecraft modpack on any computer",
+    "longDescription": "PackSync syncs a Prism Launcher instance — mods, configuration and single-player worlds — between your computers through your own Google Drive. It never merges worlds automatically and keeps every save recoverable.",
+    "copyright": "MIT licence",
+    "license": "MIT",
+    "licenseFile": "../../../LICENSE"
+  }
+}

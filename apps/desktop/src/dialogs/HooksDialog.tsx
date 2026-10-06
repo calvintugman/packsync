@@ -89,10 +89,10 @@ export function HooksDialog({
           <div>
             <strong>{c.key}</strong> <span className="muted">in</span> <code>{c.file}</code>
           </div>
-          <pre className="code diff-before" aria-label={`${c.key} before`}>
+          <pre className="code diff-before" tabIndex={0} aria-label={`${c.key} before`}>
             {c.before === null ? "(not set)" : c.before}
           </pre>
-          <pre className="code diff-after" aria-label={`${c.key} after`}>
+          <pre className="code diff-after" tabIndex={0} aria-label={`${c.key} after`}>
             {c.after === null ? "(removed)" : c.after}
           </pre>
         </div>
