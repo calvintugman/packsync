@@ -120,6 +120,8 @@ pub enum Fault {
     CorruptStoredContent,
     /// Report a wrong `md5Checksum` for the object created/updated by this request.
     WrongMd5,
+    /// Replace the `Location` header of a resumable session start (a hostile or broken server).
+    BadLocation(String),
 }
 
 impl Fault {
@@ -642,6 +644,7 @@ impl Shared {
         Ok((id, parent, appdata))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_file(
         &self,
         st: &mut State,
@@ -959,7 +962,7 @@ impl Shared {
         if b >= t {
             return Resp::drive_error(400, "invalid", "The chunk ends beyond the declared size.");
         }
-        if b + 1 < t && body.len() as u64 % CHUNK_GRANULARITY != 0 {
+        if b + 1 < t && !(body.len() as u64).is_multiple_of(CHUNK_GRANULARITY) {
             return Resp::drive_error(400, "invalid", "Chunks must be multiples of 256 KiB except the last one.");
         }
         if a > have {
@@ -1458,7 +1461,7 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
     }
     let corrupt = faults.iter().any(|f| matches!(f, Fault::CorruptStoredContent));
     let wrong_md5 = faults.iter().any(|f| matches!(f, Fault::WrongMd5));
-    let (resp, detail) = {
+    let (mut resp, detail) = {
         let mut st = sh.state.lock();
         if faults.iter().any(|f| matches!(f, Fault::ExpireSession))
             && let Some(s) = params.get("upload_id").and_then(|u| st.sessions.get_mut(u))
@@ -1495,6 +1498,13 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
         drop(req.into_writer());
         sh.relay.send_raw_and_kill(p, &bytes);
         return;
+    }
+    if let Some(loc) = faults.iter().find_map(|f| match f {
+        Fault::BadLocation(l) => Some(l.clone()),
+        _ => None,
+    }) {
+        resp.headers.retain(|(k, _)| !k.eq_ignore_ascii_case("location"));
+        resp.headers.push(("Location".into(), loc));
     }
     record.status = resp.status;
     log(record);
@@ -1703,6 +1713,18 @@ impl MockDrive {
             }
         }
         id
+    }
+
+    /// Flip the first stored byte of an object but keep the reported checksums (bit rot / a
+    /// server-side corruption that only a client-side check can detect).
+    pub fn corrupt_stored_bytes(&self, id: &str) {
+        if let Some(f) = self.shared.state.lock().files.get_mut(id) {
+            let mut c = f.content.to_vec();
+            if let Some(b) = c.first_mut() {
+                *b ^= 0x01;
+            }
+            f.content = Arc::new(c);
+        }
     }
 
     /// Mark an object as trashed (as if the user trashed it).

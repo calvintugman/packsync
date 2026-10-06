@@ -220,7 +220,7 @@ fn save_state(inner: &Inner, skey: &str, st: &UploadState) {
 enum Outcome {
     /// The object as the server reports it, plus the MD5 of what this process streamed (if the
     /// upload was a single in-order pass).
-    Done(DriveFile, Option<String>),
+    Done(Box<DriveFile>, Option<String>),
     /// `409`: an object with the pre-generated ID already exists.
     AlreadyExists,
 }
@@ -469,7 +469,7 @@ fn create_new(
         _ => resumable(inner, key, &skey, &mut st, Target::Create { parent, name, props }, source, ctx),
     };
     let (file, streamed) = match outcome {
-        Ok(Outcome::Done(f, streamed)) => (f, streamed),
+        Ok(Outcome::Done(f, streamed)) => (*f, streamed),
         Ok(Outcome::AlreadyExists) => match inner.get_by_id(&st.file_id, ctx, Phase::Upload)? {
             Some(f) => (f, None),
             None => {
@@ -543,7 +543,7 @@ fn update_existing(
         }
     };
     let (file, streamed) = match outcome {
-        Ok(Outcome::Done(f, s)) => (f, s),
+        Ok(Outcome::Done(f, s)) => (*f, s),
         Ok(Outcome::AlreadyExists) => {
             return Err(PutErr::Fail(StorageError::Other("unexpected conflict while updating".into())));
         }
@@ -628,7 +628,7 @@ fn multipart_create(
         ctx.add_up(data.len() as u64);
         let mut resp = res?;
         match http::status(&resp) {
-            200 | 201 => Ok(Outcome::Done(parse_file(inner, &mut resp, "uploading an object")?, None)),
+            200 | 201 => Ok(Outcome::Done(Box::new(parse_file(inner, &mut resp, "uploading an object")?), None)),
             409 => {
                 http::discard(resp, inner.api.stats());
                 Ok(Outcome::AlreadyExists)
@@ -651,7 +651,7 @@ fn multipart_update(inner: &Arc<Inner>, id: &str, props: &Props, data: &[u8], ct
         ctx.add_up(data.len() as u64);
         let mut resp = res?;
         match http::status(&resp) {
-            200 | 201 => Ok(Outcome::Done(parse_file(inner, &mut resp, "replacing an object")?, None)),
+            200 | 201 => Ok(Outcome::Done(Box::new(parse_file(inner, &mut resp, "replacing an object")?), None)),
             _ => Err(http::classify(&http::api_error(resp, inner.api.stats()), "replacing an object")),
         }
     })
@@ -687,7 +687,9 @@ fn session_response(inner: &Inner, mut resp: http::Response, total: u64, sent_en
             }
             Ok(Next::Offset(confirmed))
         }
-        200 | 201 => Ok(Next::Done(Outcome::Done(parse_file(inner, &mut resp, "finishing an upload")?, None))),
+        200 | 201 => {
+            Ok(Next::Done(Outcome::Done(Box::new(parse_file(inner, &mut resp, "finishing an upload")?), None)))
+        }
         404 | 410 => {
             http::discard(resp, inner.api.stats());
             Ok(Next::Expired)

@@ -240,7 +240,7 @@ pub(crate) fn eval(e: &Expr, s: &Subject<'_>, alias: &dyn Fn(&str) -> String) ->
         Expr::Not(a) => !eval(a, s, alias),
         Expr::InParents(id) => {
             let id = alias(id);
-            s.parents.iter().any(|p| *p == id)
+            s.parents.contains(&id)
         }
         Expr::Name { op: Op::Eq, value } => s.name == value,
         Expr::Name { op: Op::Ne, value } => s.name != value,

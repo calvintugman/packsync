@@ -270,7 +270,10 @@ impl DriveConfig {
         if !(1..=1000).contains(&self.page_size) {
             return bad(format!("page size {} is outside 1..=1000", self.page_size));
         }
-        if self.chunk_size == 0 || self.chunk_size % CHUNK_GRANULARITY != 0 || self.chunk_size > 256 * 1024 * 1024 {
+        if self.chunk_size == 0
+            || !self.chunk_size.is_multiple_of(CHUNK_GRANULARITY)
+            || self.chunk_size > 256 * 1024 * 1024
+        {
             return bad(format!("chunk size {} must be a positive multiple of 256 KiB (max 256 MiB)", self.chunk_size));
         }
         if self.multipart_threshold > 5 * 1024 * 1024 {
@@ -519,8 +522,7 @@ mod tests {
     #[test]
     fn default_config_is_valid() {
         DriveConfig::default().validate().unwrap();
-        let mut c = DriveConfig::default();
-        c.chunk_size = 300 * 1024;
+        let mut c = DriveConfig { chunk_size: 300 * 1024, ..DriveConfig::default() };
         assert!(c.validate().is_err());
         c.chunk_size = 512 * 1024;
         c.page_size = 0;

@@ -385,10 +385,7 @@ impl Authenticator {
         }
         let token = match self.grant()? {
             Some(g) => Some(Secret::new(g.refresh_token)),
-            None => {
-                let access = self.state.lock().access.as_ref().map(|c| c.token.clone());
-                access
-            }
+            None => self.state.lock().access.as_ref().map(|c| c.token.clone()),
         };
         let Some(token) = token else { return self.disconnect() };
         let body = form_encode(&[("token", token.expose())]);

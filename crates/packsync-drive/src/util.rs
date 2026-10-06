@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn pkce_matches_rfc7636_appendix_b() {
         assert_eq!(
-            pkce_s256("dBjftJeZ4CVP-mJ92K9pD7cK-xNjSyxSxLc-5cTE0sc"),
+            pkce_s256("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
