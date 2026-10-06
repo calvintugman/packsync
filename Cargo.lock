@@ -1684,6 +1684,18 @@ dependencies = [
 [[package]]
 name = "packsync-bench"
 version = "0.1.0"
+dependencies = [
+ "clap",
+ "fastrand",
+ "packsync-core",
+ "packsync-drive",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "walkdir",
+ "zstd",
+]
 
 [[package]]
 name = "packsync-cli"

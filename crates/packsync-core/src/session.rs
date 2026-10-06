@@ -81,7 +81,9 @@ impl SessionMgr<'_> {
             note: None,
             dead_seen_ms: None,
             owner_pid: (owner == SessionOwner::App).then(std::process::id),
-            owner_start_ms: (owner == SessionOwner::App).then(|| crate::proc::process_start_ms(std::process::id())).flatten(),
+            owner_start_ms: (owner == SessionOwner::App)
+                .then(|| crate::proc::process_start_ms(std::process::id()))
+                .flatten(),
         };
         if !self.db.session_insert_if_absent(&row)? {
             // a concurrent request for the same launch got there first: that is the session

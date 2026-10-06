@@ -18,7 +18,12 @@ fn sign_in_setup() -> (MockDrive, Arc<Authenticator>, Arc<MemoryCredentialStore>
     let mock = MockDrive::start_default().unwrap();
     let stats = StatsHandle::default();
     let creds = Arc::new(MemoryCredentialStore::default());
-    let auth = Arc::new(Authenticator::new(mock.client_config(), DriveSpace::VisibleFolder, auth_config(&mock, &stats), creds.clone()));
+    let auth = Arc::new(Authenticator::new(
+        mock.client_config(),
+        DriveSpace::VisibleFolder,
+        auth_config(&mock, &stats),
+        creds.clone(),
+    ));
     (mock, auth, creds, stats)
 }
 
@@ -89,7 +94,10 @@ fn declined_consent_and_a_narrow_grant_are_reported_clearly_and_store_nothing() 
     assert!(matches!(err, AuthError::InsufficientScope { .. }), "{err}");
     assert!(err.to_string().contains("keep that permission checked"), "{err}");
     assert_eq!(err.to_storage_error().to_string(), StorageError::Auth(AuthProblem::InsufficientScope).to_string());
-    assert!(creds.get(auth.credential_account()).unwrap().is_none(), "nothing was stored for a grant that is not usable");
+    assert!(
+        creds.get(auth.credential_account()).unwrap().is_none(),
+        "nothing was stored for a grant that is not usable"
+    );
     assert!(matches!(auth.status(), AuthStatus::NotConnected));
 }
 
@@ -98,7 +106,13 @@ fn nobody_answering_times_out_and_cancellation_stops_the_wait_at_once() {
     let (_mock, auth, _creds, _stats) = sign_in_setup();
     // a browser that never opens: the user closed the tab
     let t = std::time::Instant::now();
-    let err = auth.login(&PrintUrl, &LoginOptions { timeout: Duration::from_millis(600), ..LoginOptions::default() }, &OpCtx::detached()).unwrap_err();
+    let err = auth
+        .login(
+            &PrintUrl,
+            &LoginOptions { timeout: Duration::from_millis(600), ..LoginOptions::default() },
+            &OpCtx::detached(),
+        )
+        .unwrap_err();
     assert!(matches!(err, AuthError::TimedOut { .. }), "{err}");
     assert!(t.elapsed() < Duration::from_secs(5));
     // cancellation from the UI
@@ -110,7 +124,9 @@ fn nobody_answering_times_out_and_cancellation_stops_the_wait_at_once() {
         c2.cancel();
     });
     let t = std::time::Instant::now();
-    let err = auth.login(&PrintUrl, &LoginOptions { timeout: Duration::from_secs(60), ..LoginOptions::default() }, &ctx).unwrap_err();
+    let err = auth
+        .login(&PrintUrl, &LoginOptions { timeout: Duration::from_secs(60), ..LoginOptions::default() }, &ctx)
+        .unwrap_err();
     assert!(matches!(err, AuthError::Cancelled), "{err}");
     assert!(t.elapsed() < Duration::from_secs(10));
 }
@@ -177,7 +193,11 @@ fn captured_logs() -> Arc<Mutex<Vec<u8>>> {
         // request/response headers at DEBUG, and the scripted "browser" in these tests is a ureq client
         // too) stay at `warn`, exactly as the application configures them.
         let filter = tracing_subscriber::EnvFilter::new("warn,packsync_drive=trace,packsync_core=trace");
-        let _ = tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(Capture(buf.clone())).try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(Capture(buf.clone()))
+            .try_init();
         buf
     })
     .clone()
@@ -189,7 +209,12 @@ fn no_secret_ever_appears_in_logs_errors_or_debug_output() {
     let mock = MockDrive::start(MockConfig::default()).unwrap();
     let stats = StatsHandle::default();
     let creds = Arc::new(MemoryCredentialStore::default());
-    let auth = Arc::new(Authenticator::new(mock.client_config(), DriveSpace::VisibleFolder, auth_config(&mock, &stats), creds.clone()));
+    let auth = Arc::new(Authenticator::new(
+        mock.client_config(),
+        DriveSpace::VisibleFolder,
+        auth_config(&mock, &stats),
+        creds.clone(),
+    ));
     let ctx = OpCtx::detached();
     let mut printed: Vec<String> = vec![];
     // sign in (code, verifier, tokens flow through here), including a forged attempt and a refusal
@@ -204,7 +229,14 @@ fn no_secret_ever_appears_in_logs_errors_or_debug_output() {
     let state = Arc::new(packsync_core::storage::MemoryTransferState::default());
     let drive = packsync_drive::DriveStorage::new(cfg, auth.clone(), state).unwrap();
     let big = pattern(3 * 1024 * 1024, 7);
-    drive.put("packs/hygiene.bin", packsync_core::storage::PutSource::Bytes(&big), &packsync_core::storage::PutOptions::replace(), &ctx).unwrap();
+    drive
+        .put(
+            "packs/hygiene.bin",
+            packsync_core::storage::PutSource::Bytes(&big),
+            &packsync_core::storage::PutOptions::replace(),
+            &ctx,
+        )
+        .unwrap();
     mock.expire_access_tokens();
     drive.list("packs/", &ctx).unwrap();
     for e in [drive.get_bytes("packs/missing.bin", 10, &ctx).unwrap_err(), {
@@ -225,7 +257,12 @@ fn no_secret_ever_appears_in_logs_errors_or_debug_output() {
         if everything.contains(s.as_str()) {
             let at = printed.iter().position(|p| p.contains(s.as_str())).unwrap();
             let line = printed[at].lines().find(|l| l.contains(s.as_str())).unwrap_or("");
-            panic!("a secret ({} chars, starts {:?}) leaked into output #{at}: {}", s.len(), &s[..4], line.chars().take(300).collect::<String>());
+            panic!(
+                "a secret ({} chars, starts {:?}) leaked into output #{at}: {}",
+                s.len(),
+                &s[..4],
+                line.chars().take(300).collect::<String>()
+            );
         }
     }
     // the logs did record the flow (so the check above is not vacuous)

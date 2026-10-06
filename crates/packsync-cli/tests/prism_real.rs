@@ -29,13 +29,20 @@ fn run(cmd: &mut Command) -> Output {
 }
 
 fn have(tool: &str) -> bool {
-    Command::new("sh").arg("-c").arg(format!("command -v {tool}")).stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false)
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {tool}"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn seed_dir() -> PathBuf {
-    std::env::var_os("PACKSYNC_PRISM_SEED")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/PrismLauncher"))
+    std::env::var_os("PACKSYNC_PRISM_SEED").map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/PrismLauncher")
+    })
 }
 
 /// A Minecraft version and Java runtime that exist in the seed's caches.
@@ -104,7 +111,10 @@ impl Sandbox {
                 cfg_value(&format!("\"{}\"", bin.join("wrapper.sh").display()))
             ),
         );
-        write(&data.join("qtlogging.ini"), "[Rules]\n*.debug=true\nlauncher.task=true\nlauncher.task.net.download.debug=false\nlauncher.task.net.metacache=false\nqt.*.debug=false\n");
+        write(
+            &data.join("qtlogging.ini"),
+            "[Rules]\n*.debug=true\nlauncher.task=true\nlauncher.task.net.download.debug=false\nlauncher.task.net.metacache=false\nqt.*.debug=false\n",
+        );
         // Prism's setup wizard insists on one account that owns Minecraft; a fake one with far-future
         // tokens is accepted. With no network, refreshing it fails as "offline", which allows `--offline NAME`.
         write(
@@ -161,7 +171,10 @@ exec unshare --user --map-root-user --net sh -c '
 "#,
         );
         // what PackSync is told is "the Prism executable": it runs the sandboxed one
-        executable(&bin.join("prism"), &format!("#!/bin/sh\nexec \"{}\" 600 \"$@\"\n", root.join("run-prism.sh").display()));
+        executable(
+            &bin.join("prism"),
+            &format!("#!/bin/sh\nexec \"{}\" 600 \"$@\"\n", root.join("run-prism.sh").display()),
+        );
         let _ = (mc, java);
         Sandbox { root: root.to_path_buf(), data, bin }
     }
@@ -180,7 +193,9 @@ exec unshare --user --map-root-user --net sh -c '
         std::fs::write(root.join(".minecraft/mods/example-mod-1.0.jar"), jar).unwrap();
         write(
             &root.join("mmc-pack.json"),
-            &format!(r#"{{"components":[{{"uid":"net.minecraft","version":"{mc}","important":true}}],"formatVersion":1}}"#),
+            &format!(
+                r#"{{"components":[{{"uid":"net.minecraft","version":"{mc}","important":true}}],"formatVersion":1}}"#
+            ),
         );
         write(
             &root.join("instance.cfg"),
@@ -219,11 +234,22 @@ exec unshare --user --map-root-user --net sh -c '
     fn prism(&self, timeout: u64, args: &[&str]) -> (Option<i32>, Duration, String) {
         let t = Instant::now();
         let o = run(Command::new(self.file("run-prism.sh")).arg(timeout.to_string()).args(args));
-        (o.status.code(), t.elapsed(), String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr))
+        (
+            o.status.code(),
+            t.elapsed(),
+            String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr),
+        )
     }
 
     fn spawn_prism(&self, timeout: u64, args: &[&str]) -> std::process::Child {
-        Command::new(self.file("run-prism.sh")).arg(timeout.to_string()).args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap()
+        Command::new(self.file("run-prism.sh"))
+            .arg(timeout.to_string())
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
     }
 }
 
@@ -257,7 +283,11 @@ impl Pk {
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
         let o = run(self.cmd().args(args));
-        (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+        (
+            o.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&o.stdout).into_owned(),
+            String::from_utf8_lossy(&o.stderr).into_owned(),
+        )
     }
 
     fn json(&self, args: &[&str]) -> (i32, Value) {
@@ -279,7 +309,11 @@ struct Report(Vec<(String, bool, String)>);
 impl Report {
     fn check(&mut self, what: &str, ok: bool, detail: impl Into<String>) {
         let detail = detail.into();
-        println!("{} {what}{}", if ok { "PASS" } else { "FAIL" }, if detail.is_empty() { String::new() } else { format!("  — {detail}") });
+        println!(
+            "{} {what}{}",
+            if ok { "PASS" } else { "FAIL" },
+            if detail.is_empty() { String::new() } else { format!("  — {detail}") }
+        );
         self.0.push((what.to_string(), ok, detail));
     }
 }
@@ -302,12 +336,18 @@ fn real_prism_launcher_smoke() {
     for tool in ["prismlauncher", "unshare", "ip", "python3", "timeout"] {
         assert!(have(tool), "prerequisite missing: {tool}");
     }
-    let (mc, java) = pick_version(&seed).unwrap_or_else(|| panic!("{} has no cached Minecraft 1.20.1 / 1.21.1 with its Java runtime (launch one instance in Prism once)", seed.display()));
+    let (mc, java) = pick_version(&seed).unwrap_or_else(|| {
+        panic!(
+            "{} has no cached Minecraft 1.20.1 / 1.21.1 with its Java runtime (launch one instance in Prism once)",
+            seed.display()
+        )
+    });
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/prism-smoke");
     let root = root.canonicalize().unwrap_or(root);
     let sb = Sandbox::build(&root, &seed, mc, java);
     let mut rep = Report(vec![]);
-    let version = String::from_utf8_lossy(&run(Command::new("prismlauncher").arg("--version")).stdout).trim().to_string();
+    let version =
+        String::from_utf8_lossy(&run(Command::new("prismlauncher").arg("--version")).stdout).trim().to_string();
     println!("Prism: {version}; Minecraft {mc}; sandbox {}", sb.root.display());
 
     // ---- 1. the hook semantics Prism documents nowhere ------------------------------------------------
@@ -328,16 +368,34 @@ fn real_prism_launcher_smoke() {
     sb.clear_logs();
     let (code, secs, _out) = launch("Smoke ünï 1");
     let (hooks, wrapper) = (sb.log("hooks.log"), sb.log("wrapper.log"));
-    rep.check("clean exit: Prism exits 0 and runs pre-launch, wrapper/game and post-exit in that order", code == Some(0) && hooks.starts_with("pre:") && hooks.contains("\npost:") && wrapper.lines().count() == 1, format!("exit {code:?} in {secs:.1?}; hooks=[{}]", hooks.lines().map(|l| l.split(':').next().unwrap()).collect::<Vec<_>>().join(",")));
+    rep.check(
+        "clean exit: Prism exits 0 and runs pre-launch, wrapper/game and post-exit in that order",
+        code == Some(0) && hooks.starts_with("pre:") && hooks.contains("\npost:") && wrapper.lines().count() == 1,
+        format!(
+            "exit {code:?} in {secs:.1?}; hooks=[{}]",
+            hooks.lines().map(|l| l.split(':').next().unwrap()).collect::<Vec<_>>().join(",")
+        ),
+    );
     let pre_line = hooks.lines().next().unwrap_or("");
-    rep.check("quoting: a path with spaces and Unicode is one program; $INST_NAME with spaces stays one argument", pre_line.contains("argc=3") && pre_line.contains("argv=[pre Smoke ünï 1 two words]"), pre_line.chars().take(90).collect::<String>());
+    rep.check(
+        "quoting: a path with spaces and Unicode is one program; $INST_NAME with spaces stays one argument",
+        pre_line.contains("argc=3") && pre_line.contains("argv=[pre Smoke ünï 1 two words]"),
+        pre_line.chars().take(90).collect::<String>(),
+    );
     rep.check(
         "environment: INST_ID, INST_NAME, INST_DIR, INST_MC_DIR are set; working directory is the game folder",
-        pre_line.contains("INST_ID=Smoke ünï 1") && pre_line.contains(&format!("INST_DIR={}", inst.display())) && pre_line.contains(&format!("INST_MC_DIR={}/.minecraft", inst.display())) && pre_line.contains(&format!("cwd={}/.minecraft", inst.display())),
+        pre_line.contains("INST_ID=Smoke ünï 1")
+            && pre_line.contains(&format!("INST_DIR={}", inst.display()))
+            && pre_line.contains(&format!("INST_MC_DIR={}/.minecraft", inst.display()))
+            && pre_line.contains(&format!("cwd={}/.minecraft", inst.display())),
         "",
     );
     let game = sb.log("game.log");
-    rep.check("the java arguments carry -Djava.library.path=<instance>/natives (what PackSync matches the game by)", game.contains("args_have_natives=1"), game.trim().to_string());
+    rep.check(
+        "the java arguments carry -Djava.library.path=<instance>/natives (what PackSync matches the game by)",
+        game.contains("args_have_natives=1"),
+        game.trim().to_string(),
+    );
 
     sb.clear_logs();
     sb.set("hook-pre-exit", "1\n");
@@ -355,7 +413,9 @@ fn real_prism_launcher_smoke() {
         sb.unset(&["game-exit"]);
         rep.check(
             &format!("game exit status {label}: post-exit is NOT run (\"Game crashed.\")"),
-            !sb.log("hooks.log").contains("post:") && sb.log("hooks.log").contains("pre:") && out.contains("Game crashed"),
+            !sb.log("hooks.log").contains("post:")
+                && sb.log("hooks.log").contains("pre:")
+                && out.contains("Game crashed"),
             format!("Prism exit {code:?}"),
         );
     }
@@ -363,7 +423,11 @@ fn real_prism_launcher_smoke() {
     sb.set("hook-post-exit", "1\n");
     let (_, _, out) = sb.prism(8, &["--launch", "Smoke ünï 1", "--offline", "Steve"]);
     sb.unset(&["hook-post-exit"]);
-    rep.check("a failing post-exit command is reported by Prism as a failed launch", out.contains("Post-Launch command failed with code 1"), "");
+    rep.check(
+        "a failing post-exit command is reported by Prism as a failed launch",
+        out.contains("Post-Launch command failed with code 1"),
+        "",
+    );
 
     // ---- 2. a second --launch while Prism is running is forwarded -------------------------------------
     let _inst2 = sb.instance("Smoke ünï 2", mc, java, "");
@@ -371,14 +435,24 @@ fn real_prism_launcher_smoke() {
     sb.set("game-sleep", "6");
     let mut first = sb.spawn_prism(60, &["--launch", "Smoke ünï 1", "--offline", "Steve"]);
     wait_until("the first game to start", 30, || sb.log("game.log").lines().count() == 1);
-    let prism_pids: Vec<u32> = String::from_utf8_lossy(&run(Command::new("pgrep").args(["-f", &format!("^prismlauncher --dir {}", sb.data.display())])).stdout).split_whitespace().filter_map(|p| p.parse().ok()).collect();
+    let prism_pids: Vec<u32> = String::from_utf8_lossy(
+        &run(Command::new("pgrep").args(["-f", &format!("^prismlauncher --dir {}", sb.data.display())])).stdout,
+    )
+    .split_whitespace()
+    .filter_map(|p| p.parse().ok())
+    .collect();
     let (code, secs, _) = sb.prism(30, &["--launch", "Smoke ünï 2", "--offline", "Alex"]);
     wait_until("the forwarded game to start", 30, || sb.log("game.log").lines().count() == 2);
     let wl = sb.log("wrapper.log");
-    let ppids: Vec<String> = wl.lines().filter_map(|l| l.split("ppid=").nth(1)?.split_whitespace().next().map(str::to_string)).collect();
+    let ppids: Vec<String> =
+        wl.lines().filter_map(|l| l.split("ppid=").nth(1)?.split_whitespace().next().map(str::to_string)).collect();
     rep.check(
         "a second launch while Prism runs is forwarded: it exits 0 at once and the running Prism starts the game",
-        code == Some(0) && secs < Duration::from_secs(5) && ppids.len() == 2 && ppids[0] == ppids[1] && prism_pids.iter().any(|p| p.to_string() == ppids[0]),
+        code == Some(0)
+            && secs < Duration::from_secs(5)
+            && ppids.len() == 2
+            && ppids[0] == ppids[1]
+            && prism_pids.iter().any(|p| p.to_string() == ppids[0]),
         format!("exit {code:?} after {secs:.2?}; wrapper parents {ppids:?}; prism pids {prism_pids:?}"),
     );
     let _ = first.wait();
@@ -391,7 +465,17 @@ fn real_prism_launcher_smoke() {
     let found = pk.ok(&["instances"]);
     rep.check(
         "discovery lists the real Prism instances (names, game folder, Minecraft version)",
-        found.as_array().map(|a| a.len() == 2 && a.iter().any(|d| d["name"] == "Smoke ünï 1" && d["game_root"] == ".minecraft" && d["identity"]["minecraft_version"] == mc)).unwrap_or(false),
+        found
+            .as_array()
+            .map(|a| {
+                a.len() == 2
+                    && a.iter().any(|d| {
+                        d["name"] == "Smoke ünï 1"
+                            && d["game_root"] == ".minecraft"
+                            && d["identity"]["minecraft_version"] == mc
+                    })
+            })
+            .unwrap_or(false),
         "",
     );
     let en = pk.ok(&["enable", inst.to_str().unwrap()]);
@@ -405,7 +489,11 @@ fn real_prism_launcher_smoke() {
     wait_until("Prism to run", 30, || sb.log("game.log").lines().count() >= 1);
     let (_, plan) = pk.json(&["hooks", "install", &id, "--cli", BIN, "--plan"]);
     let blockers = plan["result"]["blockers"].as_array().map(|a| a.len()).unwrap_or(0);
-    rep.check("hook installation is refused while the real Prism runs (its --dir is recognised)", blockers == 1, format!("blockers: {}", plan["result"]["blockers"]));
+    rep.check(
+        "hook installation is refused while the real Prism runs (its --dir is recognised)",
+        blockers == 1,
+        format!("blockers: {}", plan["result"]["blockers"]),
+    );
     let _ = running.wait();
     sb.unset(&["game-sleep"]);
     sb.clear_logs();
@@ -416,21 +504,40 @@ fn real_prism_launcher_smoke() {
     let (code, _, _) = launch("Smoke ünï 1");
     sb.unset(&["game-write"]);
     let hooks = sb.log("hooks.log");
-    rep.check("PackSync's hooks run under Prism and chain the user's own commands (both ran, with the right arguments)", code == Some(0) && hooks.contains("pre: argc=3 argv=[pre Smoke ünï 1 two words]") && hooks.contains("post: argc=2"), format!("exit {code:?}"));
+    rep.check(
+        "PackSync's hooks run under Prism and chain the user's own commands (both ran, with the right arguments)",
+        code == Some(0)
+            && hooks.contains("pre: argc=3 argv=[pre Smoke ünï 1 two words]")
+            && hooks.contains("post: argc=2"),
+        format!("exit {code:?}"),
+    );
     wait_until("the background upload after post-exit", 30, || {
         let s = pk.ok(&["status", &id, "--online"]);
-        matches!(s["instances"][0]["phase"].as_str(), Some("ready_on_other_devices" | "cloud_published")) && pk.ok(&["history", &id]).as_array().map(|a| a.len()).unwrap_or(0) == 2
+        matches!(s["instances"][0]["phase"].as_str(), Some("ready_on_other_devices" | "cloud_published"))
+            && pk.ok(&["history", &id]).as_array().map(|a| a.len()).unwrap_or(0) == 2
     });
-    rep.check("the post-exit hook saved the session and uploaded it in the background (2 snapshots, up to date)", true, "");
+    rep.check(
+        "the post-exit hook saved the session and uploaded it in the background (2 snapshots, up to date)",
+        true,
+        "",
+    );
     // a second computer receives it
     let laptop = Pk::new(&sb, "laptop", &cloud);
     let restored = laptop.ok(&["restore-new", "--name", "Smoke ünï restored"]);
     let rroot = PathBuf::from(restored["root"].as_str().unwrap());
     let got = std::fs::read_to_string(rroot.join(".minecraft/config/example.toml")).unwrap_or_default();
-    rep.check("another computer restores the progress made through Prism into a new instance", got.ends_with("+through-prism"), format!("{got:?}"));
+    rep.check(
+        "another computer restores the progress made through Prism into a new instance",
+        got.ends_with("+through-prism"),
+        format!("{got:?}"),
+    );
     sb.clear_logs();
     let (code, _, _) = launch("Smoke ünï restored");
-    rep.check("Prism launches the restored instance (the instance PackSync registered is valid for the real launcher)", code == Some(0) && sb.log("game.log").lines().count() == 1, format!("exit {code:?}"));
+    rep.check(
+        "Prism launches the restored instance (the instance PackSync registered is valid for the real launcher)",
+        code == Some(0) && sb.log("game.log").lines().count() == 1,
+        format!("exit {code:?}"),
+    );
 
     // a crashed session: no post-exit, so the next launch is refused until the user decides
     sb.clear_logs();
@@ -447,15 +554,32 @@ fn real_prism_launcher_smoke() {
         "exit status 19 = a crash waiting for a decision (the reason is printed by the hook and shown by `packsync crash show`)",
     );
     let status = pk.ok(&["status", &id]);
-    rep.check("PackSync shows the crash waiting for a decision", status["instances"][0]["phase"] == "crash_pending", format!("{}", status["instances"][0]["phase"]));
+    rep.check(
+        "PackSync shows the crash waiting for a decision",
+        status["instances"][0]["phase"] == "crash_pending",
+        format!("{}", status["instances"][0]["phase"]),
+    );
     pk.ok(&["crash", "promote", &id]);
     sb.clear_logs();
     let (code, _, _) = launch("Smoke ünï 1");
-    rep.check("after the decision the launch goes through again", code == Some(0) && sb.log("game.log").lines().count() == 1, format!("exit {code:?}"));
+    rep.check(
+        "after the decision the launch goes through again",
+        code == Some(0) && sb.log("game.log").lines().count() == 1,
+        format!("exit {code:?}"),
+    );
 
     pk.ok(&["hooks", "uninstall", &id]);
     let cfg_after = std::fs::read_to_string(inst.join("instance.cfg")).unwrap();
-    let keys = |t: &str| t.lines().filter(|l| ["OverrideCommands=", "PreLaunchCommand=", "PostExitCommand=", "WrapperCommand="].iter().any(|k| l.starts_with(k))).map(str::to_string).collect::<Vec<_>>();
+    let keys = |t: &str| {
+        t.lines()
+            .filter(|l| {
+                ["OverrideCommands=", "PreLaunchCommand=", "PostExitCommand=", "WrapperCommand="]
+                    .iter()
+                    .any(|k| l.starts_with(k))
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
     let canonical = |t: &str| keys(t).into_iter().map(|l| l.replace("=\\\"", "=\"")).count();
     let _ = canonical;
     rep.check("uninstalling the hooks restores the user's original commands exactly (Prism had rewritten the file in between)", {
@@ -484,11 +608,23 @@ fn real_prism_launcher_smoke() {
 
     // report
     let failed: Vec<_> = rep.0.iter().filter(|(_, ok, _)| !ok).collect();
-    let mut md = format!("# Real Prism Launcher smoke test\n\nPrism `{version}`, Minecraft {mc}, run on {}\n\n", std::env::consts::OS);
+    let mut md = format!(
+        "# Real Prism Launcher smoke test\n\nPrism `{version}`, Minecraft {mc}, run on {}\n\n",
+        std::env::consts::OS
+    );
     for (w, ok, d) in &rep.0 {
-        md.push_str(&format!("- {} {w}{}\n", if *ok { "PASS" } else { "FAIL" }, if d.is_empty() { String::new() } else { format!(" — `{d}`") }));
+        md.push_str(&format!(
+            "- {} {w}{}\n",
+            if *ok { "PASS" } else { "FAIL" },
+            if d.is_empty() { String::new() } else { format!(" — `{d}`") }
+        ));
     }
     let _ = std::fs::write(sb.file("report.md"), md);
     let _ = &sb.bin;
-    assert!(failed.is_empty(), "{} check(s) failed: {:?}", failed.len(), failed.iter().map(|(w, _, _)| w).collect::<Vec<_>>());
+    assert!(
+        failed.is_empty(),
+        "{} check(s) failed: {:?}",
+        failed.len(),
+        failed.iter().map(|(w, _, _)| w).collect::<Vec<_>>()
+    );
 }

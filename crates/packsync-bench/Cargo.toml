@@ -5,8 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Reproducible benchmarks for PackSync: initial sync, no-change, small edit, region edit, mod replacement, restore, memory, bytes, requests"
 
 [lints]
 workspace = true
 
 [dependencies]
+packsync-core = { workspace = true, features = ["testkit"] }
+packsync-drive = { workspace = true, features = ["mock"] }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+zstd.workspace = true
+walkdir.workspace = true
+fastrand.workspace = true
+parking_lot.workspace = true

@@ -258,3 +258,21 @@ fn tags_are_stored_and_update_tags_changes_only_properties() {
     assert_eq!(stat.tags.get("hb").map(String::as_str), Some("2"));
     assert!(!stat.tags.contains_key("ps"), "internal markers are not exposed as tags");
 }
+
+#[test]
+fn the_engines_own_ps_tag_is_accepted_and_reported_back() {
+    // packsync-core marks everything it stores with ps=1 itself; the adapter always writes the marker,
+    // so passing it must be a no-op (not an error) and listings must report it (retention checks it).
+    let env = common::setup();
+    let ctx = OpCtx::detached();
+    let opts = PutOptions::create_only(None).with_tag("ps", "1").with_tag("kind", "pack");
+    env.drive.put("packs/tagged.bin", PutSource::Bytes(b"x"), &opts, &ctx).unwrap();
+    let info = env.drive.stat("packs/tagged.bin", &ctx).unwrap().unwrap();
+    assert_eq!(info.tags.get("ps").map(String::as_str), Some("1"));
+    assert_eq!(info.tags.get("kind").map(String::as_str), Some("pack"));
+    let listed = env.drive.list("packs/", &ctx).unwrap();
+    assert!(listed.iter().all(|o| o.tags.get("ps").map(String::as_str) == Some("1")), "{listed:?}");
+    // any other value for the marker is refused
+    let bad = PutOptions::create_only(None).with_tag("ps", "0");
+    assert!(env.drive.put("packs/bad.bin", PutSource::Bytes(b"x"), &bad, &ctx).is_err());
+}

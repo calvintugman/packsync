@@ -120,7 +120,10 @@ fn run(args: Args) -> Result<i32, String> {
             auth.revoke(&ctx).map_err(|e| e.to_string())?;
         }
         auth.disconnect().map_err(|e| e.to_string())?;
-        println!("Signed out of the self-test account{}.", if *revoke { " and revoked PackSync-Test's access at Google" } else { "" });
+        println!(
+            "Signed out of the self-test account{}.",
+            if *revoke { " and revoked PackSync-Test's access at Google" } else { "" }
+        );
         return Ok(0);
     }
 
@@ -130,7 +133,8 @@ fn run(args: Args) -> Result<i32, String> {
         AuthStatus::CredentialStoreUnavailable(m) => return Err(m),
         _ => {
             println!("Signing in to Google (scope: {})…", auth.required_scope());
-            let opener: Box<dyn UrlOpener> = if args.no_browser { Box::new(PrintUrl) } else { Box::new(SystemBrowser { print_fallback: true }) };
+            let opener: Box<dyn UrlOpener> =
+                if args.no_browser { Box::new(PrintUrl) } else { Box::new(SystemBrowser { print_fallback: true }) };
             let who = auth.login(&*opener, &LoginOptions::default(), &ctx).map_err(|e| e.to_string())?;
             println!("Signed in as {}.", who.email.as_deref().unwrap_or("(unknown)"));
         }
@@ -142,7 +146,8 @@ fn run(args: Args) -> Result<i32, String> {
     let cmd = args.command.unwrap_or(Cmd::Run { keep: false, no_large: false, list_wait_secs: 20 });
     // the cross-device steps must leave their objects behind
     cfg.track_created = matches!(cmd, Cmd::Run { keep: false, .. } | Cmd::CrossDeviceCleanup);
-    let drive = DriveStorage::new(cfg, auth.clone(), Arc::new(MemoryTransferState::default())).map_err(|e| e.to_string())?;
+    let drive =
+        DriveStorage::new(cfg, auth.clone(), Arc::new(MemoryTransferState::default())).map_err(|e| e.to_string())?;
 
     match cmd {
         Cmd::Run { keep, no_large, list_wait_secs } => {
@@ -167,7 +172,11 @@ fn run(args: Args) -> Result<i32, String> {
             let stats = drive.stats();
             println!("\nHTTP requests during the run: {stats:?}");
             if let Ok(Some(q)) = drive.quota(&ctx) {
-                println!("Drive usage: {} bytes of {}", q.used, q.total.map(|t| t.to_string()).unwrap_or_else(|| "unlimited".into()));
+                println!(
+                    "Drive usage: {} bytes of {}",
+                    q.used,
+                    q.total.map(|t| t.to_string()).unwrap_or_else(|| "unlimited".into())
+                );
             }
             if keep {
                 println!("--keep: the '{ROOT}' folder was left in place.");
@@ -180,17 +189,35 @@ fn run(args: Args) -> Result<i32, String> {
                     }
                 }
             }
-            println!("\n{} passed, {failed} failed.", results.len() - results.iter().filter(|(_, r)| r.is_err()).count());
+            println!(
+                "\n{} passed, {failed} failed.",
+                results.len() - results.iter().filter(|(_, r)| r.is_err()).count()
+            );
             Ok(if failed == 0 { 0 } else { 1 })
         }
         Cmd::CrossDeviceWrite => {
-            let token = format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0));
+            let token = format!(
+                "{:x}",
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+            );
             let body = format!("packsync cross-device marker {token}\n");
             let info = drive
-                .put(MARKER_KEY, PutSource::Bytes(body.as_bytes()), &PutOptions::replace().with_tag("ps", "1").with_tag("kind", "selftest"), &ctx)
+                .put(
+                    MARKER_KEY,
+                    PutSource::Bytes(body.as_bytes()),
+                    &PutOptions::replace().with_tag("ps", "1").with_tag("kind", "selftest"),
+                    &ctx,
+                )
                 .map_err(|e| e.to_string())?;
-            println!("Created {MARKER_KEY} ({} bytes, Drive file {}).", info.size, info.provider_ref.as_deref().unwrap_or("?"));
-            println!("Now, on ANOTHER computer with the same Google account and the same OAuth client, run:\n  packsync-drive-selftest --i-understand-this-uses-my-drive --space {} cross-device-read", args.space);
+            println!(
+                "Created {MARKER_KEY} ({} bytes, Drive file {}).",
+                info.size,
+                info.provider_ref.as_deref().unwrap_or("?")
+            );
+            println!(
+                "Now, on ANOTHER computer with the same Google account and the same OAuth client, run:\n  packsync-drive-selftest --i-understand-this-uses-my-drive --space {} cross-device-read",
+                args.space
+            );
             println!("Expected content: {body:?}");
             Ok(0)
         }
@@ -199,14 +226,24 @@ fn run(args: Args) -> Result<i32, String> {
             println!("Objects visible under selftest/: {}", items.len());
             match drive.get_bytes(MARKER_KEY, 4096, &ctx) {
                 Ok(bytes) => {
-                    println!("PASS  this computer can read the object computer A created: {:?}", String::from_utf8_lossy(&bytes));
-                    println!("      → with scope {}, files created by the app are visible across devices (same client ID).", auth.required_scope());
+                    println!(
+                        "PASS  this computer can read the object computer A created: {:?}",
+                        String::from_utf8_lossy(&bytes)
+                    );
+                    println!(
+                        "      → with scope {}, files created by the app are visible across devices (same client ID).",
+                        auth.required_scope()
+                    );
                     Ok(0)
                 }
                 Err(StorageError::NotFound(_)) => {
                     println!("FAIL  the marker is not visible from this computer.");
-                    println!("      With the default `drive.file` scope this means files created on one computer are NOT visible to the");
-                    println!("      same OAuth client on another. Re-run both steps with `--space app_data` (scope drive.appdata); if that");
+                    println!(
+                        "      With the default `drive.file` scope this means files created on one computer are NOT visible to the"
+                    );
+                    println!(
+                        "      same OAuth client on another. Re-run both steps with `--space app_data` (scope drive.appdata); if that"
+                    );
                     println!("      passes, use the app-data space for real use (set storage space to app_data).");
                     Ok(1)
                 }

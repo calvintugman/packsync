@@ -347,3 +347,54 @@ fn a_snapshot_that_exists_only_locally_cannot_be_restored_until_it_is_uploaded()
     a.upload(en.instance);
     assert!(a.engine.restore_preview(en.instance, id, &a.ctx()).is_ok());
 }
+
+#[test]
+fn catching_up_after_an_in_place_region_edit_downloads_only_the_changed_blocks() {
+    // The common case: the other computer played, a few chunks of a few region files changed. Catching
+    // up must fetch those blocks, not whole region files — unchanged blocks are taken from disk.
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let mut spec = FixtureSpec::tiny();
+    spec.chunks_per_region = 400;
+    spec.chunk_sectors = (2, 6);
+    spec.regions_per_world = 3;
+    let (root_a, info, en) = a.new_instance("pack", &spec);
+    a.upload(en.instance);
+    let b = w.device("laptop");
+    let rb = b
+        .engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: en.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    let region_bytes: u64 = info.regions.iter().map(|p| fs::metadata(p).unwrap().len()).sum();
+    assert!(region_bytes > 1_000_000, "the regions are big enough for the test to mean something: {region_bytes}");
+    // A plays: two chunks change in each of two region files
+    for (i, p) in info.regions.iter().take(2).enumerate() {
+        fixtures::edit_region(p, 2, 300 + i as u64);
+    }
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    a.upload(en.instance);
+    let before = b.meter.snapshot();
+    let rec = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::FastForwarded { files_written: 2, .. }), "{rec:?}");
+    let spent = b.meter.snapshot().since(&before);
+    let two_regions = info.regions.iter().take(2).map(|p| fs::metadata(p).unwrap().len()).sum::<u64>();
+    assert!(
+        spent.bytes_down < two_regions / 3,
+        "downloaded {} for two region files of {} bytes in total: unchanged blocks must come from disk",
+        spent.bytes_down,
+        two_regions
+    );
+    assert_eq!(tree(&rb.root), tree(&root_a), "and the result is byte-identical");
+}

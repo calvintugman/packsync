@@ -160,9 +160,15 @@ impl DriveFile {
         self.app_properties.get(PROP_MARKER).map(String::as_str) == Some("1")
     }
 
-    /// User-visible tags (internal markers removed).
+    /// The tags callers see: everything except the adapter's private folder marker. The `ps=1`
+    /// marker is reported (every object the adapter lists carries it: listings are filtered on it),
+    /// which is how retention knows an object was created by PackSync.
     pub fn user_tags(&self) -> BTreeMap<String, String> {
-        self.app_properties.iter().filter(|(k, _)| !is_reserved_tag(k)).map(|(k, v)| (k.clone(), v.clone())).collect()
+        self.app_properties
+            .iter()
+            .filter(|(k, _)| k.as_str() != PROP_KIND)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
@@ -200,7 +206,11 @@ mod tests {
         assert_eq!(f.md5.as_deref(), Some("0123456789abcdef0123456789abcdef"));
         assert_eq!(f.sha256, None, "malformed checksum is dropped");
         assert!(f.is_ours());
-        assert_eq!(f.user_tags().len(), 1);
+        // the `ps` marker is reported (retention relies on it); null-valued properties are dropped
+        assert_eq!(
+            f.user_tags(),
+            [("ps".to_string(), "1".to_string()), ("k".to_string(), "v".to_string())].into_iter().collect()
+        );
         assert!(!f.is_folder);
 
         let raw: RawFile = serde_json::from_str(r#"{"id":"1abc","size":7}"#).unwrap();

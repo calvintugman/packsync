@@ -193,6 +193,10 @@ pub(crate) fn app_properties(
     let mut m = serde_json::Map::new();
     m.insert(PROP_MARKER.into(), "1".into());
     for (k, v) in tags {
+        // callers (the engine) may state the marker themselves; it is always written, so `ps=1` is a no-op
+        if k == PROP_MARKER && v == "1" {
+            continue;
+        }
         if is_reserved_tag(k) {
             return Err(StorageError::Other(format!("tag key {k:?} is reserved by the Drive adapter")));
         }

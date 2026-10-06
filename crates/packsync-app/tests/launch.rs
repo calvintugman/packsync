@@ -364,7 +364,15 @@ fn a_session_whose_app_was_killed_no_longer_makes_the_hooks_stand_aside() {
     let w = World::new();
     let a = w.device("desktop");
     let (inst, _root) = a.new_synced_instance("Pack One");
-    let begun = a.app.engine().begin_session(inst, BeginSession { owner: SessionOwner::App, token: "app-killed".into(), offline: false }, &a.ctx()).unwrap();
+    let begun = a
+        .app
+        .engine()
+        .begin_session(
+            inst,
+            BeginSession { owner: SessionOwner::App, token: "app-killed".into(), offline: false },
+            &a.ctx(),
+        )
+        .unwrap();
     // while its owner (this test process) lives, the hooks stay out of the way
     let pre = a.app.hook_pre_launch(inst, &a.ctx());
     let HookOutcome::Proceed { messages, .. } = pre else { panic!("{pre:?}") };

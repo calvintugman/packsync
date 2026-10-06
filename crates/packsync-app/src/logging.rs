@@ -21,7 +21,8 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
 
 /// Crates whose logs can contain credentials: never more verbose than `warn`.
-pub const PINNED: &[&str] = &["ureq", "ureq_proto", "rustls", "hyper", "h2", "http", "tiny_http", "keyring", "zbus", "oauth2", "reqwest"];
+pub const PINNED: &[&str] =
+    &["ureq", "ureq_proto", "rustls", "hyper", "h2", "http", "tiny_http", "keyring", "zbus", "oauth2", "reqwest"];
 
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const KEEP_OLD: usize = 3;
@@ -136,11 +137,15 @@ mod tests {
 
     #[test]
     fn user_directives_cannot_raise_the_crates_that_log_credentials() {
-        let (f, ignored) = build_filter(Some("ureq=trace, packsync_core=trace ,rustls::client=debug,my_crate=debug"), false);
+        let (f, ignored) =
+            build_filter(Some("ureq=trace, packsync_core=trace ,rustls::client=debug,my_crate=debug"), false);
         let text = f.to_string();
         assert_eq!(ignored, vec!["ureq=trace".to_string(), "rustls::client=debug".to_string()]);
         // the pinned crates appear after everything the user could add, at warn
-        assert!(text.contains("ureq=warn") && !text.contains("ureq=trace") && !text.contains("rustls::client"), "{text}");
+        assert!(
+            text.contains("ureq=warn") && !text.contains("ureq=trace") && !text.contains("rustls::client"),
+            "{text}"
+        );
         assert!(text.contains("packsync_core=trace") && text.contains("my_crate=debug"), "{text}");
     }
 
@@ -167,8 +172,15 @@ mod tests {
             rotate(&path);
             assert!(!path.exists() || std::fs::metadata(&path).unwrap().len() <= MAX_LOG_BYTES, "round {round}");
         }
-        let names: Vec<_> = std::fs::read_dir(d.path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert!(names.iter().all(|n| n == "packsync.log" || n.ends_with(".1") || n.ends_with(".2") || n.ends_with(".3")), "{names:?}");
+        let names: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().all(|n| n == "packsync.log" || n.ends_with(".1") || n.ends_with(".2") || n.ends_with(".3")),
+            "{names:?}"
+        );
         assert!(names.len() <= KEEP_OLD + 1, "{names:?}");
     }
 }

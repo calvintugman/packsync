@@ -405,6 +405,9 @@ pub struct RestoreReport {
     pub deleted: u64,
     pub bytes_written: u64,
     pub bytes_downloaded: u64,
+    /// Content of replaced files that was already on disk (unchanged blocks) and so was not downloaded.
+    #[serde(default)]
+    pub bytes_reused_locally: u64,
     pub recovery_point: Option<String>,
     pub skipped: Vec<PlanIssue>,
 }
@@ -417,15 +420,61 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
     live_path(root, rel)
 }
 
-/// Gather blobs for one batch of entries into `blob_dir` (recipes first, then chunks).
+/// What one batch needed from the cloud.
+struct Fetched {
+    recipes: HashMap<Hash, Recipe>,
+    downloaded: u64,
+    /// Bytes served from blocks that were already on disk.
+    reused: u64,
+}
+
+/// Chunks of the new version of a file that sit, unchanged, at the same offset of the old local file
+/// (the game rewrites a few chunks of a region file in place): they need not be downloaded. Every block
+/// taken from disk is verified against its hash, so a stale or modified local file can only cost a
+/// download, never produce wrong content.
+fn reuse_local_blocks(root: &Path, e: &Entry, rec: &Recipe, blob_dir: &Path) -> Result<(HashSet<Hash>, u64)> {
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut f) = fs::File::open(lp(&local_path(root, &e.p))) else { return Ok((HashSet::new(), 0)) };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut have = HashSet::new();
+    let (mut reused, mut off) = (0u64, 0u64);
+    for (h, l) in &rec.chunks {
+        let l64 = *l as u64;
+        if off + l64 > len {
+            break;
+        }
+        if blob_dir.join(h.to_hex()).exists() {
+            have.insert(*h);
+        } else {
+            f.seek(SeekFrom::Start(off)).io_ctx(|| format!("reading {}", e.p))?;
+            let mut buf = vec![0u8; *l as usize];
+            if f.read_exact(&mut buf).is_err() {
+                break;
+            }
+            if Hash::of(&buf) == *h {
+                fs::create_dir_all(lp(blob_dir)).io_ctx(|| "creating the blob store".to_string())?;
+                crate::remote::write_store_file(blob_dir, *h, &buf)?;
+                have.insert(*h);
+                reused += l64;
+            }
+        }
+        off += l64;
+    }
+    Ok((have, reused))
+}
+
+/// Gather blobs for one batch of entries into `blob_dir` (recipes first, then chunks). With `local_root`,
+/// unchanged blocks of files that are being replaced are taken from disk instead of the cloud.
 fn fetch_batch(
     env: &RestoreEnv<'_>,
     entries: &[&Entry],
     blob_dir: &Path,
+    local_root: Option<&Path>,
     ctx: &OpCtx,
-) -> Result<(HashMap<Hash, Recipe>, u64)> {
+) -> Result<Fetched> {
     let rec_hashes: Vec<Hash> = entries.iter().filter_map(|e| e.r).collect();
     let mut downloaded = 0;
+    let mut reused = 0;
     if !rec_hashes.is_empty() {
         downloaded += env.remote.fetch_blobs(&rec_hashes, blob_dir, env.cfg.concurrency, ctx)?.fetched_bytes;
     }
@@ -436,7 +485,15 @@ fn fetch_batch(
             Some(r) => {
                 let bytes = fs::read(blob_dir.join(r.to_hex())).io_ctx(|| format!("reading recipe for {}", e.p))?;
                 let rec = Recipe::decode(&bytes, e.s)?;
-                data.extend(rec.chunks.iter().map(|c| c.0));
+                let have = match local_root {
+                    Some(root) => {
+                        let (have, n) = reuse_local_blocks(root, e, &rec, blob_dir)?;
+                        reused += n;
+                        have
+                    }
+                    None => HashSet::new(),
+                };
+                data.extend(rec.chunks.iter().map(|c| c.0).filter(|h| !have.contains(h)));
                 recipes.insert(r, rec);
             }
             None if e.s > 0 => {
@@ -446,7 +503,7 @@ fn fetch_batch(
         }
     }
     downloaded += env.remote.fetch_blobs(&data, blob_dir, env.cfg.concurrency, ctx)?.fetched_bytes;
-    Ok((recipes, downloaded))
+    Ok(Fetched { recipes, downloaded, reused })
 }
 
 /// Build the file for `e` at `out` from the blob store and verify its whole-content hash.
@@ -552,9 +609,10 @@ fn apply_metadata(path: &Path, e: &Entry) {
 }
 
 /// Download, verify and stage every file in `plan.writes` under `stage_dir`.
-fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<u64> {
+fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<(u64, u64)> {
     let blob_dir = txd.join("blobs");
     let mut downloaded = 0;
+    let mut reused = 0;
     let total = plan.bytes_to_write;
     let mut done_bytes = 0u64;
     let mut done_files = 0u64;
@@ -570,8 +628,10 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
             i += 1;
         }
         ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
-        let (recipes, d) = fetch_batch(env, &batch, &blob_dir, ctx)?;
-        downloaded += d;
+        let fetched = fetch_batch(env, &batch, &blob_dir, Some(root), ctx)?;
+        downloaded += fetched.downloaded;
+        reused += fetched.reused;
+        let recipes = fetched.recipes;
         crate::failpoint!("restore.after_fetch_batch")?;
         for e in batch {
             ctx.check()?;
@@ -602,7 +662,7 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
         }
         let _ = fs::remove_dir_all(lp(&blob_dir));
     }
-    Ok(downloaded)
+    Ok((downloaded, reused))
 }
 
 fn new_tx_dir(root: &Path, tx: TxId) -> Result<PathBuf> {
@@ -790,7 +850,7 @@ pub fn restore_in_place(
         }
     };
 
-    let downloaded = match stage_all(env, &plan, root, &txd, ctx) {
+    let (downloaded, reused) = match stage_all(env, &plan, root, &txd, ctx) {
         Ok(d) => d,
         Err(e) => {
             cleanup(&txd, &e);
@@ -798,6 +858,7 @@ pub fn restore_in_place(
         }
     };
     report.bytes_downloaded = downloaded;
+    report.bytes_reused_locally = reused;
     if let Err(e) = journal.append(&Rec::Staged, true).and_then(|_| crate::failpoint!("restore.after_staged")) {
         cleanup(&txd, &e);
         return Err(e);
@@ -1007,8 +1068,9 @@ pub fn restore_new(
                 i += 1;
             }
             ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
-            let (recipes, d) = fetch_batch(env, &batch, &blob_dir, ctx)?;
-            downloaded += d;
+            let fetched = fetch_batch(env, &batch, &blob_dir, None, ctx)?;
+            downloaded += fetched.downloaded;
+            let recipes = fetched.recipes;
             for e in batch {
                 ctx.check()?;
                 let out = local_path(dir, &e.p);
@@ -1034,6 +1096,7 @@ pub fn restore_new(
             deleted: 0,
             bytes_written: plan.bytes_to_write,
             bytes_downloaded: downloaded,
+            bytes_reused_locally: 0,
             recovery_point: None,
             skipped: plan.skipped.clone(),
         })
