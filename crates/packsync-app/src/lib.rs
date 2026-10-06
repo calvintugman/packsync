@@ -13,6 +13,7 @@ pub mod events;
 pub mod hooks;
 pub mod jobs;
 pub mod launch;
+pub mod logging;
 pub mod paths;
 pub mod provider;
 pub mod rpc;

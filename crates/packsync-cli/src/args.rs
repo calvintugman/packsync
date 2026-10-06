@@ -23,6 +23,9 @@ pub struct Cli {
     /// Do not print progress or hints on stderr.
     #[arg(long, short = 'q', global = true)]
     pub quiet: bool,
+    /// Write more detail to the log file (`<state>/logs/packsync.log`; secrets are always redacted).
+    #[arg(long, short = 'v', global = true)]
+    pub verbose: bool,
     /// Answer yes to confirmation questions (required when stdin is not a terminal).
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,

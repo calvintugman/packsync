@@ -1676,6 +1676,7 @@ dependencies = [
  "time",
  "tiny_http",
  "tracing",
+ "tracing-subscriber",
  "ureq",
  "uuid",
 ]
