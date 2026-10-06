@@ -143,9 +143,11 @@ pub struct PreviewArgs {
 
 #[derive(Args, Debug)]
 pub struct EnableArgs {
+    /// Instance folder (the one containing instance.cfg).
     pub path: PathBuf,
     #[arg(long, default_value = "prism")]
     pub launcher: String,
+    /// Extra rules (TOML) appended to the defaults.
     #[arg(long, value_name = "FILE")]
     pub rules_file: Option<PathBuf>,
     /// Create the first snapshot but do not upload it yet.
@@ -155,10 +157,12 @@ pub struct EnableArgs {
 
 #[derive(Args, Debug)]
 pub struct SnapshotArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Create a snapshot even if nothing changed.
     #[arg(long)]
     pub force: bool,
+    /// A note stored with the snapshot.
     #[arg(long)]
     pub note: Option<String>,
     /// Allow a snapshot that deletes many files (after you verified that is intended).
@@ -168,6 +172,7 @@ pub struct SnapshotArgs {
 
 #[derive(Args, Debug)]
 pub struct UploadArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Retry now even if a backoff is pending.
     #[arg(long)]
@@ -176,6 +181,7 @@ pub struct UploadArgs {
 
 #[derive(Args, Debug)]
 pub struct ReconcileArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Report a newer cloud version instead of applying it.
     #[arg(long)]
@@ -187,6 +193,7 @@ pub struct ReconcileArgs {
 
 #[derive(Args, Debug)]
 pub struct HistoryArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Do not contact the cloud.
     #[arg(long)]
@@ -195,6 +202,7 @@ pub struct HistoryArgs {
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Also check that the cloud has everything the snapshot needs.
     #[arg(long)]
@@ -209,6 +217,7 @@ pub struct VerifyArgs {
 
 #[derive(Args, Debug)]
 pub struct RestoreArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Snapshot ID (or unique prefix) from `packsync history`.
     pub snapshot: String,
@@ -224,6 +233,7 @@ pub struct RestoreArgs {
 pub struct RestoreNewArgs {
     /// Cloud instance (ID, prefix or name); optional when the cloud has exactly one.
     pub instance: Option<String>,
+    /// Snapshot to restore (default: the cloud's single head).
     #[arg(long)]
     pub snapshot: Option<String>,
     /// Prism data directory to restore into (default: the first one found).
@@ -235,16 +245,20 @@ pub struct RestoreNewArgs {
     /// Java executable to use on this computer.
     #[arg(long)]
     pub java: Option<String>,
+    /// Minimum Java heap for this computer (MB).
     #[arg(long)]
     pub min_memory_mb: Option<u32>,
+    /// Maximum Java heap for this computer (MB).
     #[arg(long)]
     pub max_memory_mb: Option<u32>,
+    /// Skip files that cannot be written on this platform instead of refusing.
     #[arg(long)]
     pub skip_incompatible: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct ResolveArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// keep-local | keep-cloud | split
     pub choice: String,
@@ -308,6 +322,7 @@ pub enum HookCmd {
 
 #[derive(Args, Debug)]
 pub struct HookArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     #[arg(long)]
     pub instance: String,
     #[arg(long)]
@@ -319,6 +334,7 @@ pub struct HookArgs {
 
 #[derive(Args, Debug)]
 pub struct LaunchArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
     /// Start Prism in offline mode with this player name.
     #[arg(long)]
