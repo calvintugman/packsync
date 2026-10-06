@@ -1674,7 +1674,9 @@ dependencies = [
  "tempfile",
  "thiserror",
  "time",
+ "tiny_http",
  "tracing",
+ "ureq",
  "uuid",
 ]
 

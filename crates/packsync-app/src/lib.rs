@@ -7,12 +7,15 @@
 //! No front-end logic lives here (no printing, no windows), so everything is testable headless.
 
 pub mod app;
+pub mod bridge;
+pub mod diagnostics;
 pub mod events;
 pub mod hooks;
 pub mod jobs;
 pub mod launch;
 pub mod paths;
 pub mod provider;
+pub mod rpc;
 pub mod settings;
 
 pub use app::{App, AppOptions, DiscoveredView, RestoreCloudRequest, SettingsUpdate};

@@ -28,8 +28,10 @@ sysinfo.workspace = true
 fastrand.workspace = true
 dunce.workspace = true
 directories = "6"
+tiny_http.workspace = true
 
 [dev-dependencies]
+ureq.workspace = true
 tempfile.workspace = true
 filetime.workspace = true
 packsync-core = { workspace = true, features = ["testkit", "failpoints"] }

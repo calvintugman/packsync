@@ -435,6 +435,13 @@ pub struct GcOpts {
 
 #[derive(Args, Debug)]
 pub struct BridgeArgs {
+    /// 0 picks a free port.
     #[arg(long, default_value_t = 0)]
     pub port: u16,
+    /// Serve the built UI from this folder (same origin as the API).
+    #[arg(long, value_name = "DIR")]
+    pub ui_dir: Option<PathBuf>,
+    /// Let a UI dev server on this origin call the API (otherwise use the dev server's proxy).
+    #[arg(long, value_name = "ORIGIN")]
+    pub allow_origin: Option<String>,
 }
