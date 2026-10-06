@@ -65,7 +65,8 @@ fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids:
     let mut out = vec![];
     for (pid, p) in sys.processes() {
         let pid = pid.as_u32();
-        if pid == me || ignore_pids.contains(&pid) {
+        // On Linux every thread of a JVM is listed as a process of its own; only the process counts.
+        if pid == me || ignore_pids.contains(&pid) || p.thread_kind().is_some() {
             continue;
         }
         let name = p.name().to_string_lossy().into_owned();
@@ -105,6 +106,12 @@ pub fn pid_alive(pid: u32, started_ms: Option<i64>) -> bool {
         Some(ms) => (p.start_time() as i64 * 1000 - ms).abs() < 120_000,
         None => true,
     }
+}
+
+/// When a process started (milliseconds since the epoch), if it is running.
+pub fn process_start_ms(pid: u32) -> Option<i64> {
+    let sys = System::new_with_specifics(RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()));
+    sys.process(sysinfo::Pid::from_u32(pid)).map(|p| p.start_time() as i64 * 1000)
 }
 
 /// World folders whose `session.lock` is locked by another process (Minecraft holds it while a

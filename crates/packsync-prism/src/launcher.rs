@@ -388,7 +388,10 @@ impl Launcher for PrismLauncher {
     }
 
     fn game_process_patterns(&self, root: &Path) -> Vec<String> {
-        vec![format!("-Djava.library.path={}", root.join("natives").display()), "org.prismlauncher.EntryPoint".into()]
+        // Only the instance-specific natives path: the generic `org.prismlauncher.EntryPoint` main class
+        // appears on *every* Prism game, so using it as a match would make a game running from one
+        // instance block syncing of all the others.
+        vec![format!("-Djava.library.path={}", root.join("natives").display())]
     }
 
     fn hook_state(&self, root: &Path) -> Result<HookState> {
@@ -633,6 +636,8 @@ mod tests {
         assert!(idle.hook_state(&root).unwrap().intact);
         idle.apply_hook_plan(&idle.plan_remove_hooks(&root).unwrap()).unwrap();
         assert!(!idle.hook_state(&root).unwrap().installed);
-        assert_eq!(idle.game_process_patterns(&root)[1], "org.prismlauncher.EntryPoint");
+        let pats = idle.game_process_patterns(&root);
+        assert_eq!(pats.len(), 1, "no generic pattern that would match other instances' games: {pats:?}");
+        assert!(pats[0].ends_with("/natives") || pats[0].ends_with("\\natives"), "{pats:?}");
     }
 }

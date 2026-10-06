@@ -17,5 +17,7 @@ mod launcher;
 pub mod process;
 pub mod qtini;
 pub mod rules;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 
 pub use launcher::{Exe, KIND, LaunchCommand, PrismLauncher};

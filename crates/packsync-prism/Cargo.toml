@@ -25,3 +25,7 @@ time.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 fastrand.workspace = true
+
+[features]
+# Fixtures for tests of code that uses this adapter (Prism-shaped instances, a fake `prismlauncher`).
+testkit = ["packsync-core/testkit"]

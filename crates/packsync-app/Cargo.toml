@@ -5,8 +5,33 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Application layer shared by the CLI, the desktop shell and the dev bridge: settings, providers, jobs, launching, hooks, JSON API"
 
 [lints]
 workspace = true
 
 [dependencies]
+packsync-core.workspace = true
+packsync-drive.workspace = true
+packsync-prism.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+time.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+tracing.workspace = true
+notify.workspace = true
+sysinfo.workspace = true
+fastrand.workspace = true
+dunce.workspace = true
+directories = "6"
+
+[dev-dependencies]
+tempfile.workspace = true
+filetime.workspace = true
+packsync-core = { workspace = true, features = ["testkit", "failpoints"] }
+packsync-drive = { workspace = true, features = ["mock"] }
+packsync-prism = { workspace = true, features = ["testkit"] }
