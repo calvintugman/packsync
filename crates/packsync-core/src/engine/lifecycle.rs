@@ -34,6 +34,11 @@ impl Engine {
         let launcher = self.launcher(&inst.launcher);
         let patterns = launcher.game_process_patterns(&inst.root);
         let mgr = SessionMgr { db: &self.db };
+        // A new session may only start when nothing is using the instance (a retry with a known
+        // token is the idempotent path and is not re-checked).
+        if !self.db.sessions_open(id)?.iter().any(|s| s.token == req.token) {
+            self.ensure_idle(&inst)?;
+        }
         let (row, how) = mgr.begin(&inst, req.owner, &req.token, req.offline, &patterns)?;
         let mut playing = vec![];
         if how == crate::session::Begin::Created
@@ -229,7 +234,7 @@ impl Engine {
                 continue;
             }
             // Another process may be working on this very instance right now: never recover under it.
-            let Ok(_busy_guard) = self.lock(inst.id, "recover") else { continue };
+            let Ok(busy_guard) = self.lock(inst.id, "recover") else { continue };
             for txd in journal::pending_txs(&inst.root) {
                 match journal::recover_tx(&inst.root, &txd)? {
                     RecoveryAction::RolledBack => {
@@ -275,6 +280,8 @@ impl Engine {
                     r.state_detail = None;
                 })?;
             }
+            // Closing abandoned sessions takes the instance lock itself: release ours first.
+            drop(busy_guard);
             // sessions whose game is gone and that were never closed
             let launcher = self.launcher(&inst.launcher);
             let patterns = launcher.game_process_patterns(&inst.root);

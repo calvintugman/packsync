@@ -198,6 +198,26 @@ fn entry_from_row(path: &str, mtime_ns: i64, exec: bool, row: &IndexRow) -> Entr
     }
 }
 
+/// A path that was synced before but is now a symbolic link (or special file) is **unknown**, not
+/// deleted: links are never followed, so the content behind one cannot be seen. Recording it as a
+/// deletion would delete the data on every other computer.
+pub(crate) fn symlink_guard(issues: &[ScanIssue], base: Option<&Manifest>) -> Result<()> {
+    let Some(base) = base else { return Ok(()) };
+    for iss in issues.iter().filter(|i| matches!(i.kind, IssueKind::Symlink | IssueKind::SpecialFile)) {
+        let prefix = format!("{}/", iss.path);
+        let at = base.entries.partition_point(|e| e.p.as_bytes() < prefix.as_bytes());
+        let beneath = base.entries.get(at).is_some_and(|e| e.p.starts_with(&prefix));
+        if base.entry(&iss.path).is_some() || beneath {
+            return Err(Error::SafetyGuard(format!(
+                "{} was synced before but is now a symbolic link or special file. PackSync never follows links, so it cannot see what is inside \
+                 and will not record it as deleted. Restore the real folder, or add an exclude rule if you meant to stop syncing it",
+                iss.path
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Guard against turning an unavailable drive or a mis-selected folder into a mass deletion.
 fn check_instance_available(
     inst: &InstanceRow,
@@ -225,6 +245,7 @@ fn check_instance_available(
             }
         }
     }
+    symlink_guard(&walk.issues, base)?;
     if !walk.unreadable_dirs.is_empty() && !cfg.allow_unreadable {
         return Err(Error::InstanceUnavailable(format!(
             "{} directories could not be read (first: {}); their content is unknown, so no snapshot was taken",

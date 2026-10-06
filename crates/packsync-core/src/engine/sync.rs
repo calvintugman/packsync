@@ -207,6 +207,13 @@ impl Engine {
             opts.mode = ScanMode::Full;
         }
         let w = walk(&inst.root, &rules, &index, &opts, ctx)?;
+        snapshot::symlink_guard(&w.issues, base.as_ref())?;
+        if !w.unreadable_dirs.is_empty() {
+            return Err(Error::InstanceUnavailable(format!(
+                "{} could not be read; its content is unknown, so no changes can be computed",
+                w.unreadable_dirs[0]
+            )));
+        }
         let to_hash: Vec<&crate::scan::Candidate> = w.files.iter().filter(|c| c.reuse.is_none()).collect();
         let sink = CountingSink::new(self.db.clone());
         let hp = hash_phase(
@@ -658,40 +665,73 @@ impl Engine {
         let m = self.manifest(id, sid, ctx)?;
         remote.sync_index_cache(ctx)?;
         let mut rep = RemoteVerifyReport { snapshot: Some(sid), ..Default::default() };
+        let mut missing_packs: HashSet<crate::hash::Hash> = HashSet::new();
+        let mut checked_packs: HashSet<crate::hash::Hash> = HashSet::new();
+        let known_sizes = self.db.packs_known()?;
+        // Existence of the packs behind a set of blobs (strongly consistent `stat`, not a listing).
+        let check_packs = |blobs: &HashSet<crate::hash::Hash>,
+                           rep: &mut RemoteVerifyReport,
+                           missing: &mut HashSet<crate::hash::Hash>,
+                           checked: &mut HashSet<crate::hash::Hash>|
+         -> Result<HashSet<crate::hash::Hash>> {
+            let mut packs = HashSet::new();
+            for b in blobs {
+                match self.db.blob_lookup(*b)? {
+                    Some((p, _)) => {
+                        packs.insert(p);
+                    }
+                    None => rep.unlisted_blobs.push(b.to_hex()),
+                }
+            }
+            for p in &packs {
+                if !checked.insert(*p) {
+                    continue;
+                }
+                match remote.stat_pack(*p, ctx)? {
+                    Some(info) if known_sizes.get(p).is_none_or(|s| *s == info.size) => {}
+                    _ => {
+                        missing.insert(*p);
+                    }
+                }
+            }
+            Ok(packs)
+        };
+        // 1. the blobs named by the manifest itself (single blobs and recipes)
         let mut blobs: HashSet<crate::hash::Hash> = HashSet::new();
+        let mut recipes: Vec<(&crate::manifest::Entry, crate::hash::Hash)> = vec![];
         for e in m.entries.iter().filter(|e| e.is_file() && e.s > 0) {
-            match e.r {
-                Some(r) => {
+            match (e.r, e.h) {
+                (Some(r), _) => {
                     blobs.insert(r);
+                    recipes.push((e, r));
+                }
+                (None, Some(h)) => {
+                    blobs.insert(h);
+                }
+                _ => {}
+            }
+        }
+        let root_packs = check_packs(&blobs, &mut rep, &mut missing_packs, &mut checked_packs)?;
+        // 2. chunk lists, read only from packs that exist
+        let mut chunk_blobs: HashSet<crate::hash::Hash> = HashSet::new();
+        for (e, r) in recipes {
+            match self.db.blob_lookup(r)? {
+                Some((p, _)) if !missing_packs.contains(&p) => {
                     match remote.read_blob(r, ctx).and_then(|b| crate::manifest::Recipe::decode(&b, e.s)) {
-                        Ok(rc) => blobs.extend(rc.chunks.iter().map(|c| c.0)),
+                        Ok(rc) => chunk_blobs.extend(rc.chunks.iter().map(|c| c.0)),
                         Err(err) => rep.damaged_blobs.push(format!("recipe of {}: {err}", e.p)),
                     }
                 }
-                None => {
-                    if let Some(h) = e.h {
-                        blobs.insert(h);
-                    }
-                }
+                _ => rep.damaged_blobs.push(format!("recipe of {} cannot be read (its pack is missing)", e.p)),
             }
         }
+        check_packs(&chunk_blobs, &mut rep, &mut missing_packs, &mut checked_packs)?;
+        blobs.extend(chunk_blobs);
+        let _ = root_packs;
         rep.blobs_checked = blobs.len() as u64;
-        let mut packs: HashSet<crate::hash::Hash> = HashSet::new();
-        for b in &blobs {
-            match self.db.blob_lookup(*b)? {
-                Some((p, _)) => {
-                    packs.insert(p);
-                }
-                None => rep.unlisted_blobs.push(b.to_hex()),
-            }
-        }
-        rep.packs_checked = packs.len() as u64;
-        for p in &packs {
-            match remote.stat_pack(*p, ctx)? {
-                Some(info) if self.db.packs_known()?.get(p).is_none_or(|s| *s == info.size) => {}
-                _ => rep.missing_packs.push(p.to_hex()),
-            }
-        }
+        rep.packs_checked = checked_packs.len() as u64;
+        rep.missing_packs = missing_packs.iter().map(|p| p.to_hex()).collect();
+        rep.missing_packs.sort();
         if deep && rep.missing_packs.is_empty() {
             let dir = tempfile::tempdir().map_err(|e| Error::io("creating temp dir", e))?;
             let all: Vec<_> = blobs.iter().copied().collect();

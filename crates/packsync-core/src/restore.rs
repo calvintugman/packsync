@@ -42,6 +42,11 @@ pub struct RestoreConfig {
     pub space_margin: u64,
     pub apply_batch: usize,
     pub keep_recovery_days: u32,
+    /// Treat the target as Windows when checking names (default: the platform we are running on).
+    /// Tests use it to exercise the cross-platform refusal on any OS.
+    pub target_is_windows: bool,
+    /// Force a name-folding mode instead of probing the target file system.
+    pub fold_override: Option<FoldMode>,
 }
 
 impl Default for RestoreConfig {
@@ -53,6 +58,8 @@ impl Default for RestoreConfig {
             space_margin: 64 * 1024 * 1024,
             apply_batch: 64,
             keep_recovery_days: 14,
+            target_is_windows: cfg!(windows),
+            fold_override: None,
         }
     }
 }
@@ -193,7 +200,7 @@ pub fn plan(
     root: &Path,
     cfg: &RestoreConfig,
 ) -> Result<RestorePlan> {
-    let on_windows = cfg!(windows);
+    let on_windows = cfg.target_is_windows;
     let mut skipped: Vec<PlanIssue> = vec![];
     let mut entries: Vec<&Entry> = vec![];
     for e in &target.entries {
@@ -219,13 +226,13 @@ pub fn plan(
     } else {
         root.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
     };
-    let mode = if cfg!(target_os = "macos") {
+    let mode = cfg.fold_override.unwrap_or(if cfg!(target_os = "macos") {
         FoldMode::CaseAndNormalizationInsensitive
     } else if on_windows || is_case_insensitive_fs(&probe_dir) {
         FoldMode::CaseInsensitive
     } else {
         FoldMode::Sensitive
-    };
+    });
     let coll = find_collisions(entries.iter().map(|e| (e.p.as_str(), e.t == EntryType::Dir)), mode);
     if let Some(c) = coll.first() {
         if !cfg.skip_incompatible {
@@ -1018,11 +1025,10 @@ pub fn restore_new(
         })
     })();
     match result {
-        Ok(r) => {
-            let _ = fs::remove_file(restore_marker_path(dir));
-            forget_pending(env.db, dir);
-            Ok(r)
-        }
+        // On success the ownership marker and the pending-restore record are KEPT until the caller has
+        // registered the instance ([`finish_new_restore`]): a crash in between must still be able to
+        // recognise (and remove) this folder as ours.
+        Ok(r) => Ok(r),
         Err(e) => {
             if !crate::failpoint::is_crash(&e) {
                 remove_restore_dir(dir);
@@ -1031,6 +1037,12 @@ pub fn restore_new(
             Err(e)
         }
     }
+}
+
+/// The restored folder has been registered and renamed into place: it is a normal instance now.
+pub fn finish_new_restore(db: &Db, staged: &Path, final_dir: &Path) {
+    let _ = fs::remove_file(restore_marker_path(final_dir));
+    forget_pending(db, staged);
 }
 
 /// Remove a restore directory, but only if it carries our restore marker.

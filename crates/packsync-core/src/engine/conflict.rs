@@ -292,6 +292,7 @@ impl Engine {
             last_synced_ms: Some(now),
             needs_full_scan: true,
         })?;
+        restore::finish_new_restore(&self.db, &staged, &reg.root);
         Ok(RestoredInstance { instance: req.instance, root: reg.root, snapshot: sid, notes: reg.notes, report })
     }
 

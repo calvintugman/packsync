@@ -400,7 +400,10 @@ fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
             }
             FileKind::Symlink | FileKind::Other => {
                 let d = w.rules.decide(&child_rel);
-                if d.include {
+                // A link can stand for a whole folder (`saves` → elsewhere): judge it by whether
+                // anything *inside* that path would be synced, not only by the link's own name.
+                let in_included_area = d.include || w.rules.decide(&format!("{child_rel}/\u{1}x")).include;
+                if in_included_area {
                     let (kind, detail) = if stat.kind == FileKind::Symlink {
                         (IssueKind::Symlink, "symbolic links are never followed or synced; the link was skipped")
                     } else {

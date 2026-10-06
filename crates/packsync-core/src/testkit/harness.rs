@@ -33,9 +33,14 @@ impl TestWorld {
 
     /// A new computer connected to the shared cloud.
     pub fn device(&self, name: &str) -> TestDevice {
+        self.device_with(name, |_| {})
+    }
+
+    /// A new computer with a customised engine configuration.
+    pub fn device_with(&self, name: &str, tweak: impl FnOnce(&mut EngineConfig)) -> TestDevice {
         let home = self.tmp.path().join(format!("device-{name}"));
         std::fs::create_dir_all(&home).unwrap();
-        TestDevice::build(name, home, self.shared.clone())
+        TestDevice::build(name, home, self.shared.clone(), tweak)
     }
 }
 
@@ -56,7 +61,12 @@ pub struct TestDevice {
 }
 
 impl TestDevice {
-    fn build(name: &str, home: PathBuf, shared: Arc<LocalDirStorage>) -> TestDevice {
+    fn build(
+        name: &str,
+        home: PathBuf,
+        shared: Arc<LocalDirStorage>,
+        tweak: impl FnOnce(&mut EngineConfig),
+    ) -> TestDevice {
         let sleeper = Arc::new(RecordingSleeper::default());
         let mut cfg = EngineConfig::new(home.join("state"));
         cfg.device_name = Some(name.to_string());
@@ -65,6 +75,7 @@ impl TestDevice {
         cfg.snapshot.scan.threads = 2;
         cfg.restore.concurrency = 2;
         cfg.upload_concurrency = 2;
+        tweak(&mut cfg);
         let engine = Engine::open_with_sleeper(cfg, sleeper.clone()).unwrap();
         let plan = FaultPlan::new(0xC0FFEE);
         let (metered, meter) = MeteredStorage::new(shared.clone() as Arc<dyn Storage>);
