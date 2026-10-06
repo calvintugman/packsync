@@ -446,6 +446,14 @@ impl Remote {
         Ok(stats)
     }
 
+    /// Record that this computer wrote index `id` itself: every pack it lists was just uploaded (or found
+    /// present with the right size) and its blobs are already in the local cache through
+    /// [`Self::note_uploaded_pack`], so the next `sync_index_cache` must not download it again. Only call
+    /// this once all the index's packs are in the cloud.
+    pub fn note_uploaded_index(&self, id: Hash) -> Result<()> {
+        self.db.index_mark_seen(id)
+    }
+
     /// Record a pack we just uploaded and verified (no need to wait for a listing to show it).
     pub fn note_uploaded_pack(&self, p: &IndexPack, info: &ObjectInfo) -> Result<()> {
         self.db.pack_put(p.id, p.size, info.provider_ref.as_deref(), info.created_ms)?;

@@ -128,7 +128,9 @@ impl Uploader<'_> {
             // ---- 4. index -----------------------------------------------------------------------------------
             if !meta.packs.is_empty() {
                 let doc = crate::snapshot::staged_index_doc(&meta);
-                self.remote.put_index(&doc, ctx)?;
+                let index_id = self.remote.put_index(&doc, ctx)?;
+                // every pack it lists was uploaded or found present above: nothing to learn from it
+                self.remote.note_uploaded_index(index_id)?;
             }
             crate::failpoint!("upload.after_index")?;
 

@@ -398,3 +398,44 @@ fn catching_up_after_an_in_place_region_edit_downloads_only_the_changed_blocks()
     );
     assert_eq!(tree(&rb.root), tree(&root_a), "and the result is byte-identical");
 }
+
+#[test]
+fn the_index_a_computer_uploaded_itself_is_not_downloaded_again() {
+    // The index object lists every blob of the packs this computer just uploaded, and the local cache
+    // already has them. Fetching it back on the next sync would cost one download per instance (megabytes
+    // for a big pack) for nothing. Another computer, which does not have the blobs, must still fetch it.
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    // the next session: something changes, it is saved and uploaded (this is where the cache is refreshed)
+    fs::write(_root.join("config/extra.toml"), b"x = 1\n").unwrap();
+    let before = a.meter.snapshot();
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    a.upload(en.instance);
+    let spent = a.meter.snapshot().since(&before);
+    let idx = spent.by_prefix.get("index").cloned().unwrap_or_default();
+    assert_eq!(idx.gets, 0, "the uploader re-read its own index: {idx:?}");
+    assert_eq!(idx.get_bytes, 0, "{idx:?}");
+    assert_eq!(idx.puts, 1, "the second snapshot published its own index: {idx:?}");
+
+    let b = w.device("laptop");
+    let before = b.meter.snapshot();
+    b.engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: en.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    let spent = b.meter.snapshot().since(&before);
+    assert!(spent.by_prefix.get("index").map(|p| p.gets).unwrap_or(0) >= 1, "another computer must read the index");
+}
