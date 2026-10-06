@@ -727,10 +727,12 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
             );
             Ok(())
         })?;
+        // the downloaded blocks are no longer needed: drop them first so the flush below does not have to
+        // write them to disk as well (only the assembled files matter)
+        let _ = fs::remove_dir_all(lp(&blob_dir));
         if one_flush {
             crate::fsutil::syncfs(txd).io_ctx(|| "flushing the staged files to disk".to_string())?;
         }
-        let _ = fs::remove_dir_all(lp(&blob_dir));
     }
     Ok((downloaded, reused))
 }
@@ -1163,10 +1165,11 @@ pub fn restore_new(
                 ctx.progress(Phase::Validate, (n, total as u64), (0, 0), format!("restored {}", e.p));
                 Ok(())
             })?;
+            // drop the downloaded blocks first so the flush does not have to write them out as well
+            let _ = fs::remove_dir_all(lp(&blob_dir));
             if one_flush {
                 crate::fsutil::syncfs(dir).io_ctx(|| "flushing the restored files to disk".to_string())?;
             }
-            let _ = fs::remove_dir_all(lp(&blob_dir));
         }
         let _ = fs::remove_dir_all(lp(&dir.join(crate::brand::LOCAL_MARKER_DIR).join("tx")));
         Ok(RestoreReport {
