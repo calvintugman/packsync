@@ -89,7 +89,12 @@ npm run tauri build                    # installers for this platform (deb, rpm,
   belong to whoever distributes the build. The `identifier` in `tauri.conf.json` is a placeholder
   (`org.example.packsync`); change it, the name and the icon (`src-tauri/icons/source.svg`) together — see
   [`rebranding.md`](rebranding.md).
-* Installers other than the plain binary were **not** produced or tested here.
+* **What was actually built here (Linux):** the plain release binary, and `deb` and `rpm` packages with the
+  command-line tool as the sidecar (`npm run tauri build -- --bundles deb,rpm --config src-tauri/tauri.bundle.conf.json`).
+  The deb's contents were listed — `/usr/bin/packsync-desktop`, `/usr/bin/packsync` (next to it, where the app
+  looks), icons and a `.desktop` entry — but the packages were **not installed or run**, and AppImage, `nsis`,
+  `msi` and `dmg` were not attempted (they need their platform's tools; the manual `release-build` workflow is
+  meant for that). Nothing is signed.
 
 ## Tests
 

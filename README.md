@@ -160,7 +160,7 @@ protected.
   instances folder in one step, so Prism never sees a half-written instance.
 
 All of this was verified against the **real Prism Launcher 11.0.3 on Linux** (`scripts/prism-smoke.sh`,
-22 checks: hook semantics, quoting, forwarding to a running Prism, install → launch → uninstall, the crash
+20 checks: hook semantics, quoting, forwarding to a running Prism, install → launch → uninstall, the crash
 flow, a restored instance launching, `packsync launch` through the real launcher). It ran in a disposable
 sandbox with a fake account and a stand-in for Java; Minecraft itself did not run
 ([`docs/dev/prism-verification.md`](docs/dev/prism-verification.md)).

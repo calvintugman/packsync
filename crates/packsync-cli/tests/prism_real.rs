@@ -342,8 +342,11 @@ fn real_prism_launcher_smoke() {
             seed.display()
         )
     });
+    // Prism reports canonical paths (no `..`), and the checks compare against them, so the sandbox path must be
+    // canonical too — which needs the directory to exist before it is canonicalised (a fresh checkout has none).
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/prism-smoke");
-    let root = root.canonicalize().unwrap_or(root);
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
     let sb = Sandbox::build(&root, &seed, mc, java);
     let mut rep = Report(vec![]);
     let version =
@@ -388,7 +391,7 @@ fn real_prism_launcher_smoke() {
             && pre_line.contains(&format!("INST_DIR={}", inst.display()))
             && pre_line.contains(&format!("INST_MC_DIR={}/.minecraft", inst.display()))
             && pre_line.contains(&format!("cwd={}/.minecraft", inst.display())),
-        "",
+        pre_line.chars().skip(60).collect::<String>(),
     );
     let game = sb.log("game.log");
     rep.check(

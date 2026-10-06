@@ -9,8 +9,8 @@ does **not** document hook semantics, environment variables, offline launch, the
 environment variable or already-running-instance behaviour; the old
 `getting-started/instance-settings/` URL returns 404. Everything below marked **[source]** was read
 from code. Items marked **[verified]** were additionally confirmed on 2026-10-06 against the
-real launcher by `scripts/prism-smoke.sh` (22 checks, all passing; Prism 11.0.3 on Linux; see
-section 7 and `docs/dev/prism-adapter.md`). Items marked **[unverified]** have not been observed.
+real launcher by `scripts/prism-smoke.sh` (20 checks, all passing; Prism 11.0.3 on Linux, last run 2026-10-07 on the final code; see
+section 7 and `docs/hooks.md`). Items marked **[unverified]** have not been observed.
 
 ## 1. Launch pipeline order [source: `launcher/minecraft/MinecraftInstance.cpp::createLaunchTask`]
 

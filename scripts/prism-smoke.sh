@@ -1,5 +1,5 @@
 #!/bin/sh
-# Smoke test against the REAL Prism Launcher (Linux only). See docs/dev/prism-adapter.md.
+# Smoke test against the REAL Prism Launcher (Linux only). See docs/hooks.md and docs/dev/prism-verification.md.
 #
 # * Uses a disposable data directory under target/prism-smoke — never your real Prism data.
 # * Copies only the read-only caches (meta/, libraries/, assets/, java/, metacache) from an existing
