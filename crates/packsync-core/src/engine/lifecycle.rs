@@ -249,6 +249,7 @@ impl Engine {
             for txd in journal::pending_txs(&inst.root) {
                 let action = match journal::recover_tx(&inst.root, &txd) {
                     Ok(a) => a,
+                    Err(e) if crate::failpoint::is_crash(&e) => return Err(e), // the process "died" here
                     Err(e) => {
                         // a damaged or forged journal: leave it, say so, and carry on with everything else
                         let msg = format!("an interrupted restore could not be recovered ({e}); nothing was changed");

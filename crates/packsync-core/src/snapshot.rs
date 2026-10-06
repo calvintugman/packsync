@@ -156,10 +156,27 @@ pub struct StagedMeta {
     pub required_packs: Vec<Hash>,
 }
 
-/// Blobs staged by earlier local snapshots of this device that are not published yet.
-pub fn load_known_local_blobs(db: &Db, state_dir: &Path, instance: InstanceId) -> Result<HashSet<Hash>> {
+/// Blobs staged by earlier local snapshots of this device that are not published yet **and that the new
+/// snapshot builds on** (`parents` and their ancestors). A snapshot that is not an ancestor — a crash
+/// save that was discarded, a branch that was replaced — may never be published, so depending on its
+/// packs would leave a published snapshot with data that is nowhere in the cloud.
+pub fn load_known_local_blobs(
+    db: &Db,
+    state_dir: &Path,
+    instance: InstanceId,
+    parents: &[SnapshotId],
+) -> Result<HashSet<Hash>> {
     let mut out = HashSet::new();
-    for s in db.snapshots_in_state(instance, &[SnapshotState::LocalComplete, SnapshotState::Uploading])? {
+    let graph = crate::graph::Graph::load(db, instance)?;
+    let mut lineage: HashSet<SnapshotId> = parents.iter().copied().collect();
+    for p in parents {
+        lineage.extend(graph.ancestors(*p));
+    }
+    for s in db
+        .snapshots_in_state(instance, &[SnapshotState::LocalComplete, SnapshotState::Uploading])?
+        .into_iter()
+        .filter(|s| lineage.contains(&s.id))
+    {
         let meta = snapshot_staging_dir(state_dir, s.id).join("staged.json");
         if let Ok(b) = fs::read(&meta)
             && let Ok(m) = serde_json::from_slice::<StagedMeta>(&b)
@@ -310,7 +327,8 @@ pub fn create(
 
     // ---- hash/chunk what changed -------------------------------------------------------------
     ctx.phase(Phase::Snapshot, "hashing changed files");
-    let known_local = load_known_local_blobs(db, state_dir, inst.id)?;
+    let known_local = load_known_local_blobs(db, state_dir, inst.id, &req.parents)?;
+    let known_local_copy = known_local.clone();
     let tmp_dir = staging_root(state_dir).join(format!("tmp-{}", uuid::Uuid::new_v4().simple()));
     let sink = StagingSink::new(db.clone(), tmp_dir.clone(), cfg.pack_target, cfg.zstd_level, known_local)?;
     let to_hash: Vec<&Candidate> = w.files.iter().filter(|c| c.reason != RehashReason::Reuse).collect();
@@ -437,7 +455,7 @@ pub fn create(
     let (id, stored) = m.encode()?;
 
     // ---- required packs for publish-time verification -------------------------------------------
-    let required = required_packs(db, &m, req.base.map(|b| b.0), &staged.packs)?;
+    let required = required_packs(db, &m, req.base.map(|b| b.0), &staged.packs, &known_local_copy)?;
 
     // ---- make it durable: staging dir, manifest file, then the single DB commit -------------------
     ctx.phase(Phase::Snapshot, "saving local snapshot");
@@ -519,6 +537,7 @@ fn required_packs(
     m: &Manifest,
     base: Option<&Manifest>,
     staged: &[crate::pack::FinishedPack],
+    known_local: &HashSet<Hash>,
 ) -> Result<Vec<Hash>> {
     let staged_blobs: HashSet<Hash> = staged.iter().flat_map(|p| p.entries.iter().map(|e| e.hash)).collect();
     let changed: Vec<&Entry> = match base {
@@ -534,11 +553,23 @@ fn required_packs(
     let mut out: HashSet<Hash> = HashSet::new();
     for e in changed {
         for h in [e.r, if e.r.is_none() { e.h } else { None }].into_iter().flatten() {
-            if staged_blobs.contains(&h) {
-                continue;
+            if staged_blobs.contains(&h) || known_local.contains(&h) {
+                continue; // in this snapshot's own packs, or in those of an unpublished ancestor (uploaded first)
             }
-            if let Some((pack, _)) = db.blob_lookup(h)? {
-                out.insert(pack);
+            match db.blob_lookup(h)? {
+                Some((pack, _)) => {
+                    out.insert(pack);
+                }
+                // A blob this snapshot refers to that is neither staged, nor in an ancestor's packs, nor known
+                // to be in the cloud would be published as a hole. It must not be possible; refuse loudly.
+                None => {
+                    return Err(Error::other(format!(
+                        "internal error: the data of {:?} (blob {}) was not saved with this snapshot; \
+                         nothing was published. Please report this",
+                        e.p,
+                        h.short()
+                    )));
+                }
             }
         }
     }

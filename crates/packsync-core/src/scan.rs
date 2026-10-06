@@ -478,7 +478,11 @@ pub fn hash_candidate(
         let flushed = sink.end_of_file();
         let (content, read_bytes) = match read {
             Ok(v) => v,
-            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+                // the file vanished mid-read: that is not an error, but a failed pack write is
+                flushed?;
+                return Ok(None);
+            }
             Err(e) => return Err(e),
         };
         flushed?;

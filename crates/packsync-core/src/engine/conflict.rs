@@ -366,7 +366,7 @@ impl Engine {
         self.ensure_idle(&inst)?;
         ctx.phase(Phase::Conflict, "resolving a conflict (both versions are kept)");
         // The cloud must be reachable: a merge commit is only meaningful relative to what it saw.
-        let view = self.discover(id, ctx)?;
+        self.discover(id, ctx)?;
         // Preserve everything on this computer as a complete snapshot first.
         let pending = self.pending_changes(id, ctx)?;
         if pending.dirty {
@@ -490,7 +490,13 @@ impl Engine {
                 if name.is_empty() {
                     return Err(Error::Invalid { what: "name", detail: "give the separate instance a name".into() });
                 }
-                // Retire this computer's branch in the original instance if it was already uploaded there.
+                // This computer's version must be in the cloud before anything refers to it: the fork below is
+                // derived from it (its root snapshot lists blobs that exist nowhere else yet), and the
+                // original instance keeps it as a retired branch. KeepLocal and KeepCloud upload first too.
+                // A failed upload stops here, before the instance is renamed or anything is published.
+                self.upload_pending(id, true, ctx)?;
+                let view = self.discover(id, ctx)?;
+                // Retire this computer's branch in the original instance (it is in the cloud now).
                 let others: Vec<SnapshotId> = view.heads.iter().copied().filter(|h| *h != local).collect();
                 let local_in_cloud = self.db.snapshot_get(id, local)?.is_some_and(|r| r.state.is_in_cloud());
                 if local_in_cloud && others.len() == 1 {
@@ -525,12 +531,13 @@ impl Engine {
                     .map_err(|e| Error::io("updating the instance marker", e))?;
                 self.db.instance_rekey(id, new_id, &name, root_snap, &marker)?;
                 self.upload_pending(new_id, true, ctx)?;
+                let uploaded = self.db.snapshot_get(new_id, root_snap)?.is_some_and(|r| r.state.is_in_cloud());
                 Ok(ResolveReport {
                     resolution: "split_local".into(),
                     head: root_snap,
                     new_instance: Some(new_id),
                     preserved_local: Some(local),
-                    uploaded: true,
+                    uploaded,
                 })
             }
         }
@@ -550,9 +557,15 @@ impl Engine {
         if cm.kind != SnapshotKind::Crash {
             return Err(Error::Invalid { what: "snapshot", detail: "the current base is not a crash save".into() });
         }
+        // The promoted snapshot has the crash save's own tree, so it must also have the crash save as a
+        // parent: that makes the uploader publish the crash save (and its data) first. With only the
+        // crash save's parents there was no dependency, and the promoted head could be published while
+        // the crash save's content was still waiting to upload.
+        let mut parents = cm.parents.clone();
+        parents.push(crash);
         let n = self.derive(
             &cm,
-            cm.parents.clone(),
+            parents,
             SnapshotKind::Normal,
             format!("promoted crash save {} after checking the world", crash.short()),
             None,
