@@ -1730,6 +1730,18 @@ impl MockDrive {
         }
     }
 
+    /// Pretend every stored *file* (not folder) was created and last modified `hours` ago, so that
+    /// retention and grace-period logic can be tested without waiting.
+    pub fn age_files(&self, hours: i64) {
+        let t = now_ms() - hours * 3_600_000;
+        for f in self.shared.state.lock().files.values_mut() {
+            if !f.is_folder() {
+                f.created_ms = t;
+                f.modified_ms = t;
+            }
+        }
+    }
+
     /// Mark an object as trashed (as if the user trashed it).
     pub fn trash(&self, id: &str) {
         if let Some(f) = self.shared.state.lock().files.get_mut(id) {
