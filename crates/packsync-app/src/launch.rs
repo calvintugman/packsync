@@ -37,8 +37,14 @@ pub struct LaunchTiming {
 
 impl Default for LaunchTiming {
     fn default() -> Self {
+        // PACKSYNC_LAUNCH_POLL_MS: how often the process table is checked (default 500 ms).
+        let poll_ms = std::env::var(packsync_core::brand::env_var("LAUNCH_POLL_MS"))
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(500)
+            .clamp(10, 5_000);
         Self {
-            poll: Duration::from_millis(500),
+            poll: Duration::from_millis(poll_ms),
             start_timeout: Duration::from_secs(15 * 60),
             exit_grace: Duration::from_secs(60),
             signal_wait: Duration::from_secs(15),
@@ -271,6 +277,10 @@ impl App {
             return Ok(out);
         }
 
+        // earlier sessions without a live game are over; close them (a crash becomes a quarantined save)
+        self.close_signalled_sessions(ctx);
+        engine.recover_before_launch(ctx)?;
+        let inst = engine.instance(id)?; // recovery may have changed its state
         // 1. bring this computer up to date (or decide to play offline)
         if !opts.skip_sync {
             ctx.phase(Phase::Launch, "checking the cloud before starting");
@@ -480,7 +490,7 @@ impl App {
         };
         // finish whatever a previous run left half done (a stale session becomes a crash save here)
         self.close_signalled_sessions(ctx);
-        if let Err(e) = engine.recover(ctx) {
+        if let Err(e) = engine.recover_before_launch(ctx) {
             messages.push(format!("recovery check failed: {e}"));
         }
         let mut warnings = vec![];

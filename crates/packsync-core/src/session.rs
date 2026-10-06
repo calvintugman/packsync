@@ -14,6 +14,16 @@ use crate::ids::{SessionId, SnapshotId};
 use crate::manifest::SessionOutcome;
 use crate::proc::{find_writers, pid_alive};
 
+/// How long a passive observer waits after first seeing that a session's game is gone before it
+/// closes the session as interrupted.
+pub const PASSIVE_GRACE_MS: i64 = 10 * 60_000;
+
+/// When the computer last started (ms since the epoch), if the platform says.
+pub fn boot_time_ms() -> Option<i64> {
+    let secs = sysinfo::System::boot_time();
+    (secs > 0).then_some(secs as i64 * 1000)
+}
+
 pub struct SessionMgr<'a> {
     pub db: &'a Db,
 }
@@ -69,6 +79,7 @@ impl SessionMgr<'_> {
             offline,
             result_snapshot: None,
             note: None,
+            dead_seen_ms: None,
         };
         self.db.session_insert(&row)?;
         Ok((row, Begin::Created))
@@ -113,9 +124,43 @@ impl SessionMgr<'_> {
         })
     }
 
-    /// Open sessions whose game is no longer running: they ended without a clean signal.
-    pub fn stale_open_sessions(&self, inst: &InstanceRow, patterns: &[String]) -> Result<Vec<SessionRow>> {
-        Ok(self.db.sessions_open(inst.id)?.into_iter().filter(|s| !self.is_alive(s, &inst.root, patterns)).collect())
+    /// Open sessions whose game is gone, i.e. that did not end through `end_session`.
+    ///
+    /// * `explicit == true` (a new launch is about to start, or the user asked): every open session
+    ///   without a live game is over, no waiting.
+    /// * `explicit == false` (a passive observer such as an app start or a hook's own start-up): the game
+    ///   may have *just* exited and the launcher's post-exit hook may be about to end the session
+    ///   cleanly. The first sighting is only recorded; the session becomes stale after
+    ///   [`PASSIVE_GRACE_MS`] — or at once when the computer has restarted since it began (power loss).
+    pub fn stale_open_sessions(
+        &self,
+        inst: &InstanceRow,
+        patterns: &[String],
+        explicit: bool,
+    ) -> Result<Vec<SessionRow>> {
+        let now = now_ms();
+        let boot_ms = boot_time_ms();
+        let mut out = vec![];
+        for s in self.db.sessions_open(inst.id)? {
+            if self.is_alive(&s, &inst.root, patterns) {
+                if s.dead_seen_ms.is_some() {
+                    self.db.session_update(s.id, |r| r.dead_seen_ms = None)?;
+                }
+                continue;
+            }
+            if explicit || boot_ms.is_some_and(|b| s.started_ms < b) {
+                out.push(s);
+                continue;
+            }
+            match s.dead_seen_ms {
+                None => {
+                    self.db.session_update(s.id, |r| r.dead_seen_ms = Some(now))?;
+                }
+                Some(t) if now - t >= PASSIVE_GRACE_MS => out.push(s),
+                Some(_) => {}
+            }
+        }
+        Ok(out)
     }
 }
 
@@ -228,7 +273,7 @@ mod tests {
         let m = SessionMgr { db: &db };
         let (a, _) = m.begin(&i, SessionOwner::Hook, "t1", false, &[]).unwrap();
         m.mark_running(a.id, 4_000_000, now_ms()).unwrap(); // a pid that does not exist
-        assert_eq!(m.stale_open_sessions(&i, &[]).unwrap().len(), 1);
+        assert_eq!(m.stale_open_sessions(&i, &[], true).unwrap().len(), 1);
         let (b, _) = m.begin(&i, SessionOwner::Hook, "t2", false, &[]).unwrap();
         assert_ne!(a.id, b.id);
         let old = db.session_get(a.id).unwrap().unwrap();

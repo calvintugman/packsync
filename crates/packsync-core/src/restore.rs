@@ -727,6 +727,10 @@ pub struct RestoreRequest<'a> {
     /// The snapshot the live tree currently corresponds to (recorded in the recovery point).
     pub base: Option<SnapshotId>,
     pub reason: &'a str,
+    /// A history restore the user asked for: when set, the result is recorded as a new snapshot on top
+    /// of `base` with this note (by the caller on success, by recovery if the process dies after the
+    /// files were applied).
+    pub derive_note: Option<&'a str>,
 }
 
 /// Restore `target` over an existing instance. The caller holds the instance lock and has verified
@@ -738,7 +742,7 @@ pub fn restore_in_place(
     local: &LocalState,
     ctx: &OpCtx,
 ) -> Result<RestoreReport> {
-    let RestoreRequest { target, target_id, base, reason } = *req;
+    let RestoreRequest { target, target_id, base, reason, derive_note } = *req;
     let root = inst.root.as_path();
     ctx.phase(Phase::Validate, "planning restore");
     let plan = plan(target, target_id, local, root, env.cfg)?;
@@ -759,7 +763,17 @@ pub fn restore_in_place(
     let tx = TxId::new();
     let txd = new_tx_dir(root, tx)?;
     let mut journal = Journal::create(&txd.join("journal.jsonl"))?;
-    journal.append(&Rec::Begin { tx, target: target_id, base, instance: inst.id, created: now_rfc3339() }, true)?;
+    journal.append(
+        &Rec::Begin {
+            tx,
+            target: target_id,
+            base,
+            instance: inst.id,
+            created: now_rfc3339(),
+            derive_note: derive_note.map(str::to_string),
+        },
+        true,
+    )?;
     journal.append(&Rec::Ops { ops: plan.ops.clone() }, true)?;
     env.db.instance_update(inst.id, |r| {
         r.state = InstanceState::Restoring;

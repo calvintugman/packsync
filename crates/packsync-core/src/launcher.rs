@@ -136,6 +136,10 @@ pub struct HookSpec {
     pub executable: PathBuf,
     /// PackSync instance identity passed to the hooks (a UUID: no quoting problems).
     pub instance_id: InstanceId,
+    /// Extra arguments the hook command line must carry (for example `--state-dir` when this
+    /// installation does not use the platform default directories).
+    #[serde(default)]
+    pub extra_args: Vec<String>,
 }
 
 /// One change a hook installation or removal would make (shown to the user before applying).

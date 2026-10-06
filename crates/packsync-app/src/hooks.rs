@@ -65,7 +65,10 @@ impl App {
     /// What installing the hooks would change. Writes nothing.
     pub fn hooks_plan_install(&self, id: InstanceId, cli: &Path) -> Result<HookPlan> {
         let (inst, l) = self.hook_target(id)?;
-        l.plan_install_hooks(&inst.root, &HookSpec { executable: cli.to_path_buf(), instance_id: id })
+        l.plan_install_hooks(
+            &inst.root,
+            &HookSpec { executable: cli.to_path_buf(), instance_id: id, extra_args: self.paths.hook_args() },
+        )
     }
 
     /// What removing the hooks would change (restoring the commands that were there before).

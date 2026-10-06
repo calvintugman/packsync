@@ -229,7 +229,14 @@ fn a_session_killed_without_any_signal_is_found_after_restart_and_treated_as_unc
     write(&root, "config/played.toml", b"progress\n");
     // power loss: no end_session, no post-exit hook. The app restarts.
     a.restart();
+    // A passive observer (app start-up) cannot tell "crashed" from "the game just exited and the
+    // launcher's post-exit hook is about to run": it only notes the sighting and waits.
     let rec = a.engine.recover(&a.ctx()).unwrap();
+    assert!(rec.interrupted_sessions.is_empty());
+    assert!(a.engine.db().session_get(s.session).unwrap().unwrap().dead_seen_ms.is_some());
+    // …unless the computer restarted since the session began: then it is certain.
+    // (Here: starting a launch — an explicit moment — closes every earlier session without a live game.)
+    let rec = a.engine.recover_before_launch(&a.ctx()).unwrap();
     assert_eq!(rec.interrupted_sessions, vec![s.session]);
     let row = a.engine.db().session_get(s.session).unwrap().unwrap();
     assert_eq!(row.state, SessionState::Interrupted);
@@ -239,4 +246,50 @@ fn a_session_killed_without_any_signal_is_found_after_restart_and_treated_as_unc
     assert_eq!(inst.state, InstanceState::CrashPending, "{inst:?}");
     let cloud_heads_before = a.engine.cloud_instances(&a.ctx()).unwrap()[0].heads.len();
     assert_eq!(cloud_heads_before, 1);
+}
+
+#[test]
+fn a_passive_observer_closes_a_dead_session_only_after_the_grace_period_or_a_reboot() {
+    use packsync_core::db::{SessionOwner, SessionRow, SessionState};
+    use packsync_core::session::{PASSIVE_GRACE_MS, SessionMgr, boot_time_ms};
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &spec(6));
+    a.upload(en.instance);
+    let inst = a.engine.instance(en.instance).unwrap();
+    let mgr = SessionMgr { db: a.engine.db() };
+    let mk = |token: &str, started_ms: i64| SessionRow {
+        id: packsync_core::ids::SessionId::new(),
+        instance_id: en.instance,
+        owner: SessionOwner::Hook,
+        token: token.into(),
+        base_snapshot: inst.base_snapshot,
+        started_ms,
+        ended_ms: None,
+        state: SessionState::Running,
+        outcome: None,
+        game_pid: Some(4_000_001),
+        game_start_ms: Some(started_ms),
+        offline: false,
+        result_snapshot: None,
+        note: None,
+        dead_seen_ms: None,
+    };
+    // a session that began after this boot: first sighting only records the time …
+    let fresh = mk("fresh", packsync_core::db::now_ms());
+    a.engine.db().session_insert(&fresh).unwrap();
+    assert!(mgr.stale_open_sessions(&inst, &[], false).unwrap().is_empty());
+    let seen = a.engine.db().session_get(fresh.id).unwrap().unwrap().dead_seen_ms.expect("sighting recorded");
+    // … a second look inside the grace period still waits …
+    assert!(mgr.stale_open_sessions(&inst, &[], false).unwrap().is_empty());
+    // … and after the grace period it is stale
+    a.engine.db().session_update(fresh.id, |r| r.dead_seen_ms = Some(seen - PASSIVE_GRACE_MS - 1)).unwrap();
+    assert_eq!(mgr.stale_open_sessions(&inst, &[], false).unwrap().len(), 1);
+    a.engine.db().session_update(fresh.id, |r| r.state = SessionState::Ended).unwrap();
+    // a session that began before the computer last started cannot still be running: stale at once
+    if let Some(boot) = boot_time_ms() {
+        let old = mk("before-boot", boot - 60_000);
+        a.engine.db().session_insert(&old).unwrap();
+        assert_eq!(mgr.stale_open_sessions(&inst, &[], false).unwrap().len(), 1);
+    }
 }

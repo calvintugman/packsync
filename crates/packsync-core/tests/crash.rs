@@ -351,3 +351,47 @@ fn crash_at_every_snapshot_and_upload_boundary_is_resumable_and_never_exposes_a_
     }
     assert!(crashed >= 10, "most boundaries must be reached; got {crashed}");
 }
+
+/// A history restore the user asked for must stick even when the process dies after the files were
+/// applied: recovery records it as a new snapshot (exactly as the uninterrupted path does), so the next
+/// sync uploads it instead of fast-forwarding back to the newer cloud head.
+#[test]
+fn a_history_restore_interrupted_after_apply_still_sticks() {
+    let _g = serial();
+    for fp in ["restore.after_applied", "restore.after_db_update", "restore.after_finalize_move"] {
+        let mut s = two_devices_a_ahead();
+        // B catches up to NEW, so the history has OLD → NEW and B sits on NEW
+        let r = s.b.engine.reconcile(s.inst, ReconcileOpts::default(), &s.b.ctx()).unwrap();
+        assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{r:?}");
+        assert_eq!(digest(&s.root_b), s.new);
+        let old_id =
+            s.b.engine
+                .history(s.inst, true, &s.b.ctx())
+                .unwrap()
+                .into_iter()
+                .find(|h| h.parents.is_empty())
+                .unwrap()
+                .id;
+        failpoint::arm(fp, Action::Error, Some(1));
+        let r = s.b.engine.restore_snapshot(s.inst, old_id, RestoreOpts { skip_incompatible: false }, &s.b.ctx());
+        assert!(is_crash(&r), "{fp}: {r:?}");
+        failpoint::disarm_all();
+        s.b.restart();
+        let rec = s.b.engine.recover(&s.b.ctx()).unwrap();
+        assert_eq!(rec.rolled_forward, vec![s.inst], "{fp}");
+        assert_eq!(digest(&s.root_b), s.old, "{fp}: the restored content is in place");
+        // the restore is recorded on top of NEW, so the cloud head is *behind* this computer — not ahead
+        let r =
+            s.b.engine
+                .reconcile(s.inst, ReconcileOpts { apply_fast_forward: true, upload_local: false }, &s.b.ctx())
+                .unwrap();
+        assert!(matches!(r, ReconcileReport::LocalAhead { .. }), "{fp}: {r:?}");
+        assert_eq!(digest(&s.root_b), s.old, "{fp}: the next sync did not undo the restore");
+        s.b.upload(s.inst);
+        // and the other computer follows it
+        let r = s.a.engine.reconcile(s.inst, ReconcileOpts::default(), &s.a.ctx()).unwrap();
+        assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{fp}: {r:?}");
+        assert_eq!(digest(&s.root_a), s.old, "{fp}");
+        let _ = &s.world;
+    }
+}

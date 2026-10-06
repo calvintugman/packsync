@@ -543,7 +543,13 @@ impl Engine {
         let rep = restore::restore_in_place(
             &env,
             &fresh,
-            &restore::RestoreRequest { target: &target, target_id: to, base: fresh.base_snapshot, reason: &reason },
+            &restore::RestoreRequest {
+                target: &target,
+                target_id: to,
+                base: fresh.base_snapshot,
+                reason: &reason,
+                derive_note: None,
+            },
             &local,
             ctx,
         )?;

@@ -136,7 +136,8 @@ CREATE TABLE sessions (
   game_start_ms INTEGER,
   offline INTEGER NOT NULL DEFAULT 0,
   result_snapshot TEXT,
-  note TEXT
+  note TEXT,
+  dead_seen_ms INTEGER
 );
 CREATE INDEX sessions_by_instance ON sessions(instance_id, started_ms);
 
@@ -822,7 +823,7 @@ impl Db {
         f(&mut s);
         self.with(|c| {
             c.execute(
-                "UPDATE sessions SET ended_ms=?2,state=?3,outcome=?4,game_pid=?5,game_start_ms=?6,offline=?7,result_snapshot=?8,note=?9,base_snapshot=?10,owner=?11 WHERE id=?1",
+                "UPDATE sessions SET ended_ms=?2,state=?3,outcome=?4,game_pid=?5,game_start_ms=?6,offline=?7,result_snapshot=?8,note=?9,base_snapshot=?10,owner=?11,dead_seen_ms=?12 WHERE id=?1",
                 params![
                     s.id.to_string(),
                     s.ended_ms,
@@ -835,6 +836,7 @@ impl Db {
                     s.note,
                     s.base_snapshot.map(|b| b.to_hex()),
                     s.owner.as_str(),
+                    s.dead_seen_ms,
                 ],
             )?;
             Ok(())
@@ -1318,9 +1320,13 @@ pub struct SessionRow {
     pub offline: bool,
     pub result_snapshot: Option<SnapshotId>,
     pub note: Option<String>,
+    /// When a passive observer first saw that the session's game is gone. A session is only closed as
+    /// interrupted after a grace period, so that the launcher's own post-exit hook can still end it
+    /// cleanly (see `SessionMgr::stale_open_sessions`).
+    pub dead_seen_ms: Option<i64>,
 }
 
-const SESSION_COLS: &str = "id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note";
+const SESSION_COLS: &str = "id,instance_id,owner,token,base_snapshot,started_ms,ended_ms,state,outcome,game_pid,game_start_ms,offline,result_snapshot,note,dead_seen_ms";
 
 fn session_from_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
     let bad = |i: usize| rusqlite::Error::InvalidColumnType(i, "session".into(), rusqlite::types::Type::Text);
@@ -1339,6 +1345,7 @@ fn session_from_row(r: &rusqlite::Row) -> rusqlite::Result<SessionRow> {
         offline: r.get(11)?,
         result_snapshot: r.get::<_, Option<String>>(12)?.map(|s| s.parse().map_err(|_| bad(12))).transpose()?,
         note: r.get(13)?,
+        dead_seen_ms: r.get(14)?,
     })
 }
 

@@ -57,6 +57,11 @@ pub enum Rec {
         base: Option<SnapshotId>,
         instance: InstanceId,
         created: String,
+        /// When set, the restore is one the user asked for (a history restore): after it is applied it
+        /// must be recorded as a new snapshot on top of `base` so that it sticks. Recovery uses this to
+        /// finish the job when the process died after applying the files.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        derive_note: Option<String>,
     },
     Ops {
         ops: Vec<JOp>,
@@ -165,6 +170,18 @@ impl JournalState {
     pub fn tx(&self) -> Option<TxId> {
         match &self.begin {
             Some(Rec::Begin { tx, .. }) => Some(*tx),
+            _ => None,
+        }
+    }
+    pub fn base(&self) -> Option<SnapshotId> {
+        match &self.begin {
+            Some(Rec::Begin { base, .. }) => *base,
+            _ => None,
+        }
+    }
+    pub fn derive_note(&self) -> Option<String> {
+        match &self.begin {
+            Some(Rec::Begin { derive_note, .. }) => derive_note.clone(),
             _ => None,
         }
     }
@@ -286,7 +303,7 @@ pub enum RecoveryAction {
     /// The live tree was put back exactly as it was before the transaction.
     RolledBack,
     /// The transaction had applied everything: finish bookkeeping for `target`.
-    RollForward { target: SnapshotId, tx: TxId },
+    RollForward { target: SnapshotId, tx: TxId, base: Option<SnapshotId>, derive_note: Option<String> },
     /// Already complete.
     Nothing,
 }
@@ -305,7 +322,9 @@ pub fn recover_tx(root: &Path, txd: &Path) -> Result<RecoveryAction> {
     }
     if st.applied {
         return match (st.target(), st.tx()) {
-            (Some(target), Some(tx)) => Ok(RecoveryAction::RollForward { target, tx }),
+            (Some(target), Some(tx)) => {
+                Ok(RecoveryAction::RollForward { target, tx, base: st.base(), derive_note: st.derive_note() })
+            }
             _ => Err(Error::Corrupt("journal has an applied marker but no begin record".into())),
         };
     }
@@ -361,6 +380,7 @@ mod tests {
             base: None,
             instance: InstanceId::new(),
             created: "2026-01-01T00:00:00Z".into(),
+            derive_note: None,
         }
     }
 

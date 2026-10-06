@@ -225,8 +225,19 @@ impl Engine {
     // ------------------------------------------------------------------------------ recovery
 
     /// Startup recovery: unfinished restore transactions, half-restored new instances, sessions
-    /// that died, orphaned staging. Idempotent; safe to run on every start.
+    /// that died, orphaned staging. Idempotent; safe to run on every start. Passive: a session whose
+    /// game has only just disappeared is left for its post-exit hook (see [`Engine::recover_before_launch`]).
     pub fn recover(&self, ctx: &OpCtx) -> Result<RecoveryReport> {
+        self.recover_with(ctx, false)
+    }
+
+    /// Like [`Engine::recover`] for the moment a new launch begins: every earlier session without a
+    /// live game is over, so it is closed now.
+    pub fn recover_before_launch(&self, ctx: &OpCtx) -> Result<RecoveryReport> {
+        self.recover_with(ctx, true)
+    }
+
+    fn recover_with(&self, ctx: &OpCtx, explicit: bool) -> Result<RecoveryReport> {
         let mut rep = RecoveryReport::default();
         ctx.phase(Phase::Recover, "checking for interrupted operations");
         for inst in self.db.instances()? {
@@ -247,10 +258,27 @@ impl Engine {
                         );
                     }
                     RecoveryAction::Discarded | RecoveryAction::Nothing => rep.discarded_transactions += 1,
-                    RecoveryAction::RollForward { target, tx } => {
+                    RecoveryAction::RollForward { target, tx, base, derive_note } => {
                         match self.manifest(inst.id, target, ctx) {
                             Ok(m) => {
                                 restore::roll_forward(&self.db, &inst, &m, target, tx)?;
+                                // A restore the user asked for must stick: record it on top of what was
+                                // there before, exactly as the uninterrupted path does. Otherwise the
+                                // next sync would see an older base behind the cloud head and quietly
+                                // fast-forward away from the restored state.
+                                if let Some(note) = derive_note
+                                    && base != Some(target)
+                                {
+                                    let n = self.derive(
+                                        &m,
+                                        base.into_iter().collect(),
+                                        SnapshotKind::Normal,
+                                        note,
+                                        None,
+                                        None,
+                                    )?;
+                                    self.db.instance_update(inst.id, |r| r.base_snapshot = Some(n))?;
+                                }
                                 rep.rolled_forward.push(inst.id);
                                 self.db.event(
                                     Some(inst.id),
@@ -286,7 +314,7 @@ impl Engine {
             let launcher = self.launcher(&inst.launcher);
             let patterns = launcher.game_process_patterns(&inst.root);
             let mgr = SessionMgr { db: &self.db };
-            for s in mgr.stale_open_sessions(&inst, &patterns)? {
+            for s in mgr.stale_open_sessions(&inst, &patterns, explicit)? {
                 rep.interrupted_sessions.push(s.id);
                 match self.end_session(s.id, ExitInfo { exit_code: None, clean_signal: false }, false, ctx) {
                     Ok(_) => {}

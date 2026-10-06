@@ -326,3 +326,24 @@ fn offline_changes_on_two_devices_become_a_conflict_and_both_versions_survive_ea
         let _ = info;
     }
 }
+
+#[test]
+fn a_snapshot_that_exists_only_locally_cannot_be_restored_until_it_is_uploaded() {
+    use packsync_core::error::Error;
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    fs::write(root.join("config/extra.toml"), b"x = 1\n").unwrap();
+    let rep = a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    let SnapshotResult::Created { id } = rep.result else { panic!("{rep:?}") };
+    let before = tree(&root);
+    // clear, actionable refusal instead of a confusing "incomplete cloud data" failure halfway through
+    let err =
+        a.engine.restore_snapshot(en.instance, id, RestoreOpts { skip_incompatible: false }, &a.ctx()).unwrap_err();
+    assert!(matches!(&err, Error::Unsupported(m) if m.contains("not been uploaded")), "{err}");
+    assert!(a.engine.restore_preview(en.instance, id, &a.ctx()).is_err());
+    assert_eq!(tree(&root), before, "nothing was touched");
+    a.upload(en.instance);
+    assert!(a.engine.restore_preview(en.instance, id, &a.ctx()).is_ok());
+}

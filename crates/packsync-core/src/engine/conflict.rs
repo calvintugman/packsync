@@ -17,7 +17,7 @@ use crate::restore::{self, RestoreEnv, RestoreReport};
 use crate::snapshot::{self, DeriveRequest, SnapshotRequest};
 
 impl Engine {
-    fn derive(
+    pub(super) fn derive(
         &self,
         source: &Manifest,
         parents: Vec<SnapshotId>,
@@ -43,10 +43,25 @@ impl Engine {
         Ok(id)
     }
 
+    /// A snapshot that exists only on this computer has its content in local staging, not in the
+    /// cloud's pack index: restoring it would fail halfway with a confusing "incomplete" error.
+    fn require_uploaded(&self, id: InstanceId, snapshot: SnapshotId) -> Result<()> {
+        if let Some(row) = self.db.snapshot_get(id, snapshot)?
+            && matches!(row.state, SnapshotState::LocalComplete | SnapshotState::Uploading)
+        {
+            return Err(Error::Unsupported(format!(
+                "snapshot {} has not been uploaded yet, so it cannot be restored from the cloud. Upload it first (`packsync upload`), then restore",
+                snapshot.short()
+            )));
+        }
+        Ok(())
+    }
+
     /// What restoring `snapshot` over this instance would change. Reads the cloud only for the
     /// manifest; touches nothing.
     pub fn restore_preview(&self, id: InstanceId, snapshot: SnapshotId, ctx: &OpCtx) -> Result<RestorePreview> {
         let inst = self.instance(id)?;
+        self.require_uploaded(id, snapshot)?;
         let target = self.manifest(id, snapshot, ctx)?;
         let rules = RuleSet::compile(&target.rules.text, &inst.game_root)?;
         let policies = self.policies_for(&inst);
@@ -123,6 +138,7 @@ impl Engine {
         let inst = self.instance(id)?;
         self.guard_provider(&inst)?;
         self.require_state(&inst, &[InstanceState::Ok])?;
+        self.require_uploaded(id, snapshot)?;
         let ctx = &ctx.clone().with_instance(id);
         let remote = self.remote()?;
         // The history must not have moved on without us.
@@ -179,23 +195,24 @@ impl Engine {
         cfg.skip_incompatible = opts.skip_incompatible;
         let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg };
         let reason = format!("restore of snapshot {}", snapshot.short());
+        let derive_note = format!("restored from snapshot {}", snapshot.short());
         let rep = restore::restore_in_place(
             &env,
             &fresh,
-            &restore::RestoreRequest { target: &target, target_id: snapshot, base: before, reason: &reason },
+            &restore::RestoreRequest {
+                target: &target,
+                target_id: snapshot,
+                base: before,
+                reason: &reason,
+                derive_note: Some(&derive_note),
+            },
             &local,
             ctx,
         )?;
         // 3. record the restore as a new snapshot (unless it is simply the current base)
         if before != Some(snapshot) {
-            let new_id = self.derive(
-                &target,
-                before.into_iter().collect(),
-                SnapshotKind::Normal,
-                format!("restored from snapshot {}", snapshot.short()),
-                None,
-                None,
-            )?;
+            let new_id =
+                self.derive(&target, before.into_iter().collect(), SnapshotKind::Normal, derive_note, None, None)?;
             self.db.instance_update(id, |r| r.base_snapshot = Some(new_id))?;
         }
         ctx.note(Phase::Apply, Level::Info, format!("restored snapshot {}", snapshot.short()));
@@ -420,6 +437,7 @@ impl Engine {
                         target_id: target,
                         base: Some(local),
                         reason: "conflict resolved: continuing the cloud version",
+                        derive_note: None,
                     },
                     &st,
                     ctx,
@@ -567,6 +585,7 @@ impl Engine {
                 target_id: good,
                 base: Some(crash),
                 reason: "discarded a crash save",
+                derive_note: None,
             },
             &st,
             ctx,

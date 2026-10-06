@@ -96,6 +96,10 @@ pub fn build_command(spec: &HookSpec, kind: HookKind, chained: Option<&str>) -> 
     }
     let mut s =
         format!("{} hook {} --instance {} --marker {HOOK_MARKER}", quote_arg(exe)?, kind.word(), spec.instance_id);
+    for a in &spec.extra_args {
+        s.push(' ');
+        s.push_str(&quote_arg(a)?);
+    }
     if let Some(c) = chained.map(|c| c.trim()).filter(|c| !c.is_empty()) {
         s.push_str(" -- ");
         s.push_str(c);
@@ -367,7 +371,7 @@ mod tests {
     use packsync_core::ids::InstanceId;
 
     fn spec(exe: &str) -> HookSpec {
-        HookSpec { executable: PathBuf::from(exe), instance_id: InstanceId::new() }
+        HookSpec { executable: PathBuf::from(exe), instance_id: InstanceId::new(), extra_args: vec![] }
     }
 
     fn instance(cfg: &str) -> (tempfile::TempDir, PathBuf) {

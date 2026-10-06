@@ -5,8 +5,36 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "The packsync command-line tool: sync Minecraft modpacks and worlds through your own Google Drive"
 
 [lints]
 workspace = true
 
+[[bin]]
+name = "packsync"
+path = "src/main.rs"
+
 [dependencies]
+packsync-core.workspace = true
+packsync-app.workspace = true
+packsync-drive.workspace = true
+packsync-prism.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+tiny_http.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+ctrlc = "3"
+dunce.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+packsync-prism = { workspace = true, features = ["testkit"] }
+packsync-core = { workspace = true, features = ["testkit"] }
+
+[features]
+# Compile deterministic crash injection into the binary (tests kill real processes with it).
+failpoints = ["packsync-core/failpoints"]
