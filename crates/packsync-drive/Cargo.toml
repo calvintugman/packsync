@@ -5,8 +5,50 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Google Drive storage adapter (OAuth installed-app flow + Drive API v3) for PackSync"
 
 [lints]
 workspace = true
 
+[features]
+default = []
+# In-memory mock of the Drive v3 + OAuth endpoints with fault injection (tests, benchmarks).
+mock = []
+# The `packsync-drive-selftest` binary: runs the storage conformance suite against REAL Google
+# Drive inside a dedicated `PackSync-Test` folder. Never enabled by default.
+selftest = ["dep:clap", "packsync-core/testkit"]
+
+[[bin]]
+name = "packsync-drive-selftest"
+path = "src/bin/selftest.rs"
+required-features = ["selftest"]
+
 [dependencies]
+packsync-core.workspace = true
+ureq.workspace = true
+tiny_http.workspace = true
+md-5.workspace = true
+sha2.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+fastrand.workspace = true
+webbrowser.workspace = true
+# keyring v4 with its default `v1` feature selects the platform store per target:
+# Secret Service (pure-Rust zbus) on Linux/BSD, Keychain on macOS, Credential Manager on Windows.
+keyring.workspace = true
+getrandom = "0.4"
+clap = { workspace = true, optional = true }
+
+[dev-dependencies]
+packsync-core = { workspace = true, features = ["testkit"] }
+# Enables the mock server for this crate's own integration tests without `--features mock`.
+packsync-drive = { path = ".", features = ["mock"] }
+tempfile.workspace = true
+tracing-subscriber.workspace = true
+log = "0.4"
