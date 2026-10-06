@@ -193,6 +193,7 @@ impl Device {
 
     /// Run `f`, returning its result with time, peak memory and request counts.
     pub fn measure<T>(&self, f: impl FnOnce() -> T) -> (T, Metrics) {
+        settle_disk();
         let before = self.meter.snapshot();
         let http_before = self.drive.as_ref().map(|d| d.stats());
         let sampler = RssSampler::start();
@@ -203,5 +204,15 @@ impl Device {
         let after = self.meter.snapshot();
         let http = self.drive.as_ref().zip(http_before).map(|(d, b)| diff_stats(&b, &d.stats()));
         (out, Metrics { secs, peak_rss_mb: peak, storage: after.since(&before), http })
+    }
+}
+
+/// Flush dirty pages to disk before a measurement. The large fixture writes gigabytes; without this the
+/// scenario that happens to flush something first (a database commit, a manifest) waits behind the previous
+/// scenarios' writeback and looks much slower than it is. The flush itself is not timed.
+pub fn settle_disk() {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("sync").status();
     }
 }

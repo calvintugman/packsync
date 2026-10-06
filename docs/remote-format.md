@@ -51,6 +51,11 @@ trailer  44 B   u32 LE footer_stored_len | BLAKE3(footer_stored) (32 B) | "PSPKE
   raw, a blob ≤ 8 MiB, offsets/lengths inside the blob area, no overlaps.
 * Packs are filled to a target size (default 16 MiB, one blob over); small blobs from many files share
   packs, so a 2 GB instance is a few hundred requests rather than thousands.
+* **Layout (not part of the format, a property of the writer):** the blocks of one file are written next to
+  each other (in pieces of up to 8 MiB), and files appear in roughly the order they were hashed. A reader can
+  therefore fetch a whole file with one ranged request, and a whole restore with about one request per pack.
+  Readers must not depend on it — any order is valid — but a writer that interleaves the blocks of many files
+  makes restores slow (a request per block): see `docs/performance.md`.
 * The footer makes a pack **self-describing**: an index can always be rebuilt from the packs.
 
 ## Index — `index/<id>.idx`

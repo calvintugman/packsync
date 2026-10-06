@@ -174,7 +174,7 @@ function PlaySection({ settings }: { settings: Settings }) {
     }
   });
   return (
-    <Section id="s-play" title="Starting from Prism (launcher hooks)">
+    <Section id="s-play" title="Launcher hooks">
       <fieldset className="col" style={{ border: 0, padding: 0, margin: 0 }}>
         <legend className="field-label" style={{ marginBottom: 6 }}>
           When the cloud can't be reached
@@ -211,7 +211,37 @@ function PlaySection({ settings }: { settings: Settings }) {
         Don't start the game while a conflict or crash save is waiting for a decision
       </Checkbox>
       {update.error ? <ErrorNote error={update.error} /> : null}
+      <CliPath settings={settings} />
     </Section>
+  );
+}
+
+/** The command-line tool that launcher hooks call. Found automatically next to the app or on PATH. */
+function CliPath({ settings }: { settings: Settings }) {
+  const store = useStore();
+  const [path, setPath] = useState(settings.cli_path ?? "");
+  const save = useAction(async () => {
+    await store.call("settings.update", { patch: { cli_path: path.trim() || null } });
+    await store.refreshSettings();
+    store.toast("success", path.trim() ? "Saved." : "PackSync will look for its command-line tool by itself.");
+  });
+  return (
+    <div className="col">
+      <PathField
+        label="PackSync command-line tool (used by the hooks)"
+        value={path}
+        onChange={setPath}
+        placeholder="Leave empty to find it next to the app or on PATH"
+        hint="The path stored in Prism's settings when you install the hooks."
+        browseTitle="Choose the packsync executable"
+      />
+      {save.error ? <ErrorNote error={save.error} /> : null}
+      <div className="row">
+        <Button busy={save.busy} disabled={path.trim() === (settings.cli_path ?? "")} onClick={() => void save.run()}>
+          Save
+        </Button>
+      </div>
+    </div>
   );
 }
 
