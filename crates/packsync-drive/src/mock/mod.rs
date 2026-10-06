@@ -1424,8 +1424,8 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
         }
     }
     if faults.iter().any(|f| matches!(f, Fault::DropConnection)) {
-        cut(req);
         log(record);
+        cut(req);
         return;
     }
     let drop_after = faults.iter().find_map(|f| match f {
@@ -1440,8 +1440,8 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
             let mut st = sh.state.lock();
             sh.partial_chunk(&mut st, &params, &headers, &body);
         }
-        cut(req);
         log(record);
+        cut(req);
         return;
     }
     if let Some(Fault::Error { status, reason, message, retry_after }) =
@@ -1452,8 +1452,8 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
             r = r.header("Retry-After", ra.clone());
         }
         record.status = r.status;
-        send(req, r);
         log(record);
+        send(req, r);
         return;
     }
     let corrupt = faults.iter().any(|f| matches!(f, Fault::CorruptStoredContent));
@@ -1469,8 +1469,8 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
     };
     record.detail = detail;
     if faults.iter().any(|f| matches!(f, Fault::ApplyThenDrop)) {
-        cut(req);
         log(record);
+        cut(req);
         return;
     }
     if let Some(keep) = faults.iter().find_map(|f| match f {
@@ -1490,15 +1490,15 @@ fn handle(sh: &Shared, mut req: tiny_http::Request) {
         raw.push_str("\r\n");
         let mut bytes = raw.into_bytes();
         bytes.extend_from_slice(&resp.body[..keep.min(resp.body.len())]);
-        drop(req.into_writer());
-        sh.relay.send_raw_and_kill(p, &bytes);
         record.status = resp.status;
         log(record);
+        drop(req.into_writer());
+        sh.relay.send_raw_and_kill(p, &bytes);
         return;
     }
     record.status = resp.status;
-    send(req, resp);
     log(record);
+    send(req, resp);
 }
 
 impl MockDrive {
