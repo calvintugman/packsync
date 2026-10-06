@@ -5,13 +5,16 @@
 pub mod brand;
 pub mod credentials;
 pub mod error;
+pub mod fsutil;
 pub mod hash;
 pub mod ids;
 pub mod launcher;
 pub mod mixed;
+pub mod paths;
 pub mod progress;
 pub mod redact;
 pub mod retry;
+pub mod rules;
 pub mod storage;
 pub mod storage_fault;
 pub mod storage_local;

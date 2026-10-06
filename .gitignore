@@ -33,3 +33,6 @@ coverage/
 *.swp
 .DS_Store
 Thumbs.db
+
+# agent worktrees / local tooling state
+.claude/
