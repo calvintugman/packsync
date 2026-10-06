@@ -197,12 +197,19 @@ mod tests {
     fn parses_every_spelling_of_the_dir_option() {
         let cwd = Some(Path::new("/work"));
         assert_eq!(dir_argument(&p(&["prismlauncher", "--dir", "/d/x y"]).cmd, cwd), Some(PathBuf::from("/d/x y")));
-        assert_eq!(dir_argument(&p(&["prismlauncher", "-d", "rel/dir"]).cmd, cwd), Some(PathBuf::from("/work/rel/dir")));
+        assert_eq!(
+            dir_argument(&p(&["prismlauncher", "-d", "rel/dir"]).cmd, cwd),
+            Some(PathBuf::from("/work/rel/dir"))
+        );
         assert_eq!(dir_argument(&p(&["prismlauncher", "--dir=/a b"]).cmd, cwd), Some(PathBuf::from("/a b")));
         assert_eq!(dir_argument(&p(&["prismlauncher", "-d/glued"]).cmd, cwd), Some(PathBuf::from("/glued")));
         assert_eq!(dir_argument(&p(&["prismlauncher", "--launch", "x"]).cmd, cwd), None);
         assert_eq!(dir_argument(&p(&["prismlauncher", "--dir"]).cmd, cwd), None);
-        assert_eq!(dir_argument(&p(&["prismlauncher", "-d", "rel"]).cmd, None), None, "relative without a cwd is unknowable");
+        assert_eq!(
+            dir_argument(&p(&["prismlauncher", "-d", "rel"]).cmd, None),
+            None,
+            "relative without a cwd is unknowable"
+        );
     }
 
     #[test]
