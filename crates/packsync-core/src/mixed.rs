@@ -90,43 +90,48 @@ fn text(bytes: &[u8]) -> Result<&str> {
     std::str::from_utf8(bytes).map_err(|_| Error::invalid("mixed settings file", "not valid UTF-8"))
 }
 
-/// Portable projection of `bytes`. Local-only keys are removed; every other line is preserved
-/// byte-for-byte (including line endings). Deterministic.
+/// Portable projection of `bytes`. Local-only keys are removed. For line-based `key:value` files
+/// every other line is preserved byte-for-byte. For INI files the projection is **canonical**
+/// (sections and keys sorted, comments dropped, values verbatim) so that
+/// `project(merge(P, local)) == P` regardless of the key order in the local file; otherwise a
+/// restore would immediately look like a modification. Deterministic.
 pub fn project(policy: &MixedPolicy, bytes: &[u8]) -> Result<Vec<u8>> {
     let s = text(bytes)?;
+    if policy.format == MixedFormat::Ini {
+        use std::collections::BTreeMap;
+        let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+        let mut section = "General".to_string();
+        for line in s.split_inclusive('\n') {
+            match classify(MixedFormat::Ini, line) {
+                Line::Section(n) => section = n.to_string(),
+                Line::Pair { key } => {
+                    if policy.key_is_portable(&section, key) {
+                        let mut l = line.trim_end_matches(['\r', '\n']).to_string();
+                        l.push('\n');
+                        sections.entry(section.clone()).or_default().insert(key.to_string(), l);
+                    }
+                }
+                Line::Other => {}
+            }
+        }
+        let mut out = String::new();
+        for (name, keys) in &sections {
+            out.push_str(&format!("[{name}]\n"));
+            for l in keys.values() {
+                out.push_str(l);
+            }
+        }
+        return Ok(out.into_bytes());
+    }
     let mut out = String::with_capacity(s.len());
-    let mut section = "General"; // INI keys before any header are treated as General
-    let mut pending_header: Option<&str> = None;
     for line in s.split_inclusive('\n') {
         match classify(policy.format, line) {
-            Line::Section(name) => {
-                section = name;
-                // Emit headers lazily (only if the section keeps at least one line) for INI.
-                if policy.format == MixedFormat::Ini {
-                    pending_header = Some(line);
-                } else {
-                    out.push_str(line);
-                }
-            }
             Line::Pair { key } => {
-                if policy.key_is_portable(section, key) {
-                    if let Some(h) = pending_header.take() {
-                        out.push_str(h);
-                        if !h.ends_with('\n') {
-                            out.push('\n');
-                        }
-                    }
+                if policy.key_is_portable("General", key) {
                     out.push_str(line);
                 }
             }
-            Line::Other => {
-                if policy.format == MixedFormat::Ini {
-                    // Comments/blank lines in INI belong to the section structure; drop them from
-                    // the projection so it only contains portable data.
-                } else {
-                    out.push_str(line);
-                }
-            }
+            _ => out.push_str(line),
         }
     }
     Ok(out.into_bytes())
@@ -361,6 +366,9 @@ mod tests {
         let src = b"[General]\nConfigVersion=1.3\nInstanceType=OneSix\nJavaPath=/usr/lib/jvm/x/bin/java\nnotes=hello\nname=My Pack\n\n[UI]\nmods_Page\\Columns=\"AAAA\"\n";
         let p = String::from_utf8(project(&ini(), src).unwrap()).unwrap();
         assert_eq!(p, "[General]\nInstanceType=OneSix\nnotes=hello\n");
+        // canonical: key order in the source does not matter
+        let reordered = b"[General]\nnotes=hello\nInstanceType=OneSix\n";
+        assert_eq!(project(&ini(), reordered).unwrap(), p.as_bytes());
         assert!(!p.contains("JavaPath") && !p.contains("UI"));
     }
 
@@ -378,6 +386,24 @@ mod tests {
         // idempotent
         let again = merge(&ini(), &project(&ini(), out.as_bytes()).unwrap(), Some(out.as_bytes())).unwrap();
         assert_eq!(String::from_utf8(again).unwrap(), out);
+    }
+
+    #[test]
+    fn projection_of_a_merge_is_the_projection_that_went_in() {
+        // The invariant restores rely on: merging a snapshot's projection into any local file and
+        // projecting again yields the same bytes (otherwise every restore would look like an edit).
+        let portable = project(&ini(), b"[General]\nnotes=n\nInstanceType=OneSix\nManagedPackID=7\n").unwrap();
+        for local in [
+            &b"[General]\nJavaPath=/x\nnotes=old\n[UI]\na=b\n"[..],
+            b"[UI]\na=b\n[General]\nManagedPackID=1\nz=1\n",
+            b"",
+        ] {
+            let merged = merge(&ini(), &portable, if local.is_empty() { None } else { Some(local) }).unwrap();
+            assert_eq!(project(&ini(), &merged).unwrap(), portable);
+        }
+        let kvp = project(&kv(), b"lang:de\nrenderDistance:8\nguiScale:2\n").unwrap();
+        let merged = merge(&kv(), &kvp, Some(b"renderDistance:12\nlang:en\n")).unwrap();
+        assert_eq!(project(&kv(), &merged).unwrap(), kvp);
     }
 
     #[test]

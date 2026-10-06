@@ -3,22 +3,36 @@
 //! See `docs/architecture.md` for the module map and `docs/consistency.md` for the invariants.
 
 pub mod brand;
+pub mod chunk;
+pub mod codec;
 pub mod credentials;
+pub mod db;
 pub mod error;
+pub mod failpoint;
 pub mod fsutil;
+pub mod graph;
 pub mod hash;
 pub mod ids;
 pub mod launcher;
+pub mod lock;
+pub mod manifest;
 pub mod mixed;
+pub mod pack;
 pub mod paths;
+pub mod proc;
 pub mod progress;
 pub mod redact;
+pub mod remote;
 pub mod retry;
 pub mod rules;
+pub mod scan;
+pub mod snapshot;
+pub mod stage;
 pub mod storage;
 pub mod storage_fault;
 pub mod storage_local;
 pub mod storage_meter;
+pub mod upload;
 pub mod worlds;
 
 #[cfg(any(test, feature = "testkit"))]

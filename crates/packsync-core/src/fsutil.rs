@@ -32,6 +32,11 @@ pub struct FileStat {
 /// `lstat`-style metadata (never follows symlinks).
 pub fn stat_nofollow(path: &Path) -> io::Result<FileStat> {
     let md = fs::symlink_metadata(long_path(path))?;
+    Ok(stat_from_md(path, &md))
+}
+
+/// Convert already-fetched (non-following) metadata, e.g. from `DirEntry::metadata`.
+pub fn stat_from_md(path: &Path, md: &fs::Metadata) -> FileStat {
     let ft = md.file_type();
     let kind = if ft.is_symlink() {
         FileKind::Symlink
@@ -42,7 +47,7 @@ pub fn stat_nofollow(path: &Path) -> io::Result<FileStat> {
     } else {
         FileKind::Other
     };
-    Ok(platform::stat_from_metadata(path, &md, kind))
+    platform::stat_from_metadata(path, md, kind)
 }
 
 #[cfg(unix)]

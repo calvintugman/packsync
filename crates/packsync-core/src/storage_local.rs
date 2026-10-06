@@ -12,6 +12,7 @@ use crate::progress::OpCtx;
 use crate::storage::*;
 
 const TMP_DIR: &str = ".tmp-packsync";
+const TAGS_DIR: &str = ".tags-packsync";
 
 pub struct LocalDirStorage {
     root: PathBuf,
@@ -36,6 +37,14 @@ impl LocalDirStorage {
         self.root.join(key.trim_end_matches('/'))
     }
 
+    fn tags_path(&self, key: &str) -> PathBuf {
+        self.root.join(TAGS_DIR).join(format!("{}.json", key.replace('/', "__")))
+    }
+
+    fn load_tags(&self, key: &str) -> std::collections::BTreeMap<String, String> {
+        fs::read(self.tags_path(key)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
     fn info_for(&self, key: &str, path: &Path, meta: &fs::Metadata) -> ObjectInfo {
         let ms = |t: io::Result<std::time::SystemTime>| {
             t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64)
@@ -44,6 +53,7 @@ impl LocalDirStorage {
         let mut info = ObjectInfo::file(key, meta.len());
         info.created_ms = ms(meta.created());
         info.modified_ms = ms(meta.modified());
+        info.tags = self.load_tags(key);
         info
     }
 
@@ -108,7 +118,7 @@ impl Storage for LocalDirStorage {
         for ent in rd {
             let ent = ent?;
             let name = ent.file_name().to_string_lossy().into_owned();
-            if name == TMP_DIR || name.starts_with(".tmp-") {
+            if name == TMP_DIR || name == TAGS_DIR || name.starts_with(".tmp-") {
                 continue;
             }
             let meta = ent.metadata()?;
@@ -225,6 +235,13 @@ impl Storage for LocalDirStorage {
         }
 
         let finish = |meta_of: &Path| -> StorageResult<ObjectInfo> {
+            if !opts.tags.is_empty() {
+                let tp = self.tags_path(key);
+                if let Some(dir) = tp.parent() {
+                    fs::create_dir_all(dir)?;
+                }
+                fs::write(&tp, serde_json::to_vec(&opts.tags).map_err(|e| StorageError::Other(e.to_string()))?)?;
+            }
             let m = fs::metadata(meta_of)?;
             let mut info = self.info_for(key, meta_of, &m);
             info.checksums.blake3 = Some(digest.to_hex());
@@ -283,6 +300,7 @@ impl Storage for LocalDirStorage {
     fn delete(&self, key: &str, _mode: DeleteMode, ctx: &OpCtx) -> StorageResult<()> {
         ctx.check().map_err(|_| StorageError::Cancelled)?;
         validate_key(key)?;
+        let _ = fs::remove_file(self.tags_path(key));
         match fs::remove_file(self.path_for(key)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
