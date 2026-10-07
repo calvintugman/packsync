@@ -557,7 +557,14 @@ impl Engine {
             &self.cfg.snapshot.scan,
             ctx,
         )?;
-        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &self.cfg.restore };
+        let idle = || self.ensure_idle(&fresh);
+        let env = RestoreEnv {
+            db: &self.db,
+            remote: &remote,
+            policies: &policies,
+            cfg: &self.cfg.restore,
+            writers: Some(&idle),
+        };
         let reason = format!("fast-forward to snapshot {}", to.short());
         let rep = restore::restore_in_place(
             &env,

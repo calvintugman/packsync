@@ -209,7 +209,8 @@ impl Engine {
         )?;
         let mut cfg = self.cfg.restore.clone();
         cfg.skip_incompatible = opts.skip_incompatible;
-        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg };
+        let idle = || self.ensure_idle(&fresh);
+        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg, writers: Some(&idle) };
         let reason = format!("restore of snapshot {}", snapshot.short());
         let derive_note = format!("restored from snapshot {}", snapshot.short());
         let rep = restore::restore_in_place(
@@ -283,7 +284,7 @@ impl Engine {
             }
             m
         };
-        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg };
+        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg, writers: None };
         let report = restore::restore_new(&env, &staged, req.instance, &target, sid, ctx)?;
         crate::failpoint!("restore_new.before_register")?;
         let reg = match launcher.register_restored(&RegisterRequest {
@@ -444,7 +445,14 @@ impl Engine {
                     &self.cfg.snapshot.scan,
                     ctx,
                 )?;
-                let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &self.cfg.restore };
+                let idle = || self.ensure_idle(&inst);
+                let env = RestoreEnv {
+                    db: &self.db,
+                    remote: &remote,
+                    policies: &policies,
+                    cfg: &self.cfg.restore,
+                    writers: Some(&idle),
+                };
                 restore::restore_in_place(
                     &env,
                     &inst,
@@ -605,7 +613,14 @@ impl Engine {
             &self.cfg.snapshot.scan,
             ctx,
         )?;
-        let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &self.cfg.restore };
+        let idle = || self.ensure_idle(&inst);
+        let env = RestoreEnv {
+            db: &self.db,
+            remote: &remote,
+            policies: &policies,
+            cfg: &self.cfg.restore,
+            writers: Some(&idle),
+        };
         let rep = restore::restore_in_place(
             &env,
             &inst,

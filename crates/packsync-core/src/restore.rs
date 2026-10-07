@@ -73,6 +73,9 @@ pub struct RestoreEnv<'a> {
     pub remote: &'a Remote,
     pub policies: &'a HashMap<String, MixedPolicy>,
     pub cfg: &'a RestoreConfig,
+    /// Re-checked immediately before the first live file is touched (staging can take minutes and a game
+    /// may have been started meanwhile): fails when the game or another writer uses the instance.
+    pub writers: Option<&'a dyn Fn() -> Result<()>>,
 }
 
 #[derive(Debug, Clone)]
@@ -845,6 +848,14 @@ fn run_op(root: &Path, txd: &Path, op: &JOp) -> Result<()> {
                 fs::rename(lp(&live), lp(&trash)).map_err(|e| map_rename_err(e, &live))?;
                 crate::failpoint!("restore.after_trash")?;
             }
+            if !*existed && fs::symlink_metadata(lp(&live)).is_ok() {
+                // Something created this file after the restore was planned (the game, another program):
+                // never overwrite it silently. Stop; everything done so far is rolled back.
+                return Err(Error::GameRunning(format!(
+                    "{p} appeared while the restore was running (is the game or another program using the instance?); \
+                     nothing was changed"
+                )));
+            }
             let stage = stage_path(txd, p);
             if let Some(d) = live.parent() {
                 fs::create_dir_all(lp(d)).io_ctx(|| format!("creating {}", d.display()))?;
@@ -955,6 +966,13 @@ pub fn restore_in_place(
         return Err(e);
     }
     ctx.phase(Phase::Apply, format!("applying {} changes", plan.ops.len()));
+    if let Some(check) = env.writers
+        && let Err(e) = check()
+    {
+        let _ = journal.append(&Rec::RolledBack, true);
+        cleanup(&txd, &e);
+        return Err(e);
+    }
     if let Err(e) = apply(root, &txd, &mut journal, &plan, env.cfg, ctx) {
         if !crate::failpoint::is_crash(&e) {
             let _ = journal.append(&Rec::RolledBack, true);
@@ -1265,6 +1283,22 @@ use Read as _;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file the plan expected to be new but that appeared meanwhile (the game started writing, another
+    /// program) is never overwritten: the operation fails and nothing of the person's file changes.
+    #[test]
+    fn a_file_that_appeared_after_planning_is_never_overwritten() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, txd) = (d.path().join("inst"), d.path().join("tx"));
+        fs::create_dir_all(root.join("saves/W")).unwrap();
+        fs::create_dir_all(txd.join("stage/saves/W")).unwrap();
+        fs::write(txd.join("stage/saves/W/new.dat"), b"from the cloud").unwrap();
+        fs::write(root.join("saves/W/new.dat"), b"written by the game just now").unwrap();
+        let err = run_op(&root, &txd, &JOp::Write { p: "saves/W/new.dat".into(), existed: false }).unwrap_err();
+        assert!(matches!(err, Error::GameRunning(_)), "{err}");
+        assert_eq!(fs::read(root.join("saves/W/new.dat")).unwrap(), b"written by the game just now");
+        assert!(txd.join("stage/saves/W/new.dat").exists(), "the staged copy stays for the rollback");
+    }
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
