@@ -498,11 +498,23 @@ impl RuleSet {
         }
     }
 
+    /// A path that stands for "some file directly inside `dir`" (a name no real file has), to ask what the
+    /// rules decide for a directory's content as a whole.
+    fn inside(dir: &str) -> String {
+        format!("{dir}/\u{1}x")
+    }
+
+    /// Whether a file inside `dir` would be synced (used for empty directories and for what lies below a
+    /// link that is never followed).
+    pub fn includes_inside(&self, dir: &str) -> bool {
+        self.decide(&Self::inside(dir)).include
+    }
+
     /// If the whole directory can be skipped by the scanner, why. A directory is skipped when it is
     /// sealed-excluded, or matches a `prune` exclude rule and no later include rule could match
     /// anything beneath it.
     pub fn prune_dir(&self, dir: &str) -> Option<Decision> {
-        let sentinel = format!("{dir}/\u{1}x");
+        let sentinel = Self::inside(dir);
         if let Some(d) = self.sealed(&sentinel).or_else(|| self.sealed(dir)) {
             return Some(d);
         }

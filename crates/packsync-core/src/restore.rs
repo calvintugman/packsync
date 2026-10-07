@@ -691,17 +691,38 @@ fn download_order<'a>(env: &RestoreEnv<'_>, writes: &'a [Entry]) -> Vec<&'a Entr
 }
 
 /// Download, verify and stage every file in `plan.writes` under `stage_dir`.
-fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<(u64, u64)> {
-    let blob_dir = txd.join("blobs");
+/// Where restored files go and what this computer can contribute: the one difference between restoring
+/// over an existing instance and into a new folder.
+struct Materialise<'a> {
+    /// The finished file for a snapshot path.
+    out: &'a (dyn Fn(&str) -> PathBuf + Sync),
+    /// The live instance (in place): its unchanged blocks are reused and its settings files merged.
+    local_root: Option<&'a Path>,
+    /// Flushed once per batch where the platform allows it (the folder the files are written to).
+    flush_dir: &'a Path,
+    blob_dir: PathBuf,
+    /// Hit after each file (crash tests).
+    after_file: Option<&'static str>,
+}
+
+/// Download (in storage order, batch by batch), assemble and verify every file of `writes`, and make it
+/// durable before returning. Returns (bytes downloaded, bytes reused from local files).
+fn materialise(
+    env: &RestoreEnv<'_>,
+    writes: &[Entry],
+    total: u64,
+    m: &Materialise<'_>,
+    ctx: &OpCtx,
+) -> Result<(u64, u64)> {
     let mut downloaded = 0;
     let mut reused = 0;
-    let total = plan.bytes_to_write;
     let done_bytes = std::sync::atomic::AtomicU64::new(0);
     let done_files = std::sync::atomic::AtomicU64::new(0);
-    let order = download_order(env, &plan.writes);
-    // Staged files must be on disk before any of them is renamed over a live file. One flush of the whole
-    // file system per batch is far cheaper than one per file; where that is not available each file flushes itself.
-    let one_flush = crate::fsutil::syncfs(txd).unwrap_or(false);
+    let order = download_order(env, writes);
+    // Files must be on disk before any of them is renamed over a live file or the folder becomes an
+    // instance. One flush of the whole file system per batch is far cheaper than one per file; where that
+    // is not available each file flushes itself.
+    let one_flush = crate::fsutil::syncfs(m.flush_dir).unwrap_or(false);
     let flush_each = !one_flush;
     let mut i = 0;
     while i < order.len() {
@@ -709,19 +730,19 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
         // one batch
         let mut batch: Vec<&Entry> = vec![];
         let mut bytes = 0u64;
-        while i < order.len() && (batch.is_empty() || bytes + order[i].s <= env.cfg.batch_bytes) {
-            bytes += order[i].s;
+        while i < order.len() && (batch.is_empty() || bytes.saturating_add(order[i].s) <= env.cfg.batch_bytes) {
+            bytes = bytes.saturating_add(order[i].s);
             batch.push(order[i]);
             i += 1;
         }
         ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
-        let fetched = fetch_batch(env, &batch, &blob_dir, Some(root), ctx)?;
+        let fetched = fetch_batch(env, &batch, &m.blob_dir, m.local_root, ctx)?;
         downloaded += fetched.downloaded;
         reused += fetched.reused;
         let recipes = fetched.recipes;
         crate::failpoint!("restore.after_fetch_batch")?;
         for_each_parallel(&batch, env.cfg.assemble_threads, ctx, |e| {
-            let out = stage_path(txd, &e.p);
+            let out = (m.out)(&e.p);
             let policy =
                 e.mx.as_ref()
                     .map(|id| {
@@ -730,8 +751,8 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
                             .ok_or_else(|| Error::Config(format!("snapshot uses unknown mixed-file policy {id:?}")))
                     })
                     .transpose()?;
-            let local_current = match policy {
-                Some(_) => match fs::read(lp(&local_path(root, &e.p))) {
+            let local_current = match (policy, m.local_root) {
+                (Some(_), Some(root)) => match fs::read(lp(&local_path(root, &e.p))) {
                     // an oversized local copy must not be treated as absent: that would drop every local-only
                     // value (Java path, window size …) without a word. Stop instead; nothing was changed yet.
                     Ok(b) if b.len() as u64 > crate::scan::MAX_MIXED_FILE => {
@@ -747,28 +768,38 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
                     Ok(b) => Some(b),
                     Err(_) => None,
                 },
-                None => None,
+                _ => None,
             };
-            assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, local_current, flush_each)?;
+            assemble(e, e.r.and_then(|r| recipes.get(&r)), &m.blob_dir, &out, policy, local_current, flush_each)?;
             apply_metadata(&out, e);
+            if let Some(fp) = m.after_file {
+                crate::failpoint!(fp)?;
+            }
             let files = done_files.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             let bytes = done_bytes.fetch_add(e.s, std::sync::atomic::Ordering::Relaxed) + e.s;
-            ctx.progress(
-                Phase::Validate,
-                (files, plan.writes.len() as u64),
-                (bytes, total),
-                format!("verified {}", e.p),
-            );
+            ctx.progress(Phase::Validate, (files, writes.len() as u64), (bytes, total), format!("verified {}", e.p));
             Ok(())
         })?;
         // the downloaded blocks are no longer needed: drop them first so the flush below does not have to
         // write them to disk as well (only the assembled files matter)
-        let _ = fs::remove_dir_all(lp(&blob_dir));
+        let _ = fs::remove_dir_all(lp(&m.blob_dir));
         if one_flush {
-            crate::fsutil::syncfs(txd).io_ctx(|| "flushing the staged files to disk".to_string())?;
+            crate::fsutil::syncfs(m.flush_dir).io_ctx(|| "flushing the restored files to disk".to_string())?;
         }
     }
     Ok((downloaded, reused))
+}
+
+fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, ctx: &OpCtx) -> Result<(u64, u64)> {
+    let out = |p: &str| stage_path(txd, p);
+    let m = Materialise {
+        out: &out,
+        local_root: Some(root),
+        flush_dir: txd,
+        blob_dir: txd.join("blobs"),
+        after_file: None,
+    };
+    materialise(env, &plan.writes, plan.bytes_to_write, &m, ctx)
 }
 
 fn new_tx_dir(root: &Path, tx: TxId) -> Result<PathBuf> {
@@ -1197,49 +1228,15 @@ pub fn restore_new(
                 fs::create_dir_all(lp(&local_path(dir, p))).io_ctx(|| format!("creating {p}"))?;
             }
         }
-        let mut downloaded = 0;
-        let restored = std::sync::atomic::AtomicU64::new(0);
-        let order = download_order(env, &plan.writes);
-        // the files must be on disk before the folder becomes an instance: one flush per batch where the
-        // platform allows it, otherwise each file flushes itself
-        let one_flush = crate::fsutil::syncfs(dir).unwrap_or(false);
-        let flush_each = !one_flush;
-        let (mut i, total) = (0usize, order.len());
-        while i < total {
-            ctx.check()?;
-            let mut batch: Vec<&Entry> = vec![];
-            let mut bytes = 0;
-            while i < total && (batch.is_empty() || bytes + order[i].s <= env.cfg.batch_bytes) {
-                bytes += order[i].s;
-                batch.push(order[i]);
-                i += 1;
-            }
-            ctx.phase(Phase::StageDownload, format!("downloading {} files", batch.len()));
-            let fetched = fetch_batch(env, &batch, &blob_dir, None, ctx)?;
-            downloaded += fetched.downloaded;
-            let recipes = fetched.recipes;
-            for_each_parallel(&batch, env.cfg.assemble_threads, ctx, |e| {
-                let out = local_path(dir, &e.p);
-                let policy = e
-                    .mx
-                    .as_ref()
-                    .map(|id| {
-                        env.policies.get(id).ok_or_else(|| Error::Config(format!("unknown mixed-file policy {id:?}")))
-                    })
-                    .transpose()?;
-                assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, None, flush_each)?;
-                apply_metadata(&out, e);
-                crate::failpoint!("restore_new.after_file")?;
-                let n = restored.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                ctx.progress(Phase::Validate, (n, total as u64), (0, 0), format!("restored {}", e.p));
-                Ok(())
-            })?;
-            // drop the downloaded blocks first so the flush does not have to write them out as well
-            let _ = fs::remove_dir_all(lp(&blob_dir));
-            if one_flush {
-                crate::fsutil::syncfs(dir).io_ctx(|| "flushing the restored files to disk".to_string())?;
-            }
-        }
+        let out = |p: &str| local_path(dir, p);
+        let m = Materialise {
+            out: &out,
+            local_root: None,
+            flush_dir: dir,
+            blob_dir: blob_dir.clone(),
+            after_file: Some("restore_new.after_file"),
+        };
+        let (downloaded, _) = materialise(env, &plan.writes, plan.bytes_to_write, &m, ctx)?;
         let _ = fs::remove_dir_all(lp(&dir.join(crate::brand::LOCAL_MARKER_DIR).join("tx")));
         Ok(RestoreReport {
             target: Some(target_id),

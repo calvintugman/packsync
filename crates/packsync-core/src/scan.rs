@@ -369,7 +369,7 @@ fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
                 let n = walk_dir(w, &child_abs, &child_rel)?;
                 // An unreadable directory's content is UNKNOWN: it is neither empty nor deleted.
                 let became_unreadable = w.out.unreadable_dirs.len() > unreadable_before;
-                if n == 0 && !became_unreadable && w.rules.decide(&format!("{child_rel}/\u{1}x")).include {
+                if n == 0 && !became_unreadable && w.rules.includes_inside(&child_rel) {
                     w.out.empty_dirs.push(child_rel);
                     included_below += 1;
                 } else {
@@ -407,7 +407,7 @@ fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
                 let d = w.rules.decide(&child_rel);
                 // A link can stand for a whole folder (`saves` → elsewhere): judge it by whether
                 // anything *inside* that path would be synced, not only by the link's own name.
-                let in_included_area = d.include || w.rules.decide(&format!("{child_rel}/\u{1}x")).include;
+                let in_included_area = d.include || w.rules.includes_inside(&child_rel);
                 if in_included_area {
                     let (kind, detail) = if stat.kind == FileKind::Symlink {
                         (IssueKind::Symlink, "symbolic links are never followed or synced; the link was skipped")
