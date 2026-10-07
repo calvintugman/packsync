@@ -390,10 +390,22 @@ impl Db {
         })
     }
 
+    /// Read, change and write an instance row **atomically**: the read and the write are one IMMEDIATE
+    /// transaction, so the app, the CLI and launcher hooks (separate processes on one database) updating
+    /// different fields at the same time cannot undo each other's change.
     pub fn instance_update(&self, id: InstanceId, f: impl FnOnce(&mut InstanceRow)) -> Result<InstanceRow> {
-        let mut row = self.instance_get(id)?.ok_or_else(|| Error::NotFound(format!("instance {id}")))?;
+        let mut g = self.conn.lock();
+        let c = g.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut row = c
+            .query_row(
+                &format!("SELECT {INSTANCE_COLS} FROM instances WHERE id=?1"),
+                [id.to_string()],
+                instance_from_row,
+            )
+            .optional()?
+            .ok_or_else(|| Error::NotFound(format!("instance {id}")))?;
         f(&mut row);
-        self.with(|c| {
+        {
             c.execute(
                 "UPDATE instances SET name=?2, root=?3, launcher=?4, launcher_ref=?5, game_root=?6, sync_enabled=?7, base_snapshot=?8, pending_rules=?9, marker=?10, root_dev=?11, provider_id=?12, state=?13, state_detail=?14, last_scan_ms=?15, last_full_verify_ms=?16, last_synced_ms=?17, needs_full_scan=?18 WHERE id=?1",
                 params![
@@ -417,8 +429,8 @@ impl Db {
                     row.needs_full_scan,
                 ],
             )?;
-            Ok(())
-        })?;
+        }
+        c.commit()?;
         Ok(row)
     }
 
@@ -1529,6 +1541,33 @@ mod tests {
             last_synced_ms: None,
             needs_full_scan: true,
         }
+    }
+
+    /// Two processes (here: two connections) changing different fields of one instance at the same time:
+    /// neither change may be lost (a read-modify-write of the whole row used to revert the other's field).
+    #[test]
+    fn concurrent_instance_updates_never_lose_each_others_change() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.db");
+        let (a, b) = (Db::open(&p).unwrap(), Db::open(&p).unwrap());
+        let r = inst("pack");
+        a.instance_insert(&r).unwrap();
+        const N: i64 = 300;
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                for _ in 0..N {
+                    a.instance_update(r.id, |x| x.last_scan_ms = Some(x.last_scan_ms.unwrap_or(0) + 1)).unwrap();
+                }
+            });
+            s.spawn(|| {
+                for _ in 0..N {
+                    b.instance_update(r.id, |x| x.last_full_verify_ms = Some(x.last_full_verify_ms.unwrap_or(0) + 1))
+                        .unwrap();
+                }
+            });
+        });
+        let end = a.instance_get(r.id).unwrap().unwrap();
+        assert_eq!((end.last_scan_ms, end.last_full_verify_ms), (Some(N), Some(N)));
     }
 
     #[test]
