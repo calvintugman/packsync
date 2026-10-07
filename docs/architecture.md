@@ -67,8 +67,11 @@ about Google, Prism, windows or terminals; those are adapters plugged in through
 ## Concurrency model
 
 * One process may run several jobs; each takes the **per-instance OS file lock** for mutations. A separate
-  lock guards uploads so a long upload does not block a new snapshot. Uploads of different instances run in
-  parallel; uploads within one use a bounded worker pool.
+  lock guards uploads, so an upload started on its own (Sync now, the retry scheduler) does not block a new
+  snapshot. (The upload at the end of a game session runs while that session still holds the instance lock,
+  so a second operation on the same instance waits for it.) Uploads of different instances run in
+  parallel; uploads within one use a bounded worker pool. Instance rows are updated read-and-write in one
+  transaction, so processes changing different fields never undo each other.
 * All state is in SQLite (WAL, `synchronous=FULL`) plus files; the app, the CLI and launcher hooks are
   separate processes that coordinate through the database and locks. The **hook processes are short-lived**
   and open the database like any other client.

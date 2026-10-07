@@ -12,8 +12,14 @@ PackSync guarantees on top of that, how, and — as importantly — what it does
    (`keep local` / `keep cloud` / `split into a new instance`), and the other side is preserved in
    history. World files are never merged automatically.
 2. **A published snapshot is complete.** A manifest is uploaded *last*, after every pack it needs was
-   uploaded and verified and the index was written. A reader that sees a manifest can restore it; a reader
-   that does not see it (yet) simply has the previous state.
+   uploaded and verified and the index was written. Before that, every file of the tree must have its data
+   either in the snapshot's own packs or in the cloud — checked for the whole tree, not just what changed,
+   and down to every chunk for derived snapshots (merges, forks, promotions) and whenever cloud data was
+   found missing (`upload.rs`, `completeness_gaps`). Data that went missing (a cleanup on another computer,
+   files removed from Drive) is uploaded again from this computer's files before anything is published
+   (`engine/repair.rs`); what this computer no longer has is reported (`cloud_data_missing`) and never
+   published as a hole. A reader that sees a manifest can restore it; a reader that does not see it (yet)
+   simply has the previous state. Tests: `crates/packsync-core/tests/completeness.rs`.
 3. **A crash does not become the truth.** A session that ended without a clean exit produces a
    *quarantined* snapshot (`kind: crash`): uploaded and kept, never a head, never an automatic
    fast-forward target. The user promotes it or discards it.
@@ -54,7 +60,7 @@ PackSync guarantees on top of that, how, and — as importantly — what it does
 | Killed after the manifest, before the head record | The snapshot is published; the head record is rewritten later (or never needed: discovery lists commits). |
 | Killed during an in-place restore | Before `Applied`: rolled back, the instance is exactly as before. After: rolled forward and, for a restore the user asked for, recorded as a new snapshot so it sticks. Recovery itself can be killed and repeated. |
 | Killed during cleanup (`gc run`) | Any boundary — after the release markers, after the merged index, before or between deletions — leaves every snapshot that was to be kept restorable (indexes are deleted before packs; an index pointing at a missing pack is harmless, the reverse is not); running the cleanup again (a fresh preview) finishes it. Tested at six points (`gc::a_cleanup_killed_at_any_step…`). |
-| Power loss right after a restore wrote its files | The restored/staged files are flushed to disk **before** any is renamed over a live file or the new instance is registered: one `syncfs` of the file system per batch where the platform has it (Linux), otherwise a flush per file. So a power cut cannot turn a staged file into an empty live one. (The tests kill the *process*; they cannot simulate losing the page cache, so this rests on the ordering above, not on a test.) |
+| Power loss right after a restore wrote its files | The restored/staged files are flushed to disk **before** any is renamed over a live file or the new instance is registered: one `syncfs` of the file system per batch where the platform has it (Linux), otherwise a flush per file. So a power cut cannot turn a staged file into an empty live one. The renames of each batch are flushed too **before** the journal records the batch (and finally the restore) as done, so a durable "applied" never describes files that are still the old ones (`syncfs` on Linux, each touched directory on other Unix systems; on Windows NTFS journals renames itself). (The tests kill the *process*; they cannot simulate losing the page cache, so this rests on the ordering above, not on a test.) |
 | Killed during a new-instance restore | The hidden staging folder (ignored by the launcher) is recognised by its ownership marker and removed on the next start; the instance is never registered half-restored. |
 | Two computers upload simultaneously | Two heads. Reconcile reports a conflict; both snapshots are kept. |
 | A laptop that was offline for months syncs | Its base is an ancestor of the head (fast-forward) or not (conflict); retention never makes that undecidable because manifests are kept and only *content* of old snapshots is released. |
@@ -78,7 +84,16 @@ PackSync guarantees on top of that, how, and — as importantly — what it does
 * **Restore is recoverable, not atomic.** There is a window in which files are being replaced; recovery
   guarantees the end state, not the absence of that window.
 * **Cleanup is pack-granular.** Space is reclaimed only for packs none of whose blobs is needed;
-  partly-used packs are reported but not repacked (future work).
+  partly-used packs are reported but not repacked (future work). A pack that no index describes is
+  deleted only after its own footer shows that nothing kept needs it.
+* **Cleanup and in-flight uploads** are separated by the grace period (48 hours minimum): a pack younger than
+  that is never deleted, so an upload interrupted and resumed within it keeps its data. An upload resumed
+  *after* a cleanup removed its orphaned packs simply uploads them again (the completeness check sees they
+  are gone).
+* **A game started while a restore is staging** is caught by a second "is anything using the instance?" check
+  right before the first file is replaced; a file that appears after the restore was planned is never
+  overwritten (the restore stops and rolls back). A game started *outside* Prism hooks and the app (another
+  launcher pointed at the same folder) is only seen through the process table and `session.lock`.
 * **A tiny window remains** between a restore finishing its journal and recording itself as a snapshot
   when the process is killed in exactly that instant: the files are the restored version, and the next
   sync may fast-forward away from it (recovery point and history keep both). No data is lost.

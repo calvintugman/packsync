@@ -60,7 +60,7 @@ Instances are named by their **ID** (or a unique prefix of at least 4 characters
 |---|---|
 | `preview PATH [--rules-file F] [--estimate-upload]` | What would be synced (by category), what is excluded and why, worlds found, problems. Changes nothing. |
 | `enable PATH [--rules-file F] [--no-upload]` | Shows the preview, asks, takes the first snapshot and uploads it. |
-| `disable INSTANCE` | Stop syncing here. Files and cloud data stay as they are. |
+| `disable INSTANCE` | Stop syncing here. Files and cloud data stay as they are. Versions saved on this computer but **not uploaded yet** are dropped from this computer's history (the files themselves stay); upload first (`packsync sync`) to keep them. |
 
 ### Day to day
 
