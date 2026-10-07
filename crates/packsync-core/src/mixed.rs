@@ -140,7 +140,10 @@ pub fn project(policy: &MixedPolicy, bytes: &[u8]) -> Result<Vec<u8>> {
 /// Combine a portable projection (from a snapshot) with the existing local file (if any).
 /// Result: portable keys take the snapshot's values; local-only keys keep the local values.
 pub fn merge(policy: &MixedPolicy, portable: &[u8], local: Option<&[u8]>) -> Result<Vec<u8>> {
-    let portable_s = text(portable)?;
+    // The snapshot's side is untrusted: whatever it carries, only portable keys get in (launch commands,
+    // Java path and other machine-local settings never come from another computer).
+    let portable = project(policy, portable)?;
+    let portable_s = text(&portable)?;
     let Some(local) = local else {
         return Ok(portable_s.as_bytes().to_vec());
     };

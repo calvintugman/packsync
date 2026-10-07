@@ -291,4 +291,22 @@ mod tests {
         assert!(PORTABLE_KEYS.contains(&"ManagedPackURL") && PORTABLE_KEYS.contains(&"ExportRecommendedRAM"));
         assert!(!PORTABLE_KEYS.contains(&"JavaPath") && !PORTABLE_KEYS.contains(&"name"));
     }
+
+    /// A snapshot's copy of instance.cfg is untrusted: launch commands, a wrapper and the Java path never
+    /// come from another computer, neither into an existing file nor into a newly restored instance.
+    #[test]
+    fn machine_local_keys_from_a_snapshot_never_reach_this_computer() {
+        let p = instance_cfg_policy();
+        let hostile = b"[General]\nInstanceType=OneSix\nJavaPath=/tmp/evil-java\nOverrideJavaLocation=true\nOverrideCommands=true\nPreLaunchCommand=/bin/sh -c evil\nWrapperCommand=/tmp/evil-wrapper\nname=Their Pack\n";
+        let local = b"[General]\nInstanceType=OneSix\nname=My Pack\nJavaPath=/usr/lib/jvm/java-21/bin/java\n";
+        let merged = String::from_utf8(packsync_core::mixed::merge(&p, hostile, Some(local)).unwrap()).unwrap();
+        let fresh = String::from_utf8(packsync_core::mixed::merge(&p, hostile, None).unwrap()).unwrap();
+        for out in [&merged, &fresh] {
+            for k in ["PreLaunchCommand", "WrapperCommand", "OverrideCommands", "evil"] {
+                assert!(!out.contains(k), "{k} came from the snapshot:\n{out}");
+            }
+        }
+        assert!(merged.contains("JavaPath=/usr/lib/jvm/java-21/bin/java"), "the local Java path stays:\n{merged}");
+        assert!(fresh.contains("InstanceType=OneSix"), "portable keys still arrive:\n{fresh}");
+    }
 }
