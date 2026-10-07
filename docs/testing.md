@@ -49,16 +49,17 @@ the real-Prism smoke test and the real OS keyring round trip.
 | 10 | Live-world writers, duplicate jobs, stale leases, game crashes and watcher overflow never produce a claimed clean handoff | `sessions::nothing_mutates_an_instance_while_a_game_process_is_using_it`, `duplicate_hook_and_app_jobs_are_idempotent`, `a_stale_lease_is_ignored_while_a_fresh_one_only_warns`, `a_crashed_session_is_quarantined_never_promoted_automatically`, `a_session_killed_without_any_signal_is_found_after_restart_and_treated_as_unclean`; app `launch.rs` (12); Playwright *crash*. **Watcher overflow does not apply: v1 has no filesystem watcher** (`docs/architecture.md`); its safeguard — cached metadata is never trusted over a full hash when it could be stale — is the scan policy tested in scenario 3 |
 | 11 | Retention keeps every reachable object, respects in-flight uploads, never deletes unrelated Drive files | `gc.rs` (8 tests); Drive `cleanup_works_on_drive_objects_tags_ages_and_trash`; CLI `cleanup_shows_a_plan_first_and_only_runs_exactly_that_plan` |
 | 12 | Token redaction, path traversal, symlink escape, oversized manifests, decompression limits, malicious reconstruction mappings | Drive `oauth::no_secret_ever_appears_in_logs_errors_or_debug_output`; CLI `secrets_never_appear_in_json_output_or_diagnostics`; `hostile.rs` (8: traversal, symlinks, bombs, absurd sizes, credentials never uploaded); manifest and pack unit tests (overlapping/overflowing ranges) |
-| 13 | The UI exposes real engine state: errors, cancel/retry, offline choice, conflicts; core journeys exercised through automated UI tests | Playwright (38 tests) against the real engine; Vitest (122) |
+| 13 | The UI exposes real engine state: errors, cancel/retry, offline choice, conflicts; core journeys exercised through automated UI tests | Playwright (38 tests) against the real engine; Vitest (123) |
 
 ### Counts when this was written (Linux, one machine)
 
 | Suite | Result |
 |---|---|
-| `cargo test --workspace` | **365 passed, 0 failed, 2 ignored** |
+| `cargo test --workspace` | **385 passed, 0 failed, 2 ignored** |
 | `cargo test -p packsync-cli --features failpoints --test killed` | 4 passed |
-| UI unit and component tests | **122 passed** (16 files) |
+| UI unit and component tests | **123 passed** (16 files) |
 | Playwright (Chromium) | **38 passed** (+7 screenshot generators that run only with `SCREENSHOTS=1`) |
+| `scripts/windows-check.sh` (Windows build, run under Wine) | **371 passed, 0 failed** in 22 test programs (the CLI hooks suite, which chains shell scripts, is Unix-only) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean (also with `--features packsync-cli/failpoints`) |
 | `cargo deny check` (engine workspace and desktop shell) | advisories, bans, licences and sources pass; one documented advisory exception in the shell (`docs/dependencies.md`) |
 | `npm audit` | 0 vulnerabilities |
@@ -123,6 +124,28 @@ contract after the tag change (found by the first complete test run); the Prism 
 build on their own (`cargo test -p packsync-prism`: a missing dev-dependency feature); toasts covered a
 dialog's buttons; scrollable code blocks were not keyboard-focusable and faint text had insufficient contrast
 (both found by axe-core); dialogs focused a close button that an accidental Enter would press.
+
+## What the independent review found (all fixed, each with a test unless noted)
+
+One reviewer read the code against these documents and the original requirements. Findings and fixes:
+
+| | Finding | Fix |
+|---|---|---|
+| F1 | A snapshot could carry `.packsync/` (a forged restore journal, the ownership marker); startup recovery then moved files **outside** the instance | `.packsync` rejected in any path; journals validated before any rename; one bad journal no longer stops recovery of other instances |
+| F2 | "Keep both as separate instances" published the fork without this computer's unique data | the branch is uploaded first; `uploaded` reflects reality |
+| F3 | A computer back from a long break published progress whose unchanged files relied on data a retention cleanup had released | whole-tree completeness check before publishing; missing data uploaded again from this computer's files (`engine/repair.rs`) |
+| F4 | A pack that vanished behind the local cache blocked every later upload, with an error naming a flag that did not exist | vanished packs are detected and forgotten; automatic repair; `verify --remote --repair` exists |
+| F5 | A promoted crash save could be published before the crash save's data | the crash save is its parent; local dedup limited to the snapshot's own lineage |
+| F6 | With lost index objects, cleanup planned to delete the head's only data | a pack no index describes is kept if its own footer shows needed data |
+| F7 | "It will retry …" — nothing retried | the desktop app retries pending uploads while it is open |
+| F8 | "Reinstall to repair" + uninstall deleted the user's own Prism command | receipts are merged; uninstall falls back to the chained command |
+| F9 | A snapshot could set launch commands / Java path in `instance.cfg` | incoming projections re-filtered to portable keys |
+| F10 | Wider rules in a cloud version deleted this computer's unsynced files (screenshots) | a restore never deletes what this instance does not sync |
+| F11 | A game started during restore staging could be overwritten; a file that appeared was replaced silently | writer re-check right before applying; such files stop the restore |
+| F12 | Renames were not flushed before "applied" was journaled | flushed per batch (not testable without cutting power) |
+| F13 | Two silent-skip paths in staging | errors instead |
+| F14 | Concurrent instance-row updates from two processes reverted each other | one IMMEDIATE transaction |
+| F15 | Stale UI list responses; jobs with other parameters merged; incomplete Drive listings trusted; `--json` printed two documents on failure | each fixed |
 
 ## Reading a failure
 

@@ -152,8 +152,10 @@ protected.
   what other rules say.
 * **Play.** The *Play* button (and `packsync launch`) syncs first, starts Prism itself, tracks the game
   process, and saves and uploads when the game closes.
-* **Optional hooks.** If you prefer to start instances from Prism, install PackSync's pre-launch and
-  post-exit commands for that instance. Installation is previewed, additive (your own commands are chained,
+* **Hooks — nothing in the background.** If you prefer to start instances from Prism, install PackSync's
+  pre-launch and post-exit commands for that instance: PackSync then runs only for the seconds around
+  pressing Play and closing the game, and the desktop app can stay closed. (Why this, rather than a
+  companion mod or a Prism fork: [`docs/integrations.md`](docs/integrations.md).) Installation is previewed, additive (your own commands are chained,
   not replaced), reversible byte for byte, and refuses while Prism is running
   ([`docs/hooks.md`](docs/hooks.md)).
 * **Restoring.** A restored instance is built in a hidden folder, verified, and renamed into Prism's
@@ -222,9 +224,9 @@ What it does **not** do:
 | | |
 |---|---|
 | **Implemented** | Sync engine (scan, chunking, packs, manifests, upload, reconcile, journaled restore, recovery, sessions, conflicts, crash quarantine, retention/cleanup); Google Drive adapter + OAuth; Prism adapter + hooks; command-line tool; desktop app (setup, instances, history/restore, conflicts, crashes, hooks, cloud, settings, cleanup). |
-| **Tested locally** (no credentials) | 365 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 122 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). |
+| **Tested locally** (no credentials) | 385 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and all 371 of its tests pass as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. |
 | **Tested against a real service** | **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
-| **Not tested against real services** | **Google Drive and Google OAuth**; the OS credential store on this machine; **Windows and macOS** (CI workflows are written, nothing has ever run on them); a GUI Prism noticing a restored instance. |
+| **Not tested against real services** | **Google Drive and Google OAuth**; the OS credential store on this machine; **a real Windows installation** (only Wine) and **macOS** (never built); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
 | **Not done** | End-to-end encryption; deleting history (v1 releases the *content* of old snapshots but keeps their manifests); signed installers and releases; auto-update; other launchers (the adapter interface is there). |
 
 Details, numbers and the bugs the tests found: [`docs/testing.md`](docs/testing.md).
@@ -234,7 +236,7 @@ Details, numbers and the bugs the tests found: [`docs/testing.md`](docs/testing.
 | | Engine and CLI | Desktop app | Prism adapter | Verified |
 |---|---|---|---|---|
 | **Linux** (x86_64) | ✔ | ✔ | ✔ (native and Flatpak paths) | built, tested and run here |
-| **Windows** | designed for it (long paths, reserved names, case folding, per-OS process detection) | Tauri supports it | designed for it | **not built or run** |
+| **Windows** | ✔ (long paths, reserved names, case folding, per-OS process detection) | Tauri supports it; not built yet | ✔ | cross-built; **tests pass under Wine**; never run on real Windows |
 | **macOS** | architecture-compatible | Tauri supports it | designed for it | **not built or run** |
 
 ## Development
@@ -281,6 +283,7 @@ examples/               sample settings and rules
 [Launcher hooks](docs/hooks.md) · [Google OAuth setup](docs/oauth-setup.md) ·
 [Live validation](docs/live-validation.md) · [Desktop app](docs/desktop.md) ·
 [Performance](docs/performance.md) · [Testing and status](docs/testing.md) ·
+[Platforms](docs/platforms.md) · [Companion mod or Prism fork?](docs/integrations.md) ·
 [Dependencies](docs/dependencies.md) · [Rebranding](docs/rebranding.md)
 
 ## Contributing
