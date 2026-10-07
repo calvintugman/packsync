@@ -30,8 +30,9 @@ instances/<instance-uuid>/expired/<snapshot-id>.json     marker: this snapshot's
 
 Everything PackSync creates carries the provider tag `ps=1` (Drive `appProperties`). Retention and
 cleanup only ever touch objects with that tag, and only objects whose names match the patterns above.
-Other tags (`kind`, and for commits `p0..p3` parents, `dev`, `ts`) are *hints*: a manifest is the
-authority, tags are only used to avoid reading manifests for display.
+Other tags (`kind`, and for commits `p0..p3` parents, `np` the number of parents, `dev`, `ts`) are *hints*: a
+manifest is the authority, tags are only used to avoid reading manifests for display. A commit with more than
+four parents (`np` > 4) is never read from its tags.
 
 ## Pack — `packs/<id>.pack`
 

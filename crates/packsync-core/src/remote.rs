@@ -102,6 +102,8 @@ pub fn commit_tags(m: &Manifest) -> BTreeMap<String, String> {
     for (i, p) in m.parents.iter().take(4).enumerate() {
         t.insert(format!("p{i}"), p.to_hex());
     }
+    // how many parents there really are: tags hold at most four, so a reader can tell a truncated list
+    t.insert("np".into(), m.parents.len().to_string());
     t.insert("dev".into(), m.device.id.to_string());
     t.insert("ts".into(), m.created.clone());
     t
@@ -120,8 +122,11 @@ fn hint_from_tags(tags: &BTreeMap<String, String>) -> Option<CommitHint> {
             None => break,
         }
     }
-    // A merge with more than four parents loses information in tags; treat as unknown.
-    if tags.contains_key("p4") {
+    // A merge with more than four parents loses information in tags; treat as unknown (the manifest is
+    // read instead). `np` is the real count; `p4` never appears but is kept for safety.
+    if tags.contains_key("p4")
+        || tags.get("np").and_then(|n| n.parse::<usize>().ok()).is_some_and(|n| n != parents.len())
+    {
         return None;
     }
     Some(CommitHint {
@@ -484,9 +489,7 @@ impl Remote {
             for p in &doc.packs {
                 match packs.get(&p.id) {
                     Some(info) if info.size == p.size => {
-                        let before = self.db.blob_count()?;
-                        self.db.blobs_put(p.id, &p.blobs)?;
-                        stats.blobs_added += self.db.blob_count()?.saturating_sub(before);
+                        stats.blobs_added += self.db.blobs_put(p.id, &p.blobs)?;
                     }
                     _ => complete = false,
                 }
@@ -531,7 +534,7 @@ impl Remote {
     /// Record a pack we just uploaded and verified (no need to wait for a listing to show it).
     pub fn note_uploaded_pack(&self, p: &IndexPack, info: &ObjectInfo) -> Result<()> {
         self.db.pack_put(p.id, p.size, info.provider_ref.as_deref(), info.created_ms)?;
-        self.db.blobs_put(p.id, &p.blobs)
+        self.db.blobs_put(p.id, &p.blobs).map(|_| ())
     }
 
     // ------------------------------------------------------------------ blobs
@@ -657,29 +660,30 @@ impl Remote {
     ) -> Result<(u64, u64)> {
         const GAP: u64 = 64 * 1024;
         const MAX_RANGE: u64 = 16 * 1024 * 1024;
-        // coalesce into ranges
-        let mut ranges: Vec<(u64, u64, Vec<&BlobEntry>)> = vec![];
-        for e in entries {
-            let end = e.offset + e.stored_len as u64;
-            match ranges.last_mut() {
-                Some((s, r_end, v)) if e.offset <= *r_end + GAP && end - *s <= MAX_RANGE => {
-                    *r_end = (*r_end).max(end);
-                    v.push(e);
+        // Coalesce into ranges of at most MAX_RANGE: every range is read into memory whole, and several
+        // workers read at once. Small gaps are read through; a mostly-needed pack is read through entirely
+        // (fewer requests), but still in MAX_RANGE pieces.
+        let coalesce = |gap: u64| {
+            let mut ranges: Vec<(u64, u64, Vec<&BlobEntry>)> = vec![];
+            for e in entries {
+                let end = e.offset + e.stored_len as u64;
+                match ranges.last_mut() {
+                    Some((s, r_end, v)) if e.offset <= r_end.saturating_add(gap) && end - *s <= MAX_RANGE => {
+                        *r_end = (*r_end).max(end);
+                        v.push(e);
+                    }
+                    _ => ranges.push((e.offset, end, vec![e])),
                 }
-                _ => ranges.push((e.offset, end, vec![e])),
             }
-        }
-        // Mostly-needed packs are cheaper as one request.
+            ranges
+        };
+        let mut ranges = coalesce(GAP);
         let needed: u64 = entries.iter().map(|e| e.stored_len as u64).sum();
         if let Some(sz) = pack_size
             && ranges.len() > 1
             && needed * 10 >= sz * 6
-            && sz <= crate::pack::MAX_PACK_SIZE
         {
-            let all: Vec<&BlobEntry> = entries.iter().collect();
-            let first = all.first().map(|e| e.offset).unwrap_or(0);
-            let last_end = all.last().map(|e| e.offset + e.stored_len as u64).unwrap_or(0);
-            ranges = vec![(first, last_end, all)];
+            ranges = coalesce(u64::MAX);
         }
         let key = pack_key(pack);
         let (mut bytes, mut n) = (0u64, 0u64);
@@ -816,6 +820,19 @@ pub fn write_store_file(dir: &Path, h: Hash, raw: &[u8]) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tags hold at most four parents. A merge with more (up to eight are allowed) must not be read from
+    /// its tags as if four were all of them: the hint is refused and the manifest is read instead.
+    #[test]
+    fn a_merge_with_more_parents_than_tags_hold_is_not_trusted_from_its_tags() {
+        let mut m = crate::manifest::testutil::sample();
+        m.parents = (0..5u8).map(|i| SnapshotId(Hash::of(&[i]))).collect();
+        assert!(hint_from_tags(&commit_tags(&m)).is_none());
+        m.parents.truncate(2);
+        assert_eq!(hint_from_tags(&commit_tags(&m)).unwrap().parents, m.parents);
+        m.parents.clear();
+        assert!(hint_from_tags(&commit_tags(&m)).unwrap().parents.is_empty());
+    }
     use crate::codec::encode_blob;
     use crate::pack::{KIND_DATA, PackWriter, read_footer_from_file};
     use crate::retry::RecordingSleeper;
@@ -930,6 +947,41 @@ mod tests {
         // unknown blob → clear error
         let err = e.remote.fetch_blobs(&[Hash::of(b"nope")], &store, 1, &e.ctx).unwrap_err();
         assert!(err.to_string().contains("not listed in any pack index"), "{err}");
+    }
+
+    /// Every coalesced read is held in memory whole, by several workers at once, so none may exceed 16 MiB —
+    /// also when a pack is mostly needed and read through (it used to become one read of the whole pack,
+    /// up to 256 MiB).
+    #[test]
+    fn a_mostly_needed_big_pack_is_still_read_in_bounded_pieces() {
+        let meter = std::sync::Mutex::new(None);
+        let e = env_with(|s| {
+            let (m, meter_handle) = crate::storage_meter::MeteredStorage::new(s);
+            *meter.lock().unwrap() = Some(meter_handle);
+            m
+        });
+        let meter = meter.into_inner().unwrap().unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut w = PackWriter::create(d.path(), 1 << 30).unwrap();
+        let mut blobs = vec![];
+        let mut rng = fastrand::Rng::with_seed(7);
+        for _ in 0..24 {
+            let mut raw = vec![0u8; 1 << 20]; // 1 MiB, incompressible
+            rng.fill(&mut raw);
+            let h = Hash::of(&raw);
+            let (c, enc) = encode_blob(&raw, Compress::Never, "x.bin", 3);
+            w.push(h, c, &enc, raw.len(), KIND_DATA).unwrap();
+            blobs.push(h);
+        }
+        let pack = w.finish().unwrap();
+        upload(&e, &pack);
+        let want: Vec<Hash> = blobs.iter().copied().filter(|h| h.0[0] % 5 != 0).collect(); // most of it
+        let before = meter.snapshot();
+        e.remote.fetch_blobs(&want, &d.path().join("store"), 1, &e.ctx).unwrap();
+        let used = meter.snapshot().since(&before);
+        let reads = used.by_prefix.get("packs").map(|p| p.gets).unwrap_or(0);
+        assert!(reads >= 2, "a 24 MiB pack is not read in one piece: {reads} read(s)");
+        assert!(used.bytes_down <= pack.size, "and nothing is read twice");
     }
 
     #[test]

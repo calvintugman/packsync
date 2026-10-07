@@ -704,14 +704,16 @@ impl Db {
     }
 
     // ------------------------------------------------------------------ remote caches
-    pub fn blobs_put(&self, pack: Hash, entries: &[BlobEntry]) -> Result<()> {
+    /// Record where `entries` live (`pack`). Returns how many were not known before.
+    pub fn blobs_put(&self, pack: Hash, entries: &[BlobEntry]) -> Result<u64> {
         self.tx(|tx| {
+            let mut added = 0u64;
             let mut st = tx.prepare(
                 "INSERT INTO remote_blobs(hash,pack,offset,stored_len,raw_len,codec,kind) VALUES (?1,?2,?3,?4,?5,?6,?7)
                  ON CONFLICT(hash) DO NOTHING",
             )?;
             for e in entries {
-                st.execute(params![
+                added += st.execute(params![
                     e.hash.0.to_vec(),
                     pack.0.to_vec(),
                     e.offset as i64,
@@ -719,9 +721,9 @@ impl Db {
                     e.raw_len,
                     e.codec,
                     e.kind
-                ])?;
+                ])? as u64;
             }
-            Ok(())
+            Ok(added)
         })
     }
 
@@ -840,16 +842,6 @@ impl Db {
     }
 
     // ------------------------------------------------------------------ staged packs (upload queue)
-    pub fn staged_put(&self, id: Hash, snapshot: SnapshotId, path: &Path, size: u64) -> Result<()> {
-        self.with(|c| {
-            c.execute(
-                "INSERT INTO staged_packs(id,snapshot_id,path,size,created_ms) VALUES (?1,?2,?3,?4,?5)
-                 ON CONFLICT(id) DO UPDATE SET snapshot_id=excluded.snapshot_id, path=excluded.path",
-                params![id.0.to_vec(), snapshot.to_hex(), path.to_string_lossy(), size as i64, now_ms()],
-            )?;
-            Ok(())
-        })
-    }
     pub fn staged_for(&self, snapshot: SnapshotId) -> Result<Vec<StagedPack>> {
         self.with(|c| {
             let mut st = c.prepare(

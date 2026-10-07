@@ -236,8 +236,11 @@ impl Storage for LocalDirStorage {
         }
 
         let finish = |meta_of: &Path| -> StorageResult<ObjectInfo> {
-            if !opts.tags.is_empty() {
-                let tp = self.tags_path(key);
+            // the tags belong to this version of the object: replace them, or remove stale ones
+            let tp = self.tags_path(key);
+            if opts.tags.is_empty() {
+                let _ = fs::remove_file(&tp);
+            } else {
                 if let Some(dir) = tp.parent() {
                     fs::create_dir_all(dir)?;
                 }
@@ -317,5 +320,22 @@ impl Storage for LocalDirStorage {
             }
         }
         Ok(Some(Quota { used, total: None }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tags describe one version of an object: replacing it without tags must not leave the old ones visible.
+    #[test]
+    fn replacing_an_object_replaces_its_tags_too() {
+        let d = tempfile::tempdir().unwrap();
+        let s = LocalDirStorage::new(d.path()).unwrap();
+        let ctx = OpCtx::detached();
+        s.put("a/x", PutSource::Bytes(b"one"), &PutOptions::replace().with_tag("kind", "crash"), &ctx).unwrap();
+        assert_eq!(s.stat("a/x", &ctx).unwrap().unwrap().tags.get("kind").map(String::as_str), Some("crash"));
+        s.put("a/x", PutSource::Bytes(b"two"), &PutOptions::replace(), &ctx).unwrap();
+        assert!(s.stat("a/x", &ctx).unwrap().unwrap().tags.is_empty(), "stale tags from the previous version");
     }
 }
