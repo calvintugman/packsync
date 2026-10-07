@@ -80,6 +80,8 @@ impl Engine {
         let target = self.manifest(id, snapshot, ctx)?;
         let rules = RuleSet::compile(&target.rules.text, &inst.game_root)?;
         let policies = self.policies_for(&inst);
+        // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
+        let own_rules = self.rules_for(&inst, ctx).ok().map(|r| r.0);
         let local = restore::scan_local_state(
             &self.db,
             &inst,
@@ -88,6 +90,7 @@ impl Engine {
             &self.cfg.snapshot.chunking,
             &self.cfg.snapshot.scan,
             ctx,
+            own_rules.as_ref(),
         )?;
         let mut problems = vec![];
         let local_changes = self.pending_changes(id, ctx).map(|p| p.dirty).unwrap_or(false);
@@ -198,6 +201,8 @@ impl Engine {
         // 2. apply
         let policies = self.policies_for(&fresh);
         let rules = RuleSet::compile(&target.rules.text, &fresh.game_root)?;
+        // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
+        let own_rules = self.rules_for(&fresh, ctx).ok().map(|r| r.0);
         let local = restore::scan_local_state(
             &self.db,
             &fresh,
@@ -206,6 +211,7 @@ impl Engine {
             &self.cfg.snapshot.chunking,
             &self.cfg.snapshot.scan,
             ctx,
+            own_rules.as_ref(),
         )?;
         let mut cfg = self.cfg.restore.clone();
         cfg.skip_incompatible = opts.skip_incompatible;
@@ -436,6 +442,8 @@ impl Engine {
                 remote.sync_index_cache(ctx)?;
                 let rules = RuleSet::compile(&tm.rules.text, &inst.game_root)?;
                 let policies = self.policies_for(&inst);
+                // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
+                let own_rules = self.rules_for(&inst, ctx).ok().map(|r| r.0);
                 let st = restore::scan_local_state(
                     &self.db,
                     &inst,
@@ -444,6 +452,7 @@ impl Engine {
                     &self.cfg.snapshot.chunking,
                     &self.cfg.snapshot.scan,
                     ctx,
+                    own_rules.as_ref(),
                 )?;
                 let idle = || self.ensure_idle(&inst);
                 let env = RestoreEnv {
@@ -604,6 +613,8 @@ impl Engine {
         remote.sync_index_cache(ctx)?;
         let rules = RuleSet::compile(&gm.rules.text, &inst.game_root)?;
         let policies = self.policies_for(&inst);
+        // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
+        let own_rules = self.rules_for(&inst, ctx).ok().map(|r| r.0);
         let st = restore::scan_local_state(
             &self.db,
             &inst,
@@ -612,6 +623,7 @@ impl Engine {
             &self.cfg.snapshot.chunking,
             &self.cfg.snapshot.scan,
             ctx,
+            own_rules.as_ref(),
         )?;
         let idle = || self.ensure_idle(&inst);
         let env = RestoreEnv {

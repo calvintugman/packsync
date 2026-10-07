@@ -262,6 +262,37 @@ fn a_snapshot_cannot_carry_pack_sync_s_own_bookkeeping_and_a_forged_journal_is_n
     assert!(!root2.join(".packsync/tx/old").exists(), "the other instance was still recovered ({})", en2.instance);
 }
 
+/// A newer version from another computer embeds wider rules (a newer PackSync with other defaults, or a
+/// hostile snapshot that includes everything). Following it must not delete what THIS computer does not
+/// sync — here its screenshots — which a fast-forward used to move to the recovery area (purged later).
+#[test]
+fn wider_rules_in_a_cloud_version_never_delete_what_this_computer_does_not_sync() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_ra, _info, en) = a.new_instance("pack", &spec(3));
+    a.upload(en.instance);
+    let b = w.device("laptop");
+    let rb = restore(&b, en.instance, "pack");
+    write(&rb, "screenshots/2026-10-07_12.00.00.png", b"the laptop's own screenshot");
+    write(&rb, "shaderpacks/MyShaders.zip", b"the laptop's shaders");
+
+    let head = a.engine.cloud_instances(&a.ctx()).unwrap()[0].heads[0].id;
+    let mut m = a.engine.manifest(en.instance, head, &a.ctx()).unwrap();
+    m.parents = vec![head];
+    m.created = "2099-01-01T00:00:00Z".into();
+    m.rules.text.push_str(
+        "\n[[rule]]\nid = \"everything\"\nmatch = [\"**\"]\naction = \"include\"\nreason = \"sync everything\"\n",
+    );
+    m.rules.hash = Hash::of(m.rules.text.as_bytes());
+    m.finalize().unwrap();
+    plant_manifest(&w, &m);
+
+    let r = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx()).unwrap();
+    assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{r:?}");
+    assert_eq!(fs::read(rb.join("screenshots/2026-10-07_12.00.00.png")).unwrap(), b"the laptop's own screenshot");
+    assert_eq!(fs::read(rb.join("shaderpacks/MyShaders.zip")).unwrap(), b"the laptop's shaders");
+}
+
 #[test]
 fn an_absurd_declared_size_fails_the_disk_space_check_before_anything_changes() {
     let (w, a, b, inst, _ra, rb) = b_behind();

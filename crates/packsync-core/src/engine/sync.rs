@@ -548,6 +548,8 @@ impl Engine {
         let fresh = self.instance(inst.id)?;
         let rules = RuleSet::compile(&target.rules.text, &fresh.game_root)?;
         let policies = self.policies_for(&fresh);
+        // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
+        let own_rules = self.rules_for(&fresh, ctx).ok().map(|r| r.0);
         let local = restore::scan_local_state(
             &self.db,
             &fresh,
@@ -556,6 +558,7 @@ impl Engine {
             &self.cfg.snapshot.chunking,
             &self.cfg.snapshot.scan,
             ctx,
+            own_rules.as_ref(),
         )?;
         let idle = || self.ensure_idle(&fresh);
         let env = RestoreEnv {

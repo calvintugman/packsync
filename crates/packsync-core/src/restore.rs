@@ -92,6 +92,10 @@ pub struct LocalState {
     pub empty_dirs: HashSet<String>,
     pub rows: HashMap<String, IndexRow>,
     pub excluded_present: u64,
+    /// Present here and included by the target's rules, but not synced by this instance's own rules (for
+    /// example screenshots, when the other computer chose to sync everything). Overwritten only with a
+    /// copy in the recovery area, and never deleted by a restore.
+    pub not_synced_here: HashSet<String>,
 }
 
 /// Scan the live instance under `rules` (the target's rules) without staging anything.
@@ -103,6 +107,7 @@ pub fn scan_local_state(
     chunking: &ChunkingConfig,
     scan: &ScanOptions,
     ctx: &OpCtx,
+    own_rules: Option<&RuleSet>,
 ) -> Result<LocalState> {
     let index = if inst.needs_full_scan { HashMap::new() } else { db.index_load(inst.id)? };
     let mut opts = scan.clone();
@@ -158,6 +163,9 @@ pub fn scan_local_state(
         }
     }
     st.empty_dirs = w.empty_dirs.iter().cloned().collect();
+    if let Some(own) = own_rules {
+        st.not_synced_here = st.files.keys().filter(|p| !own.decide(p).include).cloned().collect();
+    }
     Ok(st)
 }
 
@@ -295,8 +303,12 @@ pub fn plan(
             writes.push((*e).clone());
         }
     }
-    let mut delete_paths: Vec<&str> =
-        local.files.keys().map(|s| s.as_str()).filter(|p| !target_files.contains_key(p)).collect();
+    let mut delete_paths: Vec<&str> = local
+        .files
+        .keys()
+        .map(|s| s.as_str())
+        .filter(|p| !target_files.contains_key(p) && !local.not_synced_here.contains(*p))
+        .collect();
     delete_paths.sort_unstable();
     let delete_set: HashSet<&str> = delete_paths.iter().copied().collect();
     let mut ops: Vec<JOp> = delete_paths.iter().map(|p| JOp::Delete { p: p.to_string() }).collect();
