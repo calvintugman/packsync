@@ -345,6 +345,19 @@ fn data_that_is_gone_everywhere_is_reported_and_never_published_with_a_hole() {
     let heads: Vec<_> = a.engine.cloud_instances(&a.ctx()).unwrap()[0].heads.iter().map(|h| h.id).collect();
     assert_eq!(heads, vec![published], "nothing new was published");
 
+    // never while an upload of the same instance is running (it may be publishing one of these versions)
+    {
+        let locks = a.engine.cfg.state_dir.join("locks");
+        let _upload =
+            packsync_core::lock::InstanceLock::try_acquire_kind(&locks, en.instance, "upload", "test upload").unwrap();
+        let err = a
+            .engine
+            .repair_cloud_data(en.instance, RepairOpts { also: None, discard_unrepairable: true }, &a.ctx())
+            .unwrap_err();
+        assert!(matches!(err, packsync_core::error::Error::Busy(_)), "{err}");
+        assert_eq!(a.engine.status(en.instance, false, &a.ctx()).unwrap().pending_snapshots, 1, "nothing dropped");
+    }
+
     // the explicit way out: drop what can never be uploaded, then sync the files as they are
     let rep = a
         .engine

@@ -610,6 +610,8 @@ impl Engine {
     /// Re-hash the whole instance against its base snapshot (a *full* scan, ignoring the index).
     pub fn verify_local(&self, id: InstanceId, ctx: &OpCtx) -> Result<VerifyReport> {
         let inst = self.instance(id)?;
+        // it records what it hashes as the trusted file index: never while a restore is half applied
+        self.require_state(&inst, &[InstanceState::Ok, InstanceState::Conflict, InstanceState::CrashPending])?;
         self.check_marker(&inst)?;
         let _lock = self.lock(id, "verify")?;
         let (rules, _) = self.rules_for(&inst, ctx)?;

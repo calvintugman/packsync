@@ -36,6 +36,9 @@ pub enum Begin {
     AlreadyOwned,
 }
 
+/// Tolerance when comparing a process's start time (whole seconds) with a session's start.
+const START_SLACK_MS: i64 = 2_000;
+
 impl SessionMgr<'_> {
     /// Register the start of a play session. Idempotent per `token`; refuses when another session
     /// is genuinely active (its game process is alive or detectable).
@@ -110,11 +113,23 @@ impl SessionMgr<'_> {
         {
             return true;
         }
-        // A session that is still `starting` may not have a pid yet: fall back to the process table.
-        s.state == SessionState::Starting
-            && s.started_ms > now_ms() - 10 * 60_000
-            && !find_writers(root, patterns, &[]).is_empty()
-            || (s.game_pid.is_none() && !find_writers(root, patterns, &[]).is_empty())
+        if s.game_pid.is_some() {
+            return false; // its game is gone
+        }
+        // No game process recorded: a session started from Prism through the hooks never records one (it
+        // stays `starting` for the whole game), and an app launch records it only once the game is found.
+        // Such a session owns a game of this instance only if that game started after the session began —
+        // never one that was already running, nor one another open session has recorded as its own.
+        let others: Vec<u32> = self
+            .db
+            .sessions_open(s.instance_id)
+            .map(|v| v.into_iter().filter(|o| o.id != s.id).filter_map(|o| o.game_pid).collect())
+            .unwrap_or_default();
+        find_writers(root, patterns, &others).iter().any(|w| match crate::proc::process_start_ms(w.pid) {
+            // process start times have one-second granularity
+            Some(t) => t + START_SLACK_MS >= s.started_ms,
+            None => true, // unknown: assume it is ours rather than declare a live game's session over
+        })
     }
 
     pub fn finish(

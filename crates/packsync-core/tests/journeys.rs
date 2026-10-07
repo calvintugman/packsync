@@ -500,3 +500,17 @@ fn restoring_reads_each_pack_about_once_even_though_files_are_hashed_in_parallel
         packs.gets
     );
 }
+
+/// Checking the files records them as the trusted index: never while a restore is half applied (the
+/// files may be a mix of two versions until recovery has run).
+#[test]
+fn a_local_check_is_refused_while_a_restore_needs_recovery() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.engine.db().instance_update(en.instance, |r| r.state = packsync_core::db::InstanceState::Restoring).unwrap();
+    let err = a.engine.verify_local(en.instance, &a.ctx()).unwrap_err();
+    assert!(matches!(err, packsync_core::error::Error::Busy(_)), "{err}");
+    a.engine.db().instance_update(en.instance, |r| r.state = packsync_core::db::InstanceState::Ok).unwrap();
+    assert!(a.engine.verify_local(en.instance, &a.ctx()).is_ok());
+}

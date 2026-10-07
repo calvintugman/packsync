@@ -295,3 +295,31 @@ fn a_passive_observer_closes_a_dead_session_only_after_the_grace_period_or_a_reb
         assert_eq!(mgr.stale_open_sessions(&inst, &[], false).unwrap().len(), 1);
     }
 }
+
+/// A session with no recorded game process (every session started from Prism through the hooks) owns a
+/// game of the instance only if that game started after the session began: a game that was already
+/// running, outside PackSync, is not its game and must not keep it alive.
+#[cfg(unix)]
+#[test]
+fn a_session_without_a_recorded_game_owns_only_a_game_started_after_it() {
+    use packsync_core::session::SessionMgr;
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root, _info, en) = a.new_instance("pack", &spec(1));
+    let inst = a.engine.instance(en.instance).unwrap();
+    let mgr = SessionMgr { db: a.engine.db() };
+
+    let mut early = spawn_fake_game(&root);
+    std::thread::sleep(std::time::Duration::from_millis(3500)); // well past the start-time tolerance
+    let (s, _) = mgr.begin(&inst, SessionOwner::Hook, "late", false, &[]).unwrap();
+    assert!(!mgr.is_alive(&s, &root, &[]), "a game that was running before the session began is not its game");
+    early.kill().unwrap();
+    early.wait().unwrap();
+
+    let mut game = spawn_fake_game(&root);
+    assert!(mgr.is_alive(&s, &root, &[]), "a game started after the session began is its game");
+    game.kill().unwrap();
+    game.wait().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!mgr.is_alive(&s, &root, &[]));
+}

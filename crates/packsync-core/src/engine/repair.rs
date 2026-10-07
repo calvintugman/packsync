@@ -77,6 +77,15 @@ impl Engine {
         let inst = self.instance(id)?;
         self.require_state(&inst, &[crate::db::InstanceState::Ok])?;
         let _lock = self.lock(id, "discard-unpublished")?;
+        // and no upload may be publishing one of the versions being dropped
+        let _upload =
+            crate::lock::InstanceLock::try_acquire_kind(&self.locks_dir(), id, "upload", "discard-unpublished")
+                .map_err(|e| match e {
+                    Error::Busy(_) => {
+                        Error::Busy("an upload of this instance is running; try again when it has finished".into())
+                    }
+                    other => other,
+                })?;
         let rows = self.db.snapshots_in_state(id, &[SnapshotState::LocalComplete, SnapshotState::Uploading])?;
         let gone: std::collections::HashSet<SnapshotId> = rows.iter().map(|r| r.id).collect();
         let graph = Graph::load(&self.db, id)?;
