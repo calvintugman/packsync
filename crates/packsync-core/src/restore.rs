@@ -99,6 +99,7 @@ pub struct LocalState {
 }
 
 /// Scan the live instance under `rules` (the target's rules) without staging anything.
+#[allow(clippy::too_many_arguments)]
 pub fn scan_local_state(
     db: &Arc<Db>,
     inst: &InstanceRow,
