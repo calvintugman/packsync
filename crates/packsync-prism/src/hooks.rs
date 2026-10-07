@@ -258,8 +258,9 @@ pub fn plan_remove(root: &Path, launcher_running: bool) -> Result<HookPlan> {
     for (key, kind) in [(KEY_PRE, HookKind::Pre), (KEY_POST, HookKind::Post)] {
         let cur = val(&view, key);
         let Some(ours) = cur.as_deref().and_then(parse_ours).filter(|h| h.kind == kind) else { continue };
-        let after = match &receipt {
-            Some(r) => r.saved.get(key).and_then(|s| s.logical.clone()),
+        // what was there before PackSync: the receipt, or else the user's command our hook chains
+        let after = match receipt.as_ref().and_then(|r| r.saved.get(key)) {
+            Some(saved) => saved.logical.clone(),
             None => ours.chained.clone(),
         };
         if let Some(a) = &after {
@@ -313,10 +314,26 @@ pub fn apply(plan: &HookPlan, launcher_running: bool) -> Result<()> {
     let old_receipt: Option<Receipt> =
         std::fs::read(receipt_path(root)).ok().and_then(|b| serde_json::from_slice(&b).ok());
     let mut edits = vec![];
-    let mut receipt = Receipt { version: 1, instance: String::new(), saved: Default::default() };
+    // A re-install (a repair after the user edited one of the commands) changes only some keys: keep what the
+    // earlier receipt saved for the others, and never record our own hook as "what was there before".
+    let mut receipt = match (&old_receipt, installing) {
+        (Some(r), true) => Receipt { version: 1, instance: r.instance.clone(), saved: r.saved.clone() },
+        _ => Receipt { version: 1, instance: String::new(), saved: Default::default() },
+    };
     for c in &plan.changes {
         if installing {
-            receipt.saved.insert(c.key.clone(), SavedKey { raw: raw_of(&c.key), logical: c.before.clone() });
+            match c.before.as_deref().and_then(parse_ours) {
+                // the value being replaced is our own hook: the user's command is the one it chains
+                Some(prev) => {
+                    receipt
+                        .saved
+                        .entry(c.key.clone())
+                        .or_insert_with(|| SavedKey { raw: None, logical: prev.chained.clone() });
+                }
+                None => {
+                    receipt.saved.insert(c.key.clone(), SavedKey { raw: raw_of(&c.key), logical: c.before.clone() });
+                }
+            }
             if let Some(ours) = c.after.as_deref().and_then(parse_ours) {
                 receipt.instance = ours.instance;
             }
@@ -450,6 +467,51 @@ mod tests {
         apply(&plan_remove(&root, false).unwrap(), false).unwrap();
         let st = state(&root).unwrap();
         assert!(!st.installed && !st.partial, "{st:?}");
+    }
+
+    /// "Reinstall to repair" after the user edited one command, then uninstall: the user's own post-exit
+    /// command used to be forgotten, because the repair wrote a receipt with only the keys it changed.
+    #[test]
+    fn a_repair_install_keeps_the_users_other_commands_for_the_later_uninstall() {
+        let original = "[General]\nInstanceType=OneSix\nOverrideCommands=true\nPostExitCommand=/usr/bin/my-backup.sh --nightly\nname=Pack\n";
+        let (_d, root) = instance(original);
+        let s = spec("/opt/packsync");
+        let g = GlobalCommands::default();
+        apply(&plan_install(&root, &s, false, &g).unwrap(), false).unwrap();
+        // the user edits the pre-launch command in Prism's settings
+        let cfg = std::fs::read_to_string(root.join("instance.cfg")).unwrap();
+        let edited: String = cfg
+            .lines()
+            .map(|l| if l.starts_with("PreLaunchCommand=") { "PreLaunchCommand=notify-send hi" } else { l })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(root.join("instance.cfg"), edited).unwrap();
+        assert!(state(&root).unwrap().partial);
+        // "reinstall to repair": only the pre-launch command changes
+        let plan = plan_install(&root, &s, false, &g).unwrap();
+        assert_eq!(plan.changes.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(), [KEY_PRE]);
+        apply(&plan, false).unwrap();
+        assert!(state(&root).unwrap().intact);
+        // uninstall: both of the user's commands are back (the edited one as the user left it)
+        apply(&plan_remove(&root, false).unwrap(), false).unwrap();
+        let after = std::fs::read_to_string(root.join("instance.cfg")).unwrap();
+        assert!(after.contains("PostExitCommand=/usr/bin/my-backup.sh --nightly"), "{after}");
+        assert!(after.contains("PreLaunchCommand=notify-send hi"), "{after}");
+        assert!(!state(&root).unwrap().installed);
+    }
+
+    /// Without any receipt (deleted, or written by an older version) uninstall falls back to the user's
+    /// command that the hook chains, instead of deleting it.
+    #[test]
+    fn uninstall_without_a_receipt_restores_the_chained_user_command() {
+        let original = "[General]\nInstanceType=OneSix\nOverrideCommands=true\nPostExitCommand=/usr/bin/my-backup.sh --nightly\nname=Pack\n";
+        let (_d, root) = instance(original);
+        apply(&plan_install(&root, &spec("/opt/packsync"), false, &GlobalCommands::default()).unwrap(), false).unwrap();
+        std::fs::remove_file(receipt_path(&root)).unwrap();
+        apply(&plan_remove(&root, false).unwrap(), false).unwrap();
+        let after = std::fs::read_to_string(root.join("instance.cfg")).unwrap();
+        assert!(after.contains("PostExitCommand=/usr/bin/my-backup.sh --nightly"), "{after}");
     }
 
     #[test]
