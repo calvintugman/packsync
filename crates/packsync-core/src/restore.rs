@@ -773,6 +773,11 @@ fn apply(
                 }
                 crate::failpoint!("restore.mid_batch")?;
             }
+            // The renames must be on disk before the journal says they happened: otherwise, after a power
+            // cut, a durable "done"/"applied" could describe files that are still the old ones, and roll-forward
+            // would adopt the target as the base while the old files sit there (the next snapshot would then
+            // quietly revert the other computer's progress).
+            flush_renames(root, &plan.ops[done..upto])?;
             journal.append(&Rec::BatchDone { upto }, true)?;
             crate::failpoint!("restore.after_batch_done")?;
             done = upto;
@@ -791,6 +796,20 @@ fn apply(
             )));
         }
         return Err(e);
+    }
+    Ok(())
+}
+
+/// Make the directory entries changed by `ops` durable: one file-system flush where the platform has it
+/// (Linux `syncfs`), otherwise each touched directory (no-op on Windows, where NTFS journals renames).
+fn flush_renames(root: &Path, ops: &[JOp]) -> Result<()> {
+    if crate::fsutil::syncfs(root).map_err(|e| Error::io(format!("flushing {}", root.display()), e))? {
+        return Ok(());
+    }
+    let dirs: std::collections::BTreeSet<PathBuf> =
+        ops.iter().filter_map(|op| local_path(root, op.path()).parent().map(Path::to_path_buf)).collect();
+    for d in dirs {
+        crate::fsutil::fsync_dir(&d);
     }
     Ok(())
 }
