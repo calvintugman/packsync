@@ -5,8 +5,7 @@ use std::collections::{HashMap, HashSet};
 use super::*;
 use crate::db::{InstanceState, Origin, SnapshotRow, SnapshotState};
 use crate::graph::{self, Decision, Graph};
-use crate::launcher::PackIdentity;
-use crate::manifest::{SnapshotKind, diff_entries};
+use crate::manifest::SnapshotKind;
 use crate::progress::{Level, Phase};
 use crate::remote::LeaseRecord;
 use crate::restore::{self, RestoreEnv};
@@ -276,7 +275,8 @@ impl Engine {
         Ok(PendingChanges { dirty, added, removed, modified, issues: w.issues, exact: true })
     }
 
-    fn check_marker(&self, inst: &InstanceRow) -> Result<()> {
+    /// The instance folder is still the one registered (its marker matches); one check for every operation.
+    pub(crate) fn check_marker(&self, inst: &InstanceRow) -> Result<()> {
         if !inst.sync_enabled {
             return Ok(());
         }
@@ -546,20 +546,7 @@ impl Engine {
             );
         }
         let fresh = self.instance(inst.id)?;
-        let rules = RuleSet::compile(&target.rules.text, &fresh.game_root)?;
-        let policies = self.policies_for(&fresh);
-        // what this computer itself syncs: a restore never deletes anything else (the target's rules may be wider)
-        let own_rules = self.rules_for(&fresh, ctx).ok().map(|r| r.0);
-        let local = restore::scan_local_state(
-            &self.db,
-            &fresh,
-            &rules,
-            &policies,
-            &self.cfg.snapshot.chunking,
-            &self.cfg.snapshot.scan,
-            ctx,
-            own_rules.as_ref(),
-        )?;
+        let (policies, local) = self.restore_scan(&fresh, &target, ctx)?;
         let idle = || self.ensure_idle(&fresh);
         let env = RestoreEnv {
             db: &self.db,
@@ -777,15 +764,5 @@ impl Engine {
             }
         }
         Ok(rep)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn identity_of(&self, inst: &InstanceRow) -> PackIdentity {
-        self.launcher(&inst.launcher).describe(&inst.root).map(|d| d.identity).unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn manifests_equal(a: &crate::manifest::Manifest, b: &crate::manifest::Manifest) -> bool {
-        diff_entries(&a.entries, &b.entries).is_empty()
     }
 }

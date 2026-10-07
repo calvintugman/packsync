@@ -277,6 +277,31 @@ impl Engine {
 
     /// The effective rules of an instance: its base snapshot's rules, or the seed rules before the
     /// first snapshot. Returns `(compiled, text)`.
+    /// What restoring `target` over `inst` starts from: the mixed-file policies and the
+    /// live files scanned under the target's rules — with the files this instance itself does not sync marked
+    /// as never to be deleted (the target's rules may be wider). Shared by every in-place restore.
+    pub(crate) fn restore_scan(
+        &self,
+        inst: &InstanceRow,
+        target: &Manifest,
+        ctx: &OpCtx,
+    ) -> Result<(HashMap<String, MixedPolicy>, crate::restore::LocalState)> {
+        let rules = RuleSet::compile(&target.rules.text, &inst.game_root)?;
+        let policies = self.policies_for(inst);
+        let own_rules = self.rules_for(inst, ctx).ok().map(|r| r.0);
+        let local = crate::restore::scan_local_state(
+            &self.db,
+            inst,
+            &rules,
+            &policies,
+            &self.cfg.snapshot.chunking,
+            &self.cfg.snapshot.scan,
+            ctx,
+            own_rules.as_ref(),
+        )?;
+        Ok((policies, local))
+    }
+
     pub(crate) fn rules_for(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<(RuleSet, String)> {
         let text = match inst.base_snapshot {
             Some(b) => self.manifest(inst.id, b, ctx)?.rules.text,

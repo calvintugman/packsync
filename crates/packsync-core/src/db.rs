@@ -330,34 +330,25 @@ impl Db {
 
     // ------------------------------------------------------------------ instances
     pub fn instance_insert(&self, r: &InstanceRow) -> Result<()> {
-        self.with(|c| {
-            c.execute(
-                "INSERT INTO instances(id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
-                params![
-                    r.id.to_string(),
-                    r.name,
-                    r.root.to_string_lossy(),
-                    r.launcher,
-                    r.launcher_ref,
-                    r.game_root,
-                    r.sync_enabled,
-                    r.base_snapshot.map(|s| s.to_hex()),
-                    r.pending_rules,
-                    r.marker,
-                    r.root_dev,
-                    r.provider_id,
-                    r.state.as_str(),
-                    r.state_detail,
-                    r.created_ms,
-                    r.last_scan_ms,
-                    r.last_full_verify_ms,
-                    r.last_synced_ms,
-                    r.needs_full_scan,
-                ],
-            )?;
-            Ok(())
-        })
+        self.with(|c| insert_instance(c, r))
+    }
+
+    /// Register `r` unless an instance with the same folder is registered already (`false`). The check
+    /// and the insert are one IMMEDIATE transaction: two processes enabling the same folder at the same
+    /// moment cannot both register it.
+    pub fn instance_insert_new_root(&self, r: &InstanceRow) -> Result<bool> {
+        let mut g = self.conn.lock();
+        let tx = g.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let taken = tx
+            .query_row("SELECT 1 FROM instances WHERE root=?1", [r.root.to_string_lossy()], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if taken {
+            return Ok(false);
+        }
+        insert_instance(&tx, r)?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub fn instance_get(&self, id: InstanceId) -> Result<Option<InstanceRow>> {
@@ -1513,6 +1504,35 @@ pub struct EventRow {
     pub level: String,
     pub code: String,
     pub message: String,
+}
+
+fn insert_instance(c: &Connection, r: &InstanceRow) -> Result<()> {
+    c.execute(
+        "INSERT INTO instances(id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+        params![
+            r.id.to_string(),
+            r.name,
+            r.root.to_string_lossy(),
+            r.launcher,
+            r.launcher_ref,
+            r.game_root,
+            r.sync_enabled,
+            r.base_snapshot.map(|s| s.to_hex()),
+            r.pending_rules,
+            r.marker,
+            r.root_dev,
+            r.provider_id,
+            r.state.as_str(),
+            r.state_detail,
+            r.created_ms,
+            r.last_scan_ms,
+            r.last_full_verify_ms,
+            r.last_synced_ms,
+            r.needs_full_scan,
+        ],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

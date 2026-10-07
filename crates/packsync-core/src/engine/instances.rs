@@ -9,7 +9,7 @@ use crate::db::{InstanceState, SnapshotState, now_ms};
 use crate::graph::Graph;
 use crate::launcher::DiscoveredInstance;
 use crate::manifest::SnapshotKind;
-use crate::rules::{self, DecisionSource};
+use crate::rules::{self};
 use crate::scan::{self, ScanMode, ScanOptions, hash_phase, walk};
 use crate::stage::CountingSink;
 
@@ -140,9 +140,19 @@ impl Engine {
             }
         }
         self.ensure_idle(&row)?;
-        crate::fsutil::write_atomic(&marker_path(&root), row.marker.as_bytes())
-            .map_err(|e| Error::io("writing the instance marker", e))?;
-        self.db.instance_insert(&row)?;
+        // Register first, atomically with the "is this folder registered already?" check, and only then
+        // write the folder's marker: two requests enabling the same folder at once (a double click, the CLI
+        // and the app) cannot both register it, and the loser never overwrites the winner's marker.
+        if !self.db.instance_insert_new_root(&row)? {
+            return Err(Error::Invalid {
+                what: "instance",
+                detail: format!("{} is already registered", root.display()),
+            });
+        }
+        if let Err(e) = crate::fsutil::write_atomic(&marker_path(&root), row.marker.as_bytes()) {
+            let _ = self.db.instance_remove(id);
+            return Err(Error::io("writing the instance marker", e));
+        }
         let undo = |e: Error| -> Error {
             if !crate::failpoint::is_crash(&e) {
                 let _ = self.db.instance_remove(id);
@@ -356,14 +366,5 @@ impl Engine {
         }
         out.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
         Ok(out)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn decision_source_label(d: &DecisionSource) -> String {
-        match d {
-            DecisionSource::Sealed { id } => format!("sealed:{id}"),
-            DecisionSource::Rule { id, .. } => id.clone(),
-            DecisionSource::Unmatched => "unmatched".into(),
-        }
     }
 }

@@ -5,10 +5,8 @@
 //! never claim a distributed lock. Two devices that start at the same moment both play; the result
 //! is two snapshots from one parent — an explicit, preserved divergence — never a lost update.
 
-use std::path::Path;
-
 use super::*;
-use crate::db::{InstanceState, SessionOwner, SessionRow, SessionState, SnapshotState, now_ms};
+use crate::db::{InstanceState, SessionRow, SessionState, SnapshotState};
 use crate::journal::{self, RecoveryAction};
 use crate::manifest::{SessionOutcome, SessionSummary, SnapshotKind, now_rfc3339};
 use crate::progress::{Level, Phase};
@@ -30,7 +28,7 @@ impl Engine {
     pub fn begin_session(&self, id: InstanceId, req: BeginSession, ctx: &OpCtx) -> Result<SessionBegun> {
         let inst = self.instance(id)?;
         self.require_state(&inst, &[InstanceState::Ok])?;
-        self.check_marker_public(&inst)?;
+        self.check_marker(&inst)?;
         let launcher = self.launcher(&inst.launcher);
         let patterns = launcher.game_process_patterns(&inst.root);
         let mgr = SessionMgr { db: &self.db };
@@ -62,15 +60,6 @@ impl Engine {
             base: row.base_snapshot,
             playing_elsewhere: playing,
         })
-    }
-
-    fn check_marker_public(&self, inst: &InstanceRow) -> Result<()> {
-        match std::fs::read_to_string(instances::marker_path(&inst.root)) {
-            Ok(m) if m.trim() == inst.marker => Ok(()),
-            _ => {
-                Err(Error::InstanceUnavailable(format!("{} is unavailable or has been replaced", inst.root.display())))
-            }
-        }
     }
 
     fn write_lease(&self, inst: &InstanceRow, s: &SessionRow, ctx: &OpCtx) -> Result<()> {
@@ -373,15 +362,5 @@ impl Engine {
             }
         }
         Ok(n)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn owner_label(o: SessionOwner) -> &'static str {
-        o.as_str()
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn _paths(_p: &Path, _t: i64) {
-        let _ = now_ms();
     }
 }

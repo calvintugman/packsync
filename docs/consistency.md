@@ -96,6 +96,9 @@ PackSync guarantees on top of that, how, and — as importantly — what it does
   launcher pointed at the same folder) is only seen through the process table and `session.lock`.
 * **A tiny window remains** between a restore finishing its journal and recording itself as a snapshot
   when the process is killed in exactly that instant: the files are the restored version, and the next
-  sync may fast-forward away from it (recovery point and history keep both). No data is lost.
+  sync may fast-forward away from it (recovery point and history keep both). No data is lost. The same holds
+  for "keep the cloud version": if the process dies after the cloud version was applied but before the merge
+  record is written, the cloud still has both versions as heads, so the next sync shows the conflict again
+  and it is simply resolved a second time.
 * **Leases are advisory.** Two computers started at the same moment both play; the result is a conflict
   to resolve, not corruption.

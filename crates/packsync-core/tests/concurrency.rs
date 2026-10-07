@@ -123,3 +123,41 @@ fn identical_content_is_deduplicated_across_instances() {
     assert_eq!(digest(&r), digest(&_r2));
     let _ = info;
 }
+
+/// Two requests enabling the same folder at the same moment (a double click; the CLI and the app) register
+/// it once: the other is refused, and the folder's marker belongs to the registered instance.
+#[test]
+fn enabling_the_same_folder_twice_at_once_registers_it_once() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let root = a.instances_dir().join("pack");
+    packsync_core::testkit::fixtures::generate(&root, &spec(1));
+    for _ in 0..5 {
+        let results: Vec<_> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..2)
+                .map(|_| {
+                    s.spawn(|| {
+                        a.engine.enable_sync(
+                            EnableRequest {
+                                root: root.clone(),
+                                launcher: "generic".into(),
+                                name: None,
+                                rules_overrides: String::new(),
+                                launcher_ref: None,
+                            },
+                            &a.ctx(),
+                        )
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let ok: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+        assert_eq!(ok.len(), 1, "{results:?}");
+        let rows: Vec<_> = a.engine.instances().unwrap().into_iter().filter(|r| r.root.ends_with("pack")).collect();
+        assert_eq!(rows.len(), 1, "registered once");
+        let marker = std::fs::read_to_string(root.join(".packsync/marker")).unwrap();
+        assert_eq!(marker.trim(), rows[0].marker, "the marker is the registered instance's");
+        a.engine.disable_sync(rows[0].id).unwrap();
+    }
+}
