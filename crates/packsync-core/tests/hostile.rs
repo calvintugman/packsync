@@ -10,6 +10,7 @@ use packsync_core::engine::*;
 use packsync_core::error::{Error, ErrorCode};
 use packsync_core::hash::Hash;
 use packsync_core::manifest::{Entry, EntryType};
+#[cfg(unix)]
 use packsync_core::paths::FoldMode;
 use packsync_core::testkit::harness::TestWorld;
 
@@ -68,8 +69,9 @@ fn a_damaged_pack_in_the_cloud_is_rejected_and_the_instance_is_untouched() {
 fn a_missing_pack_is_detected_at_restore_and_at_publish_time() {
     let (w, a, b, inst, root_a, rb) = b_behind();
     let before = digest(&rb);
-    // delete one pack the head depends on
-    let victim = fs::read_dir(w.remote_dir.join("packs")).unwrap().flatten().next().unwrap().path();
+    // delete the pack holding data the head needs and B does not have yet (A's new config file)
+    let (pack, _) = a.engine.db().blob_lookup(Hash::of(b"n = 1\n")).unwrap().expect("A knows where it put it");
+    let victim = w.remote_dir.join("packs").join(format!("{}.pack", pack.to_hex()));
     fs::remove_file(&victim).unwrap();
     let err = b.engine.reconcile(inst, ReconcileOpts::default(), &b.ctx()).unwrap_err();
     assert_eq!(err.code(), ErrorCode::CorruptRemote, "{err}");
@@ -384,6 +386,9 @@ fn credentials_never_enter_a_snapshot_even_when_the_whole_folder_is_selected() {
     );
 }
 
+// The source computer has to be able to hold `CON.txt` and two names that differ only in case, so this
+// runs where those can exist; the Windows-like target is simulated by configuration.
+#[cfg(unix)]
 #[test]
 fn names_that_cannot_exist_on_the_target_platform_are_found_before_anything_is_touched() {
     let w = TestWorld::new();

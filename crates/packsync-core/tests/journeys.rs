@@ -127,6 +127,7 @@ fn same_size_edit_with_restored_timestamp_is_detected() {
     a.upload(en.instance);
     std::thread::sleep(std::time::Duration::from_millis(30));
     fixtures::same_size_edit_preserving_mtime(&info.configs[1], 11);
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let p = a.engine.pending_changes(en.instance, &a.ctx()).unwrap();
     #[cfg(unix)]
     assert_eq!(p.modified.len(), 1, "inode change time exposes the edit: {p:?}");

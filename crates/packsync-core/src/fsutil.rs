@@ -187,23 +187,60 @@ pub fn is_locked_by_other_process(path: &Path) -> io::Result<bool> {
     platform::is_locked_by_other_process(path)
 }
 
-/// Windows: prefix absolute paths with `\\?\` so paths beyond MAX_PATH work. Elsewhere: identity.
+/// Windows: an absolute path in its `\\?\` form, so paths beyond MAX_PATH work. Elsewhere: identity.
+///
+/// The `\\?\` form turns off Windows' own path parsing, so the path is rebuilt from its components:
+/// `/` becomes `\`, `.` is dropped and `..` is resolved here (a `/` or `..` left in a verbatim path is
+/// "an invalid name" to Windows).
 pub fn long_path(p: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        let s = p.as_os_str().to_string_lossy();
-        if s.starts_with(r"\\?\") || !p.is_absolute() {
-            return p.to_path_buf();
-        }
-        if let Some(unc) = s.strip_prefix(r"\\") {
-            return PathBuf::from(format!(r"\\?\UNC\{unc}"));
-        }
-        PathBuf::from(format!(r"\\?\{s}"))
+        windows_long_path(p)
     }
     #[cfg(not(windows))]
     {
         p.to_path_buf()
     }
+}
+
+#[cfg(any(windows, test))]
+fn windows_long_path(p: &Path) -> PathBuf {
+    // Parsed by hand rather than with `Path::components`, so the logic is the same (and unit-tested) on
+    // every platform.
+    let s = p.as_os_str().to_string_lossy().replace('/', "\\");
+    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+        return PathBuf::from(s);
+    }
+    let (prefix, rest) = if let Some(unc) = s.strip_prefix(r"\\") {
+        // \\server\share\rest
+        let mut it = unc.splitn(3, '\\');
+        let (server, share) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+        if server.is_empty() || share.is_empty() {
+            return p.to_path_buf();
+        }
+        (format!(r"\\?\UNC\{server}\{share}"), it.next().unwrap_or("").to_string())
+    } else {
+        let b = s.as_bytes();
+        if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' {
+            (format!(r"\\?\{}", &s[..2]), s[3..].to_string())
+        } else {
+            return p.to_path_buf(); // relative, or drive-relative (`C:foo`): leave to Windows
+        }
+    };
+    let mut parts: Vec<&str> = vec![];
+    for c in rest.split('\\') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            n => parts.push(n),
+        }
+    }
+    let mut out = prefix;
+    out.push('\\');
+    out.push_str(&parts.join("\\"));
+    PathBuf::from(out)
 }
 
 /// Flush everything written to the file system that holds `path` — data and directory entries — in one
@@ -226,7 +263,7 @@ pub fn syncfs(path: &Path) -> io::Result<bool> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = path;
+        std::fs::metadata(long_path(path))?; // a path that does not exist is an error everywhere
         Ok(false)
     }
 }
@@ -313,6 +350,22 @@ mod tests {
             syncfs(&d.path().join("missing")).is_err(),
             "a path that does not exist is an error, not 'unsupported'"
         );
+    }
+
+    #[test]
+    fn windows_long_paths_are_rebuilt_from_their_components() {
+        let lp = |s: &str| windows_long_path(Path::new(s)).to_string_lossy().into_owned();
+        assert_eq!(lp(r"C:\Users\a\inst"), r"\\?\C:\Users\a\inst");
+        // forward slashes from `join("a/b")`, `.` and `..` are invalid inside a verbatim path
+        assert_eq!(lp(r"C:\Users\a\tmp\j/journal.jsonl"), r"\\?\C:\Users\a\tmp\j\journal.jsonl");
+        assert_eq!(lp("C:/x/./y/../z"), r"\\?\C:\x\z");
+        assert_eq!(lp(r"C:\"), r"\\?\C:\");
+        assert_eq!(lp(r"\\server\share\dir/f"), r"\\?\UNC\server\share\dir\f");
+        // already verbatim, device paths, relative and drive-relative paths are left alone
+        assert_eq!(lp(r"\\?\C:\a"), r"\\?\C:\a");
+        assert_eq!(lp(r"\\.\pipe\x"), r"\\.\pipe\x");
+        assert_eq!(lp("rel/a"), "rel/a");
+        assert_eq!(lp("C:foo"), "C:foo");
     }
 
     #[test]

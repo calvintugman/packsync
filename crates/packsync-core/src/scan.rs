@@ -767,11 +767,13 @@ mod tests {
         fs::create_dir_all(r.join(".minecraft/saves/EmptyWorld/region")).unwrap();
         fs::create_dir_all(r.join(".minecraft/config/empty-cfg-dir")).unwrap();
         write(r, "accounts.json", b"{\"token\":\"x\"}");
-        write(r, ".minecraft/mods/CON.txt", b"windows-hostile");
-        write(r, ".minecraft/config/A.cfg", b"1");
-        write(r, ".minecraft/config/a.cfg", b"2");
+        // names Windows cannot hold (a device name; two names differing only in case) can only be made here
         #[cfg(unix)]
         {
+            write(r, ".minecraft/mods/CON.txt", b"windows-hostile");
+            write(r, ".minecraft/config/A.cfg", b"1");
+            write(r, ".minecraft/config/a.cfg", b"2");
+
             std::os::unix::fs::symlink("/etc", r.join(".minecraft/saves/linked-saves")).unwrap();
             std::os::unix::fs::symlink("/etc/hostname", r.join(".minecraft/mods/link.jar")).unwrap();
         }
@@ -792,11 +794,11 @@ mod tests {
         // empty directories inside included areas are kept; the excluded areas' are not
         assert!(w.empty_dirs.contains(&".minecraft/config/empty-cfg-dir".to_string()), "{:?}", w.empty_dirs);
         assert!(w.empty_dirs.contains(&".minecraft/saves/EmptyWorld/region".to_string()));
-        let kinds: Vec<IssueKind> = w.issues.iter().map(|i| i.kind).collect();
-        assert!(kinds.contains(&IssueKind::NonPortableName));
-        assert!(kinds.contains(&IssueKind::CaseCollision));
         #[cfg(unix)]
         {
+            let kinds: Vec<IssueKind> = w.issues.iter().map(|i| i.kind).collect();
+            assert!(kinds.contains(&IssueKind::NonPortableName));
+            assert!(kinds.contains(&IssueKind::CaseCollision));
             assert!(kinds.contains(&IssueKind::Symlink), "{:?}", w.issues);
             assert!(!paths.iter().any(|p| p.contains("linked-saves")), "symlinked dirs are never followed");
         }
@@ -925,6 +927,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(20));
         fs::write(r.join(".minecraft/config/a.json"), b"BBBBBBBB").unwrap();
         set_mtime_ms(&r.join(".minecraft/config/a.json"), f.stat.mtime_ns / 1_000_000).unwrap();
+        #[cfg_attr(not(unix), allow(unused_variables))]
         let after = walk(r, &rules(), &idx, &quiet, &OpCtx::detached()).unwrap();
         #[cfg(unix)]
         assert!(

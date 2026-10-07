@@ -1,17 +1,32 @@
 # Platform support and limitations
 
-PackSync was developed and tested on **Linux x86_64**. Windows and macOS are first-class *design* targets (the
-code has platform branches for them, and CI runs on them) but **nothing has ever been built or run there by
-the author**. This page says precisely what exists, what is unverified, and what to expect.
+PackSync was developed and tested on **Linux x86_64**. **Windows and Linux are the primary targets.** The
+Windows build is cross-compiled on Linux and its test programs run under Wine (`scripts/windows-check.sh`);
+it has **not** been run on a real Windows installation, and macOS has never been built. This page says
+precisely what exists, what is verified how, and what to expect.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Engine, CLI, tests | built, tested, run | not built | not built |
-| Desktop app (Tauri 2) | release binary built and run (WebKitGTK, Wayland) | not built | not built |
+| Engine, CLI, tests | built, tested, run | **cross-built; 339 tests pass under Wine** (all suites except the ones that fake Prism with shell scripts); never run on real Windows | not built |
+| Desktop app (Tauri 2) | release binary built and run (WebKitGTK, Wayland) | not built (needs WebView2 and MSVC or a Windows host) | not built |
 | Prism adapter | **verified against real Prism 11.0.3** (headless, sandboxed) | paths and quoting implemented, unverified | paths and quoting implemented, unverified |
 | Credential store | Secret Service (code + live test that is `#[ignore]`d; not run here) | Credential Manager (unverified) | Keychain (unverified) |
 | Installers | none produced | `nsis`/`msi` configured, none produced | `dmg`/`app` configured, none produced |
 | CI | `ubuntu-latest`: blocking | `windows-latest`: **non-blocking until its first green run** | `macos-latest`: **non-blocking until its first green run** |
+
+### What the Windows check found (and fixed)
+
+* **Long paths were broken.** PackSync prefixes absolute paths with `\\?\` so they may exceed 260
+  characters, but in that form Windows stops interpreting `/`, `.` and `..`, and any path that contained a
+  `/` failed with "invalid name" — restores and the restore journal would have failed on Windows. The path is
+  now rebuilt from its components (`fsutil::long_path`, unit-tested on every platform).
+* **A missing `windows-sys` feature** (`Win32_Security`, needed by `CreateFileW`) only compiled because another
+  crate happened to enable it.
+* Tests that assumed Unix (paths like `/opt/x`, names Windows cannot hold, directory order, Qt writing CRLF
+  on Windows) were made platform-correct.
+
+Wine is not Windows: its NTFS emulation (change times, file ids, mandatory locks) and process table differ in
+details, so the change-time and lock behaviour below remains unverified on real Windows.
 
 ## What is platform-specific in the code
 
@@ -69,6 +84,7 @@ the author**. This page says precisely what exists, what is unverified, and what
 ## What to do on Windows or macOS
 
 1. Build as in the README (`cargo build --release -p packsync-cli`; `npm run tauri build -- --no-bundle`).
+   From Linux, `scripts/windows-check.sh` cross-builds and runs the test programs under Wine.
 2. Run `cargo test --workspace` and the browser tests (`npm run e2e`). Any failure is informative: please
    report it with the output of `packsync doctor`.
 3. Before trusting it with a world: use a **folder** as the cloud and a copy of an instance, check *History →

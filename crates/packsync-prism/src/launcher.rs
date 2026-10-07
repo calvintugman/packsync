@@ -624,8 +624,11 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let dd = data_dir(t.path());
         let root = make_instance(&dd, "pack", ".minecraft");
-        let spec =
-            HookSpec { executable: PathBuf::from("/opt/packsync"), instance_id: InstanceId::new(), extra_args: vec![] };
+        let spec = HookSpec {
+            executable: PathBuf::from(if cfg!(windows) { r"C:\opt\packsync" } else { "/opt/packsync" }),
+            instance_id: InstanceId::new(),
+            extra_args: vec![],
+        };
         let running =
             PrismLauncher::new().with_data_dirs(vec![dd.clone()]).with_process_source(Arc::new(OneProc(dd.clone())));
         let plan = running.plan_install_hooks(&root, &spec).unwrap();

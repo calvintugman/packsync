@@ -124,8 +124,9 @@ mod tests {
         assert_eq!(instances_dir(d.path()), d.path().join("my instances/ünï"));
         // absolute
         let abs = d.path().join("elsewhere");
-        std::fs::write(d.path().join("prismlauncher.cfg"), format!("[General]\nInstanceDir={}\n", abs.display()))
-            .unwrap();
+        // as Prism (Qt) writes it: forward slashes on every platform (a raw `\` would be an INI escape)
+        let stored = abs.display().to_string().replace('\\', "/");
+        std::fs::write(d.path().join("prismlauncher.cfg"), format!("[General]\nInstanceDir={stored}\n")).unwrap();
         assert_eq!(instances_dir(d.path()), abs);
         // empty / list-valued / garbage values fall back to the default
         std::fs::write(d.path().join("prismlauncher.cfg"), "[General]\nInstanceDir=\n").unwrap();

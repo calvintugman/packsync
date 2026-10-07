@@ -174,6 +174,8 @@ mod tests {
         e
     }
 
+    // the simulated Linux paths are only absolute on a Unix host
+    #[cfg(unix)]
     #[test]
     fn linux_defaults_flatpak_and_env_override() {
         let mut e = env(Os::Linux);

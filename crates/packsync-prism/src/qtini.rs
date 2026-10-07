@@ -939,8 +939,10 @@ mod tests {
 
     #[test]
     fn keys_in_a_file_without_sections_or_empty_files_work() {
+        // a new file gets the platform's line ending, like Qt's own writer (CRLF on Windows)
         let out = apply_edits(b"", &[KeyEdit::Set { key: "name".into(), value: "x".into() }]).unwrap();
-        assert_eq!(out, b"[General]\nname=x\n");
+        let eol = if cfg!(windows) { "\r\n" } else { "\n" };
+        assert_eq!(String::from_utf8(out).unwrap(), format!("[General]{eol}name=x{eol}"));
         let out = apply_edits(b"a=1\n", &[KeyEdit::Set { key: "b".into(), value: "2".into() }]).unwrap();
         assert_eq!(out, b"a=1\nb=2\n");
         let out = apply_edits(b"[UI]\nx=1\n", &[KeyEdit::Set { key: "b".into(), value: "2".into() }]).unwrap();

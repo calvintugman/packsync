@@ -371,8 +371,13 @@ mod tests {
     use super::*;
     use packsync_core::ids::InstanceId;
 
+    /// An absolute path on this platform for a Unix-style test path (`/opt/x` → `C:\opt\x` on Windows).
+    fn abs(p: &str) -> String {
+        if cfg!(windows) && p.starts_with('/') { format!("C:{}", p.replace('/', "\\")) } else { p.to_string() }
+    }
+
     fn spec(exe: &str) -> HookSpec {
-        HookSpec { executable: PathBuf::from(exe), instance_id: InstanceId::new(), extra_args: vec![] }
+        HookSpec { executable: PathBuf::from(abs(exe)), instance_id: InstanceId::new(), extra_args: vec![] }
     }
 
     fn instance(cfg: &str) -> (tempfile::TempDir, PathBuf) {
@@ -406,7 +411,7 @@ mod tests {
         // the stored command reads back as the exact argv we intended, spaces and Unicode included
         let pre = st.pre_launch.unwrap();
         let argv = crate::cmdline::split_command(&pre);
-        assert_eq!(&argv[..4], ["/opt/My PackSync/packsync", "hook", "pre-launch", "--instance"]);
+        assert_eq!(&argv[..4], [abs("/opt/My PackSync/packsync").as_str(), "hook", "pre-launch", "--instance"]);
         // idempotent: planning again changes nothing
         let again = plan_install(&root, &s, false, &GlobalCommands::default()).unwrap();
         assert!(again.changes.is_empty(), "{again:?}");

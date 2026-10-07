@@ -70,6 +70,7 @@ pub fn spawn_fake_game(workdir: &Path) -> std::process::Child {
     c
 }
 
+#[allow(unused_imports)]
 pub use std::time::Duration;
 
 /// Put an arbitrary (already-built) manifest into the cloud under its true content hash.
