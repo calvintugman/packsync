@@ -387,3 +387,42 @@ fn a_session_whose_app_was_killed_no_longer_makes_the_hooks_stand_aside() {
     assert_eq!(open[0].owner, SessionOwner::Hook);
     assert_ne!(open[0].id, begun.session);
 }
+
+/// What the cards promise ("It will retry …"): while the app is open, a version that was saved while
+/// offline is uploaded once the cloud is back and its retry time has passed — without anyone clicking.
+#[test]
+fn while_the_app_is_open_a_pending_upload_is_retried_on_its_own() {
+    use packsync_core::storage::Storage;
+    use packsync_core::storage_fault::{FaultPlan, FaultyStorage};
+    use packsync_core::storage_local::LocalDirStorage;
+    let w = World::new();
+    let a = w.device("desktop");
+    let (inst, _root) = a.new_synced_instance("Pack One");
+    let plan = FaultPlan::new(1);
+    let inner: std::sync::Arc<dyn Storage> = std::sync::Arc::new(LocalDirStorage::new(&w.cloud).unwrap());
+    a.app.engine().set_storage(Some(FaultyStorage::new(inner, plan.clone()))).unwrap();
+    plan.set_offline(true);
+    a.play(playing("+offline-play"));
+    let out = a.app.launch(inst, launch_opts(), &a.ctx()).unwrap();
+    assert!(!out.end.unwrap().uploaded);
+
+    // still offline: whatever the scheduler tries fails, and a failure waits for its retry time
+    for id in a.app.retry_uploads_once() {
+        assert_eq!(id, inst);
+    }
+    while a.app.jobs().running() > 0 {
+        tick();
+    }
+    plan.set_offline(false);
+    let st = a.app.engine().status(inst, false, &a.ctx()).unwrap();
+    // an outage is found before any data moves, so it leaves no backoff behind
+    assert_eq!(st.next_retry_ms, None, "{st:?}");
+    // the cloud is back: the next pass uploads it
+    assert_eq!(a.app.retry_uploads_once(), vec![inst]);
+    while a.app.jobs().running() > 0 {
+        tick();
+    }
+    let st = a.app.engine().status(inst, false, &a.ctx()).unwrap();
+    assert_eq!(st.pending_snapshots, 0, "{st:?}");
+    assert!(a.app.retry_uploads_once().is_empty(), "nothing left to do");
+}

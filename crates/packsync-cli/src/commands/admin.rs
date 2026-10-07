@@ -156,6 +156,7 @@ pub fn gc(cx: &Cx, g: GcCmd) -> Result<()> {
 }
 
 pub fn dev_bridge(cx: &Cx, b: BridgeArgs) -> Result<()> {
+    cx.app.start_upload_retries(std::time::Duration::from_secs(60));
     let bridge = packsync_app::bridge::start(
         cx.app.clone(),
         packsync_app::bridge::BridgeConfig { port: b.port, ui_dir: b.ui_dir, allow_origin: b.allow_origin },

@@ -148,6 +148,61 @@ impl App {
         self.prism.read().clone()
     }
 
+    /// While the app is open, uploads that wait for their retry time are started again (the CLI does not
+    /// run this: its next sync or launch uploads). They run as ordinary `instance.upload` jobs, so they
+    /// show in Activity and can be cancelled.
+    pub fn start_upload_retries(self: &Arc<Self>, every: std::time::Duration) {
+        let weak = Arc::downgrade(self);
+        let _ = std::thread::Builder::new().name("upload-retries".into()).spawn(move || {
+            loop {
+                std::thread::sleep(every);
+                let Some(app) = weak.upgrade() else { return };
+                app.retry_uploads_once();
+            }
+        });
+    }
+
+    /// One pass of the retry scheduler; returns the instances an upload was started for. Skips instances
+    /// with a job running, with an unresolved problem, waiting for their backoff, or whose publication
+    /// needs the person's decision (data missing everywhere).
+    pub fn retry_uploads_once(self: &Arc<Self>) -> Vec<InstanceId> {
+        let mut started = vec![];
+        if !self.engine.has_storage() {
+            return started;
+        }
+        let busy: std::collections::HashSet<InstanceId> = self
+            .jobs
+            .list()
+            .into_iter()
+            .filter(|j| j.state == crate::events::JobState::Running)
+            .filter_map(|j| j.instance)
+            .collect();
+        let now = packsync_core::db::now_ms();
+        let Ok(instances) = self.engine.instances() else { return started };
+        for inst in instances {
+            if !inst.sync_enabled || inst.state != packsync_core::db::InstanceState::Ok || busy.contains(&inst.id) {
+                continue;
+            }
+            if self.engine.db().publish_blocked(inst.id).ok().flatten().is_some() {
+                continue;
+            }
+            let Ok(st) = self.engine.status(inst.id, false, &OpCtx::detached()) else { continue };
+            if st.pending_snapshots == 0 || st.next_retry_ms.is_some_and(|t| t > now) {
+                continue;
+            }
+            let (app, id) = (self.clone(), inst.id);
+            let job = self.jobs.start("instance.upload", Some(id), move |ctx| {
+                let r = app.engine.upload_pending(id, false, ctx);
+                app.bus().emit(AppEvent::InstanceChanged { instance: id });
+                Ok(serde_json::to_value(r?)?)
+            });
+            if job.is_ok() {
+                started.push(id);
+            }
+        }
+        started
+    }
+
     /// A context whose progress goes to the event bus (what the UI shows), with its own cancel token.
     pub fn ctx(&self) -> OpCtx {
         OpCtx::new(BusSink::new(self.bus.clone()), CancelToken::new())

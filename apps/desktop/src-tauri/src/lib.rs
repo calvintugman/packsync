@@ -80,6 +80,7 @@ pub fn run() {
                         let _ = handle.emit(EVENT, &ev);
                     }
                 })?;
+            app.start_upload_retries(std::time::Duration::from_secs(60));
             tauri_app.manage(AppState(app));
             Ok(())
         })

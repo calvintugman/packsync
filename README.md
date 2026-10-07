@@ -207,7 +207,7 @@ What it does **not** do:
 ## Conflicts, crashes and recovery
 
 * **Offline.** The game starts from the local copy (or, if you prefer, refuses — a setting); everything is
-  saved locally and uploaded later. Failed uploads retry with backoff, resume where they stopped, and never
+  saved locally and uploaded later. Failed uploads retry with backoff (on their own while the desktop app is open; otherwise at the next sync or launch), resume where they stopped, and never
   create a visible half-snapshot.
 * **Conflict.** *Keep this computer's version*, *use the cloud's version*, or *keep both as separate
   instances*. Both versions remain in the history.
