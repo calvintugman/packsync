@@ -36,8 +36,9 @@ jobs:
     name: Rust · tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # Windows and macOS have never been run by the author (the project was developed on Linux). Until the
-    # first green run, a failure there is information, not a blocker; remove `experimental` when they pass.
+    # Windows has been cross-built and tested under Wine (scripts/windows-check.sh) but never run on real
+    # Windows; macOS never at all. Until their first green run here, a failure there is information, not a
+    # blocker; remove `experimental` when they pass.
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -50,6 +51,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Programs the tests start (the fake Prism stands in for shell scripts on Windows)
+        run: cargo build -p packsync-fake-prism -p packsync-cli
       - run: cargo test --workspace --no-fail-fast
       - name: Crash tests that kill the real process at every boundary
         if: matrix.os != 'windows-latest'

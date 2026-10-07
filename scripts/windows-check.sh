@@ -12,19 +12,21 @@
 #       --profile minimal --target x86_64-pc-windows-gnu
 #   (zig from https://ziglang.org/download/ in $TOOLS/zig, then: cargo install cargo-zigbuild)
 #
-# The Prism launch/hook/CLI suites fake Prism with shell scripts and contain no tests on Windows.
+# On Windows the tests fake Prism with the `packsync-fake-prism` program instead of shell scripts; the CLI
+# hooks suite (it runs the user's own shell scripts) is Unix-only.
 set -eu
 cd "$(dirname "$0")/.."
 TARGET=x86_64-pc-windows-gnu
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target/windows}"
 cargo zigbuild --target "$TARGET" --workspace --tests
+cargo zigbuild --target "$TARGET" -p packsync-fake-prism -p packsync-cli   # programs the tests start
 export WINEDEBUG=-all
 deps="$CARGO_TARGET_DIR/$TARGET/debug/deps"
 fail=0
 # the newest build of each test program (older builds keep their hashed names)
 names=$(for f in "$deps"/*.exe; do basename "$f" | sed 's/-[0-9a-f]*\.exe$//'; done | sort -u)
 for name in $names; do
-  case "$name" in packsync|packsync_desktop|packsync_bench|packsync_e2e|prism_real|killed) continue ;; esac
+  case "$name" in packsync|packsync_desktop|packsync_bench|packsync_e2e|packsync_fake_prism|prism_real|killed) continue ;; esac
   exe=""
   for f in "$deps/$name"-*.exe; do
     if [ -z "$exe" ] || [ "$f" -nt "$exe" ]; then exe=$f; fi

@@ -1707,6 +1707,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "packsync-fake-prism"
+version = "0.1.0"
+
+[[package]]
 name = "packsync-prism"
 version = "0.1.0"
 dependencies = [

@@ -1,6 +1,5 @@
 //! App-level launch orchestration and launcher hooks, against a fake `prismlauncher` and a fake game.
-//! Unix only: the fakes are shell scripts.
-#![cfg(unix)]
+//! The fakes are shell scripts on Unix and the `packsync-fake-prism` program elsewhere.
 
 mod common;
 
@@ -157,7 +156,11 @@ fn with_hooks_installed_the_post_exit_signal_proves_a_clean_exit_even_when_forwa
     let a = w.device_with("desktop", |p| p.with_process_source(std::sync::Arc::new(Toggle(running.clone(), dir))));
     let (inst, _root) = a.new_synced_instance("Pack One");
     // install the hooks while Prism is closed (the only time it is allowed) …
-    let cli = std::path::Path::new("/opt/packsync/packsync");
+    let cli = std::path::Path::new(if cfg!(windows) {
+        r"C:\Program Files\PackSync\packsync.exe"
+    } else {
+        "/opt/packsync/packsync"
+    });
     let plan = a.app.hooks_plan_install(inst, cli).unwrap();
     assert!(plan.blockers.is_empty(), "{plan:?}");
     a.app.hooks_apply(inst, &plan).unwrap();

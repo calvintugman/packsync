@@ -7,7 +7,7 @@ precisely what exists, what is verified how, and what to expect.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Engine, CLI, tests | built, tested, run | **cross-built; 339 tests pass under Wine** (all suites except the ones that fake Prism with shell scripts); never run on real Windows | not built |
+| Engine, CLI, tests | built, tested, run | **cross-built; all 364 tests of the Windows build pass under Wine**, including launching through a (fake) Prism, crash handling, hooks, the JSON API and the `packsync.exe` end-to-end suite; never run on real Windows | not built |
 | Desktop app (Tauri 2) | release binary built and run (WebKitGTK, Wayland) | not built (needs WebView2 and MSVC or a Windows host) | not built |
 | Prism adapter | **verified against real Prism 11.0.3** (headless, sandboxed) | paths and quoting implemented, unverified | paths and quoting implemented, unverified |
 | Credential store | Secret Service (code + live test that is `#[ignore]`d; not run here) | Credential Manager (unverified) | Keychain (unverified) |
@@ -23,7 +23,9 @@ precisely what exists, what is verified how, and what to expect.
 * **A missing `windows-sys` feature** (`Win32_Security`, needed by `CreateFileW`) only compiled because another
   crate happened to enable it.
 * Tests that assumed Unix (paths like `/opt/x`, names Windows cannot hold, directory order, Qt writing CRLF
-  on Windows) were made platform-correct.
+  on Windows) were made platform-correct. The test fake of Prism and of the game was a pair of shell scripts;
+  on Windows it is now one small program (`crates/packsync-fake-prism`), so the launch, hook, JSON-API and
+  CLI suites run there too. Only the CLI test that chains the user's own *shell scripts* stays Unix-only.
 
 Wine is not Windows: its NTFS emulation (change times, file ids, mandatory locks) and process table differ in
 details, so the change-time and lock behaviour below remains unverified on real Windows.

@@ -1,0 +1,14 @@
+[package]
+name = "packsync-fake-prism"
+description = "Test support: a stand-in for Prism Launcher and for the game it starts. Never shipped."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "packsync-fake-prism"
+path = "src/main.rs"

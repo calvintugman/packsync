@@ -8,6 +8,7 @@ members = [
     "crates/packsync-cli",
     "crates/packsync-bench",
     "crates/packsync-e2e",
+    "crates/packsync-fake-prism",
 ]
 
 [workspace.package]

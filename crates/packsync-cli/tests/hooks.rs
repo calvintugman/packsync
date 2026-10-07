@@ -1,5 +1,6 @@
 //! The launcher hooks as Prism runs them: the command lines PackSync wrote into `instance.cfg` are
 //! tokenised with Qt's `splitCommand` rules (ported in `packsync_prism::cmdline`) and executed.
+//! Unix only: the user's own pre-launch and post-exit commands it chains are shell scripts.
 #![cfg(unix)]
 
 mod common;

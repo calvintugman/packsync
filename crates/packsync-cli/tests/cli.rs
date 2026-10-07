@@ -1,5 +1,4 @@
-//! End-to-end tests of the `packsync` binary. Unix only (the fake launcher is a shell script).
-#![cfg(unix)]
+//! End-to-end tests of the `packsync` binary.
 
 mod common;
 

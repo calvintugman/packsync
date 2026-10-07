@@ -127,6 +127,33 @@ exit $?
         f
     }
 
+    /// Windows (and anything without `/bin/sh`): the same behaviour from one small program,
+    /// `packsync-fake-prism` (crate `packsync-fake-prism`), copied in as the launcher and as `java.exe`. It
+    /// is found next to the test program's folder (`target/<profile>/`) or at `PACKSYNC_FAKE_PRISM`; build
+    /// the workspace (`cargo test --workspace`) so it exists.
+    #[cfg(not(unix))]
+    pub fn install(bin_dir: &Path, data_dir: &Path) -> FakePrism {
+        let prog = std::env::var_os("PACKSYNC_FAKE_PRISM").map(PathBuf::from).unwrap_or_else(|| {
+            let exe = std::env::current_exe().expect("the test program's path");
+            let name = format!("packsync-fake-prism{}", std::env::consts::EXE_SUFFIX);
+            exe.ancestors().skip(1).take(3).map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| {
+                panic!(
+                    "{name} was not found near {}: run `cargo test --workspace` (or build -p packsync-fake-prism)",
+                    exe.display()
+                )
+            })
+        });
+        std::fs::create_dir_all(bin_dir).unwrap();
+        let exe = bin_dir.join(format!("prismlauncher{}", std::env::consts::EXE_SUFFIX));
+        let java = bin_dir.join(format!("java{}", std::env::consts::EXE_SUFFIX));
+        for p in [&exe, &java] {
+            std::fs::copy(&prog, p).unwrap();
+        }
+        let f = FakePrism { exe, java, data_dir: data_dir.to_path_buf() };
+        f.set(&FakeGame::default());
+        f
+    }
+
     /// Choose what the next launch does.
     pub fn set(&self, g: &FakeGame) {
         let mut c = String::new();

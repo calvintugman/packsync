@@ -1,5 +1,4 @@
 //! The JSON API exactly as the desktop UI uses it, and the dev bridge in front of it.
-#![cfg(unix)]
 
 mod common;
 
@@ -82,7 +81,8 @@ fn the_ui_journey_through_json_only() {
     let r = job(&b.app, "restore.new", json!({}));
     assert!(r["root"].as_str().unwrap().contains("Pack One"));
     // hooks: the plan can be previewed and the apply payload is the plan itself
-    let plan = call(&b.app, "hooks.plan_install", json!({ "instance": id, "cli": "/opt/packsync/packsync" }));
+    let cli = if cfg!(windows) { r"C:\Program Files\PackSync\packsync.exe" } else { "/opt/packsync/packsync" };
+    let plan = call(&b.app, "hooks.plan_install", json!({ "instance": id, "cli": cli }));
     assert_eq!(plan["blockers"].as_array().unwrap().len(), 0);
     call(&b.app, "hooks.apply", json!({ "instance": id, "plan": plan }));
     assert_eq!(call(&b.app, "hooks.state", json!({ "instance": id }))["installed"], true);

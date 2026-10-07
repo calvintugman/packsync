@@ -1,7 +1,6 @@
 //! Runs the real `packsync` binary against disposable state, a local "cloud" folder and a fake
-//! `prismlauncher` (shell scripts: Unix only).
+//! `prismlauncher` (shell scripts on Unix, the `packsync-fake-prism` program elsewhere).
 #![allow(dead_code)]
-#![cfg(unix)]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
