@@ -7,7 +7,7 @@ precisely what exists, what is verified how, and what to expect.
 
 | | Linux | Windows | macOS |
 |---|---|---|---|
-| Engine, CLI, tests | built, tested, run | **cross-built; all 371 tests of the Windows build pass under Wine**, including launching through a (fake) Prism, crash handling, hooks, the JSON API and the `packsync.exe` end-to-end suite; never run on real Windows | not built |
+| Engine, CLI, tests | built, tested, run | **cross-built; all 380 tests of the Windows build pass under Wine**, including launching through a (fake) Prism, crash handling, hooks, the JSON API and the `packsync.exe` end-to-end suite; never run on real Windows | not built |
 | Desktop app (Tauri 2) | release binary built and run (WebKitGTK, Wayland) | not built (needs WebView2 and MSVC or a Windows host) | not built |
 | Prism adapter | **verified against real Prism 11.0.3** (headless, sandboxed) | paths and quoting implemented, unverified | paths and quoting implemented, unverified |
 | Credential store | Secret Service (code + live test that is `#[ignore]`d; not run here) | Credential Manager (unverified) | Keychain (unverified) |

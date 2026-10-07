@@ -55,11 +55,11 @@ the real-Prism smoke test and the real OS keyring round trip.
 
 | Suite | Result |
 |---|---|
-| `cargo test --workspace` | **385 passed, 0 failed, 2 ignored** |
+| `cargo test --workspace` | **395 passed, 0 failed, 2 ignored** |
 | `cargo test -p packsync-cli --features failpoints --test killed` | 4 passed |
 | UI unit and component tests | **123 passed** (16 files) |
 | Playwright (Chromium) | **38 passed** (+7 screenshot generators that run only with `SCREENSHOTS=1`) |
-| `scripts/windows-check.sh` (Windows build, run under Wine) | **371 passed, 0 failed** in 22 test programs (the CLI hooks suite, which chains shell scripts, is Unix-only) |
+| `scripts/windows-check.sh` (Windows build, run under Wine) | **380 passed, 0 failed** in 22 test programs (the CLI hooks suite, which chains shell scripts, is Unix-only) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | clean (also with `--features packsync-cli/failpoints`) |
 | `cargo deny check` (engine workspace and desktop shell) | advisories, bans, licences and sources pass; one documented advisory exception in the shell (`docs/dependencies.md`) |
 | `npm audit` | 0 vulnerabilities |
@@ -146,6 +146,28 @@ One reviewer read the code against these documents and the original requirements
 | F13 | Two silent-skip paths in staging | errors instead |
 | F14 | Concurrent instance-row updates from two processes reverted each other | one IMMEDIATE transaction |
 | F15 | Stale UI list responses; jobs with other parameters merged; incomplete Drive listings trusted; `--json` printed two documents on failure | each fixed |
+
+### Then: three automated cloud reviews of the engine (ultrareview)
+
+The engine's storage, file/restore and session/conflict code (about 17,000 lines) went through three more
+independent reviews. Fixed, each with a test unless noted:
+
+* **Windows path escape:** a name like `mods/C:evil.txt` passed validation (the drive check only looked at the
+  first component) and on Windows joining it replaces the whole path. Refused anywhere; joins verify the
+  result stays inside the instance.
+* Only the first group of names that collide on a case-insensitive disk was skipped; later groups were written
+  twice to one file.
+* Enabling the same folder twice at once registered it twice (check and insert were separate steps).
+* A hook-started session claimed any game of the instance, even one already running before it began.
+* Startup recovery deleted the folder of a new-directory restore still running in another process; the list of
+  such restores was updated without a transaction.
+* `verify_local` could record a half-applied restore as the trusted file index; dropping unpublishable
+  versions could race an upload of them.
+* Merges with more than four parents were advertised in tags as having four; reading a mostly-needed pack
+  could hold up to 256 MiB per worker in memory; replacing an object in a local folder kept its old tags.
+* Settings files too large to merge are refused at staging too (defence in depth; the scan already refuses
+  them — not separately testable); untrusted sizes saturate.
+* Cleanups: dead code removed, duplicated restore loops, marker checks and restore preparation merged.
 
 ## Reading a failure
 
