@@ -250,14 +250,18 @@ pub fn plan(
         FoldMode::Sensitive
     });
     let coll = find_collisions(entries.iter().map(|e| (e.p.as_str(), e.t == EntryType::Dir)), mode);
-    if let Some(c) = coll.first() {
+    if !coll.is_empty() {
         if !cfg.skip_incompatible {
+            let shown: Vec<String> = coll.iter().take(3).map(|c| c.join(" / ")).collect();
             return Err(Error::Unsupported(format!(
-                "these snapshot paths would overwrite each other on this file system: {}. Nothing was changed",
-                c.join(", ")
+                "{} group(s) of snapshot paths would overwrite each other on this file system ({}{}). Nothing was changed",
+                coll.len(),
+                shown.join("; "),
+                if coll.len() > shown.len() { "; …" } else { "" }
             )));
         }
-        let drop: HashSet<&str> = c.iter().skip(1).map(|s| s.as_str()).collect();
+        // every group keeps its first path; all the others are skipped (and reported)
+        let drop: HashSet<&str> = coll.iter().flat_map(|c| c.iter().skip(1)).map(|s| s.as_str()).collect();
         entries.retain(|e| {
             if drop.contains(e.p.as_str()) {
                 skipped.push(PlanIssue {
@@ -726,10 +730,24 @@ fn stage_all(env: &RestoreEnv<'_>, plan: &RestorePlan, root: &Path, txd: &Path, 
                             .ok_or_else(|| Error::Config(format!("snapshot uses unknown mixed-file policy {id:?}")))
                     })
                     .transpose()?;
-            let local_current = if policy.is_some() {
-                fs::read(lp(&local_path(root, &e.p))).ok().filter(|b| b.len() as u64 <= crate::scan::MAX_MIXED_FILE)
-            } else {
-                None
+            let local_current = match policy {
+                Some(_) => match fs::read(lp(&local_path(root, &e.p))) {
+                    // an oversized local copy must not be treated as absent: that would drop every local-only
+                    // value (Java path, window size …) without a word. Stop instead; nothing was changed yet.
+                    Ok(b) if b.len() as u64 > crate::scan::MAX_MIXED_FILE => {
+                        return Err(Error::invalid(
+                            "settings file",
+                            format!(
+                                "{} is larger than {} bytes, so its local settings cannot be kept; nothing was changed",
+                                e.p,
+                                crate::scan::MAX_MIXED_FILE
+                            ),
+                        ));
+                    }
+                    Ok(b) => Some(b),
+                    Err(_) => None,
+                },
+                None => None,
             };
             assemble(e, e.r.and_then(|r| recipes.get(&r)), &blob_dir, &out, policy, local_current, flush_each)?;
             apply_metadata(&out, e);
@@ -1154,7 +1172,11 @@ pub fn restore_new(
     let empty = LocalState::default();
     let parent = dir.parent().unwrap_or(Path::new("."));
     let plan = plan(target, target_id, &empty, dir, env.cfg)?;
-    let needed = plan.bytes_to_write + env.cfg.batch_bytes.min(plan.bytes_to_write) + env.cfg.space_margin;
+    // sizes come from the (untrusted) manifest: never let them wrap around
+    let needed = plan
+        .bytes_to_write
+        .saturating_add(env.cfg.batch_bytes.min(plan.bytes_to_write))
+        .saturating_add(env.cfg.space_margin);
     let have = available_space(parent).unwrap_or(u64::MAX);
     if have < needed {
         return Err(Error::NoSpace { path: parent.to_path_buf(), needed, available: have });
@@ -1164,11 +1186,8 @@ pub fn restore_new(
     let marker = RestoreMarker { tx, instance, target: target_id, created: now_rfc3339() };
     crate::fsutil::write_atomic(&restore_marker_path(dir), &serde_json::to_vec(&marker)?)
         .io_ctx(|| "writing restore marker".into())?;
-    let pending_key = "pending_restores";
-    let mut pend: Vec<String> =
-        env.db.meta_get(pending_key)?.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    pend.push(dir.to_string_lossy().into_owned());
-    env.db.meta_set(pending_key, &serde_json::to_string(&pend)?)?;
+    let added = dir.to_string_lossy().into_owned();
+    update_pending(env.db, |v| v.push(added))?;
     crate::failpoint!("restore_new.after_marker")?;
 
     let result = (|| -> Result<RestoreReport> {
@@ -1260,27 +1279,42 @@ pub fn remove_restore_dir(dir: &Path) -> bool {
     if is_our_restore_dir(dir) { fs::remove_dir_all(lp(dir)).is_ok() } else { false }
 }
 
-fn forget_pending(db: &Db, dir: &Path) {
-    let key = "pending_restores";
-    if let Ok(Some(s)) = db.meta_get(key) {
-        let mut v: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
-        v.retain(|p| p != &dir.to_string_lossy());
-        let _ = db.meta_set(key, &serde_json::to_string(&v).unwrap_or_else(|_| "[]".into()));
-    }
+/// The list of new-directory restores in progress (to clean up after a crash), changed atomically: restores
+/// of different instances run in parallel, in this process and in others.
+fn update_pending(db: &Db, f: impl FnOnce(&mut Vec<String>)) -> Result<()> {
+    db.meta_update("pending_restores", |cur| {
+        let mut v: Vec<String> = cur.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        f(&mut v);
+        Some(serde_json::to_string(&v).unwrap_or_else(|_| "[]".into()))
+    })
 }
 
-/// Startup recovery for half-finished new-directory restores.
-pub fn recover_pending_restores(db: &Db) -> Vec<(PathBuf, bool)> {
-    let key = "pending_restores";
-    let Ok(Some(s)) = db.meta_get(key) else { return vec![] };
-    let v: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
+fn forget_pending(db: &Db, dir: &Path) {
+    let gone = dir.to_string_lossy().into_owned();
+    let _ = update_pending(db, |v| v.retain(|p| *p != gone));
+}
+
+fn restore_marker_of(dir: &Path) -> Option<RestoreMarker> {
+    fs::read(restore_marker_path(dir)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+/// Startup recovery for half-finished new-directory restores. `in_progress(instance)` says whether a
+/// restore of that instance is still running (in this or another process): its folder is left alone.
+pub fn recover_pending_restores(db: &Db, in_progress: &dyn Fn(InstanceId) -> bool) -> Vec<(PathBuf, bool)> {
+    let Ok(Some(s)) = db.meta_get("pending_restores") else { return vec![] };
+    let listed: Vec<String> = serde_json::from_str(&s).unwrap_or_default();
     let mut out = vec![];
-    for p in v {
+    let mut done: Vec<String> = vec![];
+    for p in listed {
         let path = PathBuf::from(&p);
+        if restore_marker_of(&path).is_some_and(|m| in_progress(m.instance)) {
+            continue; // still being written by a running restore
+        }
         let removed = if path.exists() { remove_restore_dir(&path) } else { true };
         out.push((path, removed));
+        done.push(p);
     }
-    let _ = db.meta_set(key, "[]");
+    let _ = update_pending(db, |v| v.retain(|p| !done.contains(p)));
     out
 }
 
@@ -1296,6 +1330,72 @@ use Read as _;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Startup recovery removes the folders of new-directory restores that died, never the folder of one
+    /// that is still running (in another process: the CLI while the app starts, for instance).
+    #[test]
+    fn recovery_leaves_a_running_new_directory_restore_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let db = Db::open_memory().unwrap();
+        let mk = |name: &str| {
+            let dir = d.path().join(name);
+            fs::create_dir_all(dir.join(crate::brand::LOCAL_MARKER_DIR)).unwrap();
+            let m = RestoreMarker {
+                tx: TxId::new(),
+                instance: InstanceId::new(),
+                target: SnapshotId(Hash::of(name.as_bytes())),
+                created: now_rfc3339(),
+            };
+            fs::write(restore_marker_path(&dir), serde_json::to_vec(&m).unwrap()).unwrap();
+            let p = dir.to_string_lossy().into_owned();
+            update_pending(&db, |v| v.push(p)).unwrap();
+            (dir, m.instance)
+        };
+        let (running, running_id) = mk("running");
+        let (dead, _) = mk("dead");
+        let out = recover_pending_restores(&db, &|i| i == running_id);
+        assert!(running.exists(), "a running restore's folder is never removed");
+        assert!(!dead.exists(), "a dead restore's folder is cleaned up");
+        assert_eq!(out.len(), 1);
+        let left: Vec<String> = serde_json::from_str(&db.meta_get("pending_restores").unwrap().unwrap()).unwrap();
+        assert_eq!(left, vec![running.to_string_lossy().into_owned()], "still listed, for when it ends");
+    }
+
+    /// With "skip what cannot exist here", EVERY group of names that collide on a case-insensitive file
+    /// system is reduced to one path — the second group used to be written twice to the same real file.
+    #[test]
+    fn every_colliding_group_is_skipped_not_just_the_first() {
+        let mut m = crate::manifest::testutil::sample();
+        let file = |p: &str| Entry {
+            p: p.into(),
+            t: EntryType::File,
+            s: 1,
+            m: 0,
+            x: false,
+            h: Some(Hash::of(p.as_bytes())),
+            r: None,
+            mx: None,
+        };
+        m.entries = vec![
+            file(".minecraft/config/A.cfg"),
+            file(".minecraft/config/a.cfg"),
+            file(".minecraft/mods/X.jar"),
+            file(".minecraft/mods/x.jar"),
+            file(".minecraft/ok.txt"),
+        ];
+        m.entries.sort_by(|a, b| a.p.as_bytes().cmp(b.p.as_bytes()));
+        let d = tempfile::tempdir().unwrap();
+        let mut cfg = RestoreConfig { fold_override: Some(FoldMode::CaseInsensitive), ..Default::default() };
+        let err = plan(&m, SnapshotId(Hash::of(b"t")), &LocalState::default(), d.path(), &cfg).unwrap_err();
+        assert!(err.to_string().contains("2 group(s)"), "{err}");
+        cfg.skip_incompatible = true;
+        let p = plan(&m, SnapshotId(Hash::of(b"t")), &LocalState::default(), d.path(), &cfg).unwrap();
+        let written: Vec<String> = p.writes.iter().map(|e| e.p.to_lowercase()).collect();
+        let unique: HashSet<&String> = written.iter().collect();
+        assert_eq!(written.len(), unique.len(), "no two writes land on the same file: {written:?}");
+        assert_eq!(written.len(), 3, "{written:?}");
+        assert_eq!(p.skipped.len(), 2, "{:?}", p.skipped);
+    }
 
     /// A file the plan expected to be new but that appeared meanwhile (the game started writing, another
     /// program) is never overwritten: the operation fails and nothing of the person's file changes.

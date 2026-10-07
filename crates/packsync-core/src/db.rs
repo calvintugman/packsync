@@ -257,6 +257,29 @@ impl Db {
         })
     }
 
+    /// Change one metadata value atomically (read and write in one IMMEDIATE transaction), so two
+    /// processes updating the same list cannot lose each other's change. `f` returns the new value, or
+    /// `None` to delete the key.
+    pub fn meta_update(&self, key: &str, f: impl FnOnce(Option<String>) -> Option<String>) -> Result<()> {
+        let mut g = self.conn.lock();
+        let tx = g.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let cur: Option<String> =
+            tx.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0)).optional()?;
+        match f(cur) {
+            Some(v) => {
+                tx.execute(
+                    "INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    [key, v.as_str()],
+                )?;
+            }
+            None => {
+                tx.execute("DELETE FROM meta WHERE key=?1", [key])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn meta_delete(&self, key: &str) -> Result<()> {
         self.with(|c| {
             c.execute("DELETE FROM meta WHERE key=?1", [key])?;
@@ -1588,6 +1611,29 @@ mod tests {
         });
         let end = a.instance_get(r.id).unwrap().unwrap();
         assert_eq!((end.last_scan_ms, end.last_full_verify_ms), (Some(N), Some(N)));
+    }
+
+    #[test]
+    fn concurrent_list_updates_through_meta_update_lose_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("state.db");
+        let (a, b) = (Db::open(&p).unwrap(), Db::open(&p).unwrap());
+        let push = |db: &Db, who: &str| {
+            for i in 0..200 {
+                db.meta_update("list", |cur| {
+                    let mut v: Vec<String> = cur.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+                    v.push(format!("{who}{i}"));
+                    Some(serde_json::to_string(&v).unwrap())
+                })
+                .unwrap();
+            }
+        };
+        std::thread::scope(|s| {
+            s.spawn(|| push(&a, "a"));
+            s.spawn(|| push(&b, "b"));
+        });
+        let v: Vec<String> = serde_json::from_str(&a.meta_get("list").unwrap().unwrap()).unwrap();
+        assert_eq!(v.len(), 400);
     }
 
     #[test]

@@ -227,6 +227,13 @@ impl Engine {
                 ),
             });
         }
+        // held until the new instance is registered: startup recovery in another process leaves its folder alone
+        let _restoring =
+            crate::lock::InstanceLock::try_acquire_kind(&self.locks_dir(), req.instance, "restore-new", "restore")
+                .map_err(|e| match e {
+                    Error::Busy(_) => Error::Busy("this instance is already being restored on this computer".into()),
+                    other => other,
+                })?;
         let remote = self.remote()?;
         let ctx = &ctx.clone().with_instance(req.instance);
         let view = self.discover(req.instance, ctx)?;

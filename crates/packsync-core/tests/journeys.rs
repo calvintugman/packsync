@@ -514,3 +514,49 @@ fn a_local_check_is_refused_while_a_restore_needs_recovery() {
     a.engine.db().instance_update(en.instance, |r| r.state = packsync_core::db::InstanceState::Ok).unwrap();
     assert!(a.engine.verify_local(en.instance, &a.ctx()).is_ok());
 }
+
+/// options.txt is merged on restore: synced keys from the cloud, this computer's own keys (window size,
+/// graphics …) kept. A local copy too large to merge stops the restore before anything is changed. (The scan
+/// of the live files refuses it first; the staging step refuses it too, for a file that grows in between —
+/// it used to treat it as absent and drop every local key.)
+#[test]
+fn an_oversized_local_settings_file_stops_the_restore_instead_of_losing_its_local_values() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root_a, _info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    let b = w.device("laptop");
+    let rb = b.engine.restore_new(common_restore_req(&b, en.instance), &b.ctx()).unwrap().root;
+    let opts_b = rb.join("options.txt");
+    let mut big = fs::read(&opts_b).unwrap();
+    big.extend(std::iter::repeat_n(b'#', 1_100_000)); // only this computer's copy grows
+    big.extend(b"\nfullscreen:true\n");
+    fs::write(&opts_b, &big).unwrap();
+    // the desktop changes a synced key
+    let opts_a = root_a.join("options.txt");
+    let mut t = fs::read_to_string(&opts_a).unwrap();
+    t.push_str("lang:de_de\n");
+    fs::write(&opts_a, t).unwrap();
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    a.upload(en.instance);
+    let before = fs::read(&opts_b).unwrap();
+    let r = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx());
+    assert!(r.is_err(), "{r:?}");
+    assert_eq!(fs::read(&opts_b).unwrap(), before, "nothing of this computer's settings was lost");
+}
+
+fn common_restore_req(
+    d: &packsync_core::testkit::harness::TestDevice,
+    inst: packsync_core::ids::InstanceId,
+) -> RestoreNewRequest {
+    RestoreNewRequest {
+        instance: inst,
+        snapshot: None,
+        parent_dir: d.instances_dir(),
+        folder_name: "pack".into(),
+        launcher: "generic".into(),
+        launcher_ref: None,
+        local: Default::default(),
+        skip_incompatible: false,
+    }
+}

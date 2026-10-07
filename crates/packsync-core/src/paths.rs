@@ -48,7 +48,7 @@ impl std::fmt::Display for PathIssue {
             PathIssue::ComponentTooLong => "path component longer than 255 bytes",
             PathIssue::TooLong => "path longer than 1024 bytes",
             PathIssue::TooDeep => "path nested deeper than 64 levels",
-            PathIssue::DrivePrefix => "Windows drive prefix",
+            PathIssue::DrivePrefix => "Windows drive prefix (a name like `C:x`)",
             PathIssue::Reserved => "PackSync's own bookkeeping folder (.packsync) cannot be part of a snapshot",
         };
         f.write_str(s)
@@ -74,7 +74,7 @@ pub fn validate_relpath(p: &str) -> std::result::Result<(), PathIssue> {
         return Err(PathIssue::Nul);
     }
     let mut depth = 0;
-    for (i, c) in p.split('/').enumerate() {
+    for c in p.split('/') {
         depth += 1;
         if c.is_empty() {
             return Err(PathIssue::EmptyComponent);
@@ -95,7 +95,9 @@ pub fn validate_relpath(p: &str) -> std::result::Result<(), PathIssue> {
         if c.eq_ignore_ascii_case(crate::brand::LOCAL_MARKER_DIR) {
             return Err(PathIssue::Reserved);
         }
-        if i == 0 && c.len() >= 2 && c.as_bytes()[1] == b':' && c.as_bytes()[0].is_ascii_alphabetic() {
+        // At ANY position: on Windows, joining a component like `C:x` replaces everything joined so far
+        // (`PathBuf::push` treats it as a drive-relative path), so `mods/C:x` would escape the instance.
+        if c.len() >= 2 && c.as_bytes()[1] == b':' && c.as_bytes()[0].is_ascii_alphabetic() {
             return Err(PathIssue::DrivePrefix);
         }
     }
@@ -111,6 +113,10 @@ pub fn join_safe(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut p = root.to_path_buf();
     for c in rel.split('/') {
         p.push(c);
+    }
+    // defence in depth: whatever the platform's joining rules, the result is inside `root`
+    if !p.starts_with(root) {
+        return Err(Error::invalid("path", format!("{rel:?} would leave the instance folder")));
     }
     Ok(p)
 }
@@ -295,6 +301,8 @@ mod tests {
             "a\\b",
             "C:/Windows",
             "c:evil",
+            "mods/C:evil.txt",
+            "a/b/d:",
             "a/b\0c",
             "tab\there",
             // PackSync's bookkeeping folder, at any depth and in any case

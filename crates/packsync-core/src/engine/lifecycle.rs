@@ -327,7 +327,11 @@ impl Engine {
                 }
             }
         }
-        for (path, removed) in restore::recover_pending_restores(&self.db) {
+        let locks = self.locks_dir();
+        let in_progress = |i: InstanceId| {
+            crate::lock::InstanceLock::try_acquire_kind(&locks, i, "restore-new", "recovery check").is_err()
+        };
+        for (path, removed) in restore::recover_pending_restores(&self.db, &in_progress) {
             if removed {
                 rep.removed_partial_restores.push(path);
             }
