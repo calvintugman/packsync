@@ -162,6 +162,22 @@ describe("AppStore: events", () => {
     store.stop();
   });
 
+  it("never lets an older instance list overwrite a newer one that arrived first", async () => {
+    const t = baseTransport();
+    const pending: Array<(v: unknown) => void> = [];
+    const { store } = await started(t);
+    t.on("instances.list", () => new Promise((resolve) => pending.push(resolve)));
+    const id = store.getState().instances[0]!.id;
+    const slow = store.refreshInstances(); // asked first, answers last
+    const fast = store.refreshInstances();
+    pending[1]!([instance({ id, phase: "upload_pending", pending_snapshots: 1 })]);
+    await fast;
+    pending[0]!([instance({ id, phase: "ready_on_other_devices" })]);
+    await slow;
+    expect(store.getState().instances[0]!.phase).toBe("upload_pending");
+    store.stop();
+  });
+
   it("re-reads the storage when the connection changed", async () => {
     let connected = true;
     const t = baseTransport();

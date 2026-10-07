@@ -25,13 +25,27 @@ pub struct JobRunner {
     db: Arc<packsync_core::db::Db>,
 }
 
+/// Operations that may be merged with an identical running one (they take no parameters that change
+/// what they do, or doing them twice gives the same result).
+const COALESCED: &[&str] = &[
+    "instance.sync",
+    "instance.upload",
+    "instance.reconcile",
+    "instance.verify_local",
+    "instance.verify_remote",
+    "cloud.instances",
+    "launcher.discover",
+];
+
 impl JobRunner {
     pub fn new(bus: EventBus, db: Arc<packsync_core::db::Db>) -> Self {
         Self { inner: Default::default(), bus, db }
     }
 
-    /// Start `work` on a new thread. If an identical job (same method, same instance) is already
-    /// running its id is returned instead: a double click must not start two uploads.
+    /// Start `work` on a new thread. If the same operation is already running for the same instance, an
+    /// idempotent one (sync, upload, reconcile, checks) returns the running job's id — a double click must
+    /// not start two uploads — and any other (a restore, a conflict resolution: their parameters may differ)
+    /// is refused as busy instead of silently attaching to a job that does something else.
     pub fn start<F>(&self, method: &str, instance: Option<InstanceId>, work: F) -> Result<JobId>
     where
         F: FnOnce(&OpCtx) -> Result<serde_json::Value> + Send + 'static,
@@ -42,7 +56,12 @@ impl JobRunner {
             if let Some((existing, _)) = g.iter().find(|(_, e)| {
                 e.info.state == JobState::Running && e.info.method == method && e.info.instance == instance
             }) {
-                return Ok(*existing);
+                if COALESCED.contains(&method) {
+                    return Ok(*existing);
+                }
+                return Err(Error::Busy(format!(
+                    "{method} is already running for this instance; wait for it to finish"
+                )));
             }
             let info = JobInfo {
                 id,
@@ -179,7 +198,7 @@ mod tests {
         assert_eq!(j.error.unwrap().code, "busy");
 
         let slow = jobs
-            .start("t.slow", None, |ctx| {
+            .start("instance.upload", None, |ctx| {
                 for _ in 0..500 {
                     ctx.check()?;
                     std::thread::sleep(Duration::from_millis(10));
@@ -187,8 +206,21 @@ mod tests {
                 Ok(serde_json::Value::Null)
             })
             .unwrap();
-        // the same request while it runs returns the same job
-        assert_eq!(jobs.start("t.slow", None, |_| Ok(serde_json::Value::Null)).unwrap(), slow);
+        // the same idempotent request while it runs returns the same job…
+        assert_eq!(jobs.start("instance.upload", None, |_| Ok(serde_json::Value::Null)).unwrap(), slow);
+        // …while one whose parameters may differ is refused instead of silently attaching to it
+        let restoring = jobs
+            .start("restore.apply", None, |ctx| {
+                for _ in 0..500 {
+                    ctx.check()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        let again = jobs.start("restore.apply", None, |_| Ok(serde_json::Value::Null));
+        assert!(matches!(again, Err(Error::Busy(_))), "{again:?}");
+        assert!(jobs.cancel(restoring));
         assert!(jobs.cancel(slow));
         assert_eq!(jobs.wait(slow, Duration::from_secs(5)).unwrap().state, JobState::Cancelled);
         assert!(!jobs.cancel(slow), "finished jobs cannot be cancelled");

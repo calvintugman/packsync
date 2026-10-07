@@ -729,9 +729,12 @@ impl Inner {
             children.extend(files);
         }
         if incomplete {
+            // Listings decide what is "up to date" and what a cleanup may delete: an incomplete one must
+            // never be taken as the whole truth. Retried like any temporary failure.
             let msg = format!("Drive reported an incomplete listing for {prefix}; some entries may be missing");
             tracing::warn!(target: "packsync_drive", "{msg}");
-            ctx.note(Phase::Discovery, Level::Warn, msg);
+            ctx.note(Phase::Discovery, Level::Warn, msg.clone());
+            return Err(StorageError::Transient(msg));
         }
         let mut folders: BTreeMap<String, Vec<FolderRef>> = BTreeMap::new();
         let mut files: BTreeMap<String, Vec<DriveFile>> = BTreeMap::new();

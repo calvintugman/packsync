@@ -168,8 +168,13 @@ export class AppStore {
   async refreshStorage(): Promise<void> {
     this.set({ storage: await this.call("storage.status") });
   }
+  private instancesRequest = 0;
   async refreshInstances(): Promise<void> {
+    // Responses can arrive out of order (a slow one started before a fast one): only the latest request
+    // may change the state, or an old "ready" could replace a newer "uploading" for a polling interval.
+    const request = ++this.instancesRequest;
     const list = await this.call("instances.list", { online: false });
+    if (request !== this.instancesRequest) return;
     this.set((s) => {
       const revisions = { ...s.revisions };
       for (const i of list) {

@@ -183,3 +183,16 @@ fn provider_id_identifies_account_space_and_root() {
     assert_eq!(caps.recommended_concurrency, 4);
     assert_eq!(caps.recommended_pack_size, 16 * 1024 * 1024);
 }
+
+/// Drive sometimes answers a search with `incompleteSearch: true`. Listings decide what is up to date and
+/// what a cleanup may delete, so an incomplete one is a (retryable) error, never the whole truth.
+#[test]
+fn an_incomplete_listing_is_never_taken_as_the_whole_truth() {
+    let env = common::setup();
+    env.drive.put("packs/a.pack", PutSource::Bytes(b"a"), &PutOptions::replace(), &ctx()).unwrap();
+    assert_eq!(env.drive.list("packs/", &ctx()).unwrap().len(), 1);
+    env.mock.report_incomplete_listings(1);
+    let r = env.drive.list("packs/", &ctx());
+    assert!(matches!(r, Err(packsync_core::storage::StorageError::Transient(_))), "{r:?}");
+    assert_eq!(env.drive.list("packs/", &ctx()).unwrap().len(), 1, "the next complete listing is used");
+}

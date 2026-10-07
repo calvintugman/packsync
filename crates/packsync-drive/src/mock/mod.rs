@@ -380,6 +380,8 @@ struct State {
     log: Vec<RequestRecord>,
     secrets: Vec<String>,
     consent: Option<Consent>,
+    /// The next N listings say `incompleteSearch: true`, as Drive does when it gives up searching.
+    incomplete_listings: u32,
 }
 
 struct Shared {
@@ -755,7 +757,11 @@ impl Shared {
             .iter()
             .filter_map(|id| st.files.get(id).map(|f| file_json(st, f)))
             .collect();
-        let mut v = json!({"kind": "drive#fileList", "incompleteSearch": false, "files": page});
+        let incomplete = st.incomplete_listings > 0;
+        if incomplete {
+            st.incomplete_listings -= 1;
+        }
+        let mut v = json!({"kind": "drive#fileList", "incompleteSearch": incomplete, "files": page});
         if end < matched.len() {
             v["nextPageToken"] = Value::String(format!("pt-{end}"));
         }
@@ -1772,6 +1778,11 @@ impl MockDrive {
         for s in self.shared.state.lock().sessions.values_mut() {
             s.expired = true;
         }
+    }
+
+    /// Make the next `n` listings report `incompleteSearch: true`.
+    pub fn report_incomplete_listings(&self, n: u32) {
+        self.shared.state.lock().incomplete_listings = n;
     }
 
     /// Set the consent-screen behaviour.
