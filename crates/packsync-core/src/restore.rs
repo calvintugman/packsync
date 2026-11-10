@@ -111,7 +111,7 @@ pub fn scan_local_state(
     own_rules: Option<&RuleSet>,
 ) -> Result<LocalState> {
     let index = if inst.needs_full_scan { HashMap::new() } else { db.index_load(inst.id)? };
-    let mut opts = scan.clone();
+    let mut opts = scan.now();
     if inst.needs_full_scan {
         opts.mode = crate::scan::ScanMode::Full;
     }

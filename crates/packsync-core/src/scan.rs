@@ -80,6 +80,15 @@ impl Default for ScanOptions {
     }
 }
 
+impl ScanOptions {
+    /// These options with the clock set to now. Every operation takes its own copy this way: options
+    /// built once (at engine start) would otherwise freeze the clock that decides when files are due for
+    /// periodic verification, and a long-lived process would never verify again.
+    pub fn now(&self) -> ScanOptions {
+        ScanOptions { now_ns: now_ns(), ..self.clone() }
+    }
+}
+
 pub fn now_ns() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as i64).unwrap_or(0)
 }

@@ -160,7 +160,7 @@ impl Engine {
         // Re-read exactly those files and stage what the cloud does not have.
         ctx.phase(Phase::Snapshot, format!("reading {} file(s) to upload their data again", missing.len()));
         let (rules, _) = self.rules_for(&inst, ctx)?;
-        let mut scan = self.cfg.snapshot.scan.clone();
+        let mut scan = self.cfg.snapshot.scan.now();
         scan.mode = ScanMode::Full;
         let w = walk(&inst.root, &rules, &HashMap::new(), &scan, ctx)?;
         let wanted: Vec<&Candidate> = w.files.iter().filter(|c| missing.contains(&c.path)).collect();

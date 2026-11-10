@@ -34,7 +34,7 @@ impl Engine {
         let desc = launcher.describe(&req.root)?;
         let text = rules::effective_rules_text(launcher.rules_fragment(), &req.rules_overrides)?;
         let rs = RuleSet::compile(&text, &desc.game_root)?;
-        let opts = ScanOptions { mode: ScanMode::Quick, ..self.cfg.snapshot.scan.clone() };
+        let opts = ScanOptions { mode: ScanMode::Quick, ..self.cfg.snapshot.scan.now() };
         let w = walk(&req.root, &rs, &HashMap::new(), &opts, ctx)?;
         let mut by_cat: BTreeMap<String, (u64, u64)> = BTreeMap::new();
         let mut samples = vec![];

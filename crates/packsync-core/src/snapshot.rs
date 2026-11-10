@@ -389,7 +389,7 @@ pub fn create(
     let inst = req.instance;
     ctx.phase(Phase::Scan, format!("scanning {}", inst.name));
     let index = if inst.needs_full_scan { HashMap::new() } else { db.index_load(inst.id)? };
-    let mut scan_opts = cfg.scan.clone();
+    let mut scan_opts = cfg.scan.now();
     if inst.needs_full_scan {
         scan_opts.mode = ScanMode::Full;
     }

@@ -219,7 +219,7 @@ impl Engine {
         let (rules, _) = self.rules_for(&inst, ctx)?;
         let base = inst.base_snapshot.map(|b| self.manifest(id, b, ctx)).transpose()?;
         let index = if inst.needs_full_scan { HashMap::new() } else { self.db.index_load(id)? };
-        let mut opts = self.cfg.snapshot.scan.clone();
+        let mut opts = self.cfg.snapshot.scan.now();
         if inst.needs_full_scan {
             opts.mode = ScanMode::Full;
         }
@@ -1002,7 +1002,7 @@ impl Engine {
         let _lock = self.lock(id, "verify")?;
         let (rules, _) = self.rules_for(&inst, ctx)?;
         let base = inst.base_snapshot.map(|b| self.manifest(id, b, ctx)).transpose()?;
-        let mut opts = self.cfg.snapshot.scan.clone();
+        let mut opts = self.cfg.snapshot.scan.now();
         opts.mode = ScanMode::Full;
         let w = walk(&inst.root, &rules, &HashMap::new(), &opts, ctx)?;
         let cands: Vec<&crate::scan::Candidate> = w.files.iter().collect();
