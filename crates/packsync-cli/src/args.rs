@@ -336,6 +336,12 @@ pub enum HooksCmd {
 pub enum HookCmd {
     PreLaunch(HookArgs),
     PostExit(HookArgs),
+    /// Background part of pre-launch: write this computer's "playing" lease.
+    #[command(hide = true)]
+    Lease(HookArgs),
+    /// Background part of post-exit: upload what was saved, then remove the lease.
+    #[command(hide = true)]
+    Finish(HookArgs),
 }
 
 #[derive(Args, Debug)]

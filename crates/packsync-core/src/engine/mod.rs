@@ -74,6 +74,9 @@ pub struct Engine {
     storage: RwLock<Option<Arc<dyn Storage>>>,
     launchers: RwLock<HashMap<String, Arc<dyn Launcher>>>,
     sleeper: Arc<dyn Sleeper>,
+    /// Session start and end leave the advisory lease to a background process (launch hooks: a cloud
+    /// write costs ~1 s on R2, and the person waits for the hook).
+    defer_leases: std::sync::atomic::AtomicBool,
 }
 
 impl Engine {
@@ -91,7 +94,15 @@ impl Engine {
             db.set_device_name(n)?;
         }
         let device = RwLock::new(db.device()?);
-        let e = Engine { cfg, db, device, storage: RwLock::new(None), launchers: RwLock::new(HashMap::new()), sleeper };
+        let e = Engine {
+            cfg,
+            db,
+            device,
+            storage: RwLock::new(None),
+            launchers: RwLock::new(HashMap::new()),
+            sleeper,
+            defer_leases: std::sync::atomic::AtomicBool::new(false),
+        };
         e.register_launcher(Arc::new(GenericLauncher));
         Ok(Arc::new(e))
     }

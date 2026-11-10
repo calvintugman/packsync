@@ -108,7 +108,8 @@ fn run_chained(argv: &[String]) -> i32 {
     }
 }
 
-fn spawn_background_upload(id: InstanceId, cli: &Cli) {
+/// The cloud work Prism does not have to wait for, in a detached `packsync hook lease|finish`.
+fn spawn_background(id: InstanceId, cli: &Cli, what: &str) {
     let Ok(me) = std::env::current_exe() else { return };
     let mut cmd = Command::new(me);
     if let Some(d) = &cli.config_dir {
@@ -117,7 +118,7 @@ fn spawn_background_upload(id: InstanceId, cli: &Cli) {
     if let Some(d) = &cli.state_dir {
         cmd.arg("--state-dir").arg(d);
     }
-    cmd.args(["--quiet", "upload"])
+    cmd.args(["--quiet", "hook", what, "--instance"])
         .arg(id.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -137,11 +138,13 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
     let (args, pre): (&HookArgs, bool) = match h {
         HookCmd::PreLaunch(a) => (a, true),
         HookCmd::PostExit(a) => (a, false),
+        HookCmd::Lease(a) | HookCmd::Finish(a) => return background(cli, a, matches!(h, HookCmd::Finish(_)), out),
     };
     let ours = (|| -> Result<HookOutcome> {
         let id = InstanceId::parse(&args.instance)
             .map_err(|_| Error::invalid("hook", "--instance must be a PackSync instance ID"))?;
         let app = open_app(cli)?;
+        app.engine().defer_leases(true);
         let ctx = out.ctx();
         Ok(match if pre { app.hook_pre_launch(id, &ctx) } else { app.hook_post_exit(id, &ctx) } {
             HookOutcome::Ask { question, mut messages } => {
@@ -197,18 +200,38 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
             eprintln!("PackSync stopped the launch: {message}");
             return Ok(exit_code.max(1));
         }
-        Ok(HookOutcome::Proceed { messages, upload }) => {
+        Ok(HookOutcome::Proceed { messages, .. }) => {
             for m in messages {
                 eprintln!("PackSync: {m}");
             }
-            if let (Some(id), false) = (upload, pre) {
-                spawn_background_upload(id, cli);
+                        // pre-launch: write the "playing" lease; post-exit: upload what was saved, then remove it
+            if let Ok(id) = InstanceId::parse(&args.instance) {
+                spawn_background(id, cli, if pre { "lease" } else { "finish" });
             }
         }
         Ok(HookOutcome::Ask { .. } | HookOutcome::ChooseVersion { .. }) => unreachable!("answered above"),
         Err(e) => eprintln!("PackSync could not run its part of the hook ({e}); continuing without syncing"),
     }
     Ok(run_chained(&args.chained))
+}
+
+/// `hook lease` / `hook finish`, run detached by the hooks above. Failures only go to the activity log: the
+/// lease is advisory, and an upload that fails is retried by the next sync or launch.
+fn background(cli: &Cli, a: &HookArgs, finish: bool, out: &Out) -> Result<i32> {
+    let id = InstanceId::parse(&a.instance)
+        .map_err(|_| Error::invalid("hook", "--instance must be a PackSync instance ID"))?;
+    let app = open_app(cli)?;
+    let ctx = out.ctx();
+    let r = if finish {
+        app.engine().upload_pending(id, false, &ctx).map(|_| ()).and_then(|_| app.engine().release_lease(id, &ctx))
+    } else {
+        app.engine().lease_for_open_session(id, &ctx)
+    };
+    if let Err(e) = r {
+        // recorded in the activity log (this process has no terminal)
+        app.engine().db().event(Some(id), "warn", "background_hook", &e.to_string());
+    }
+    Ok(0)
 }
 
 pub fn launch(cx: &Cx, a: LaunchArgs) -> Result<i32> {

@@ -323,3 +323,26 @@ fn a_session_without_a_recorded_game_owns_only_a_game_started_after_it() {
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(!mgr.is_alive(&s, &root, &[]));
 }
+
+/// The launch hooks leave the advisory lease to a background process (a cloud write costs ~1 s on R2
+/// and Prism waits for the hook): session start and end then do not touch it, and the two background
+/// steps write and remove it.
+#[test]
+fn deferred_leases_are_written_and_removed_by_the_background_steps() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &packsync_core::testkit::fixtures::FixtureSpec::tiny());
+    a.upload(en.instance);
+    let lease = || w.remote_dir.join(format!("instances/{}/leases/{}.json", en.instance, a.engine.device().0)).exists();
+
+    a.engine.defer_leases(true);
+    let s = begin(&a, en.instance, "hook-1", false).unwrap();
+    assert!(!lease(), "a deferred start writes no lease");
+    a.engine.lease_for_open_session(en.instance, &a.ctx()).unwrap();
+    assert!(lease(), "the background step writes it");
+
+    a.engine.end_session(s.session, ExitInfo { exit_code: Some(0), clean_signal: true }, false, &a.ctx()).unwrap();
+    assert!(lease(), "a deferred end leaves it to the background step");
+    a.engine.release_lease(en.instance, &a.ctx()).unwrap();
+    assert!(!lease(), "…which removes it");
+}

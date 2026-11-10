@@ -52,7 +52,9 @@ impl Engine {
                     .map(|l| l.device_name.clone())
                     .collect();
             }
-            let _ = self.write_lease(&inst, &row, ctx); // best effort (offline is fine)
+            if !self.leases_deferred() {
+                let _ = self.write_lease(&inst, &row, ctx); // best effort (offline is fine)
+            }
         }
         Ok(SessionBegun {
             session: row.id,
@@ -82,6 +84,33 @@ impl Engine {
     }
 
     /// Refresh the advisory lease. Metadata-only traffic (one tiny object), never content.
+    /// See [`Engine::lease_for_open_session`] and [`Engine::release_lease`]: session start and end do not
+    /// touch the cloud lease themselves (the launch hooks do it from a background process).
+    pub fn defer_leases(&self, defer: bool) {
+        self.defer_leases.store(defer, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn leases_deferred(&self) -> bool {
+        self.defer_leases.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Write the advisory lease of this computer's open session of `id` (after a deferred start).
+    pub fn lease_for_open_session(&self, id: InstanceId, ctx: &OpCtx) -> Result<()> {
+        let inst = self.instance(id)?;
+        match self.db.sessions_open(id)?.into_iter().next() {
+            Some(s) => self.write_lease(&inst, &s, ctx),
+            None => Ok(()),
+        }
+    }
+
+    /// Remove this computer's advisory lease of `id` unless a session is open again (after a deferred end).
+    pub fn release_lease(&self, id: InstanceId, ctx: &OpCtx) -> Result<()> {
+        if !self.db.sessions_open(id)?.is_empty() || !self.has_storage() {
+            return Ok(());
+        }
+        self.remote()?.delete_lease(id, self.device().0, ctx)
+    }
+
     pub fn lease_heartbeat(&self, session: crate::ids::SessionId, ctx: &OpCtx) -> Result<()> {
         let s = self.db.session_get(session)?.ok_or_else(|| Error::NotFound(format!("session {session}")))?;
         let inst = self.instance(s.instance_id)?;
@@ -174,7 +203,8 @@ impl Engine {
             })?;
         }
         SessionMgr { db: &self.db }.finish(s.id, outcome, snap, None)?;
-        if self.has_storage()
+        if !self.leases_deferred()
+            && self.has_storage()
             && let Ok(remote) = self.remote()
         {
             let _ = remote.delete_lease(inst.id, self.device().0, ctx);
