@@ -586,7 +586,13 @@ impl Engine {
         if inst.state == InstanceState::Ok {
             match self.snapshot(id, SnapshotOpts::default(), ctx) {
                 Ok(r) => snap = Some(r),
-                Err(Error::GameRunning(_)) => {} // playing: the end-of-session snapshot will cover it
+                // playing: the end-of-session snapshot will cover it — but say so, or "nothing to upload"
+                // looks like "nothing changed"
+                Err(Error::GameRunning(why)) => ctx.note(
+                    Phase::Snapshot,
+                    Level::Warn,
+                    format!("not saving now, the instance is in use: {why}. It is saved when the game closes."),
+                ),
                 Err(e) => return Err(e),
             }
         }
