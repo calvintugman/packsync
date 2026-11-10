@@ -696,6 +696,23 @@ impl Inner {
         self.state.clear(&self.state_key("file", key));
     }
 
+    /// An upload's saved session (`up|<key>`) is finished once the object is listed complete: an
+    /// interrupted run whose last pack completed at Google just before the process died left it behind,
+    /// and the next run, which finds the pack in the listing, never uploads it again to clear it.
+    fn forget_finished_upload(&self, key: &str, f: &DriveFile) {
+        let skey = self.state_key("up", key);
+        let Some(raw) = self.state.load(&skey) else { return };
+        let saved: Option<(u64, String)> = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|v| Some((v.get("size")?.as_u64()?, v.get("md5")?.as_str()?.to_string())));
+        if let Some((size, md5)) = saved
+            && Some(size) == f.size
+            && f.md5.as_deref() == Some(md5.as_str())
+        {
+            self.state.clear(&skey);
+        }
+    }
+
     fn alive_match(f: &DriveFile, name: &str) -> bool {
         !f.trashed && !f.is_folder && f.name == name && f.is_ours()
     }
@@ -811,6 +828,7 @@ impl Inner {
             let key = format!("{prefix}{name}");
             let dups = (group.len() - 1) as u32;
             self.remember_file(&key, &group[0], dups);
+            self.forget_finished_upload(&key, &group[0]);
             out.push(object_info(&key, &group[0], dups));
         }
         out.sort_by(|a, b| a.key.cmp(&b.key));

@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 packsync-core.workspace = true
 packsync-drive.workspace = true
+packsync-s3.workspace = true
 packsync-prism.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

@@ -24,6 +24,27 @@ pub enum StorageSetting {
         #[serde(default)]
         account: Option<String>,
     },
+    /// Cloudflare R2 (S3 API). The secret access key is kept in the OS credential store under
+    /// [`StorageSetting::r2_secret_account`]; nothing here is secret.
+    R2 {
+        account_id: String,
+        bucket: String,
+        /// Every object is stored under `<prefix>/`.
+        #[serde(default = "default_r2_prefix")]
+        prefix: String,
+        access_key_id: String,
+    },
+}
+
+fn default_r2_prefix() -> String {
+    "packsync".into()
+}
+
+impl StorageSetting {
+    /// Credential-store entry of an R2 secret access key.
+    pub fn r2_secret_account(account_id: &str, access_key_id: &str) -> String {
+        format!("r2:{account_id}:{access_key_id}")
+    }
 }
 
 fn default_space() -> String {
@@ -107,6 +128,27 @@ impl Settings {
         }
         if !(30..=3600).contains(&self.lease_ttl_secs) {
             return Err(Error::Config("lease_ttl_secs must be between 30 and 3600".into()));
+        }
+        if let StorageSetting::R2 { account_id, bucket, prefix, access_key_id } = &self.storage {
+            let id_ok = |v: &str| !v.is_empty() && v.len() <= 128 && v.bytes().all(|b| b.is_ascii_alphanumeric());
+            if !id_ok(account_id) {
+                return Err(Error::Config(
+                    "the R2 account ID is 32 letters and digits (Cloudflare dashboard → R2)".into(),
+                ));
+            }
+            if !id_ok(access_key_id) {
+                return Err(Error::Config("the R2 access key ID is letters and digits".into()));
+            }
+            if bucket.is_empty() || !bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+                return Err(Error::Config(format!(
+                    "{bucket:?} is not a valid bucket name (lowercase letters, digits, -)"
+                )));
+            }
+            if prefix.is_empty()
+                || !prefix.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+            {
+                return Err(Error::Config(format!("{prefix:?} is not a valid prefix (letters, digits, . _ -)")));
+            }
         }
         if let StorageSetting::Google { space, .. } = &self.storage
             && space != "visible_folder"

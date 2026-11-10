@@ -278,6 +278,40 @@ impl App {
         Ok(self.storage_status())
     }
 
+    /// Select Cloudflare R2. The secret access key goes to the OS credential store (never to the
+    /// settings file); the connection is then checked with one listing.
+    pub fn use_r2(
+        &self,
+        account_id: &str,
+        bucket: &str,
+        prefix: &str,
+        access_key_id: &str,
+        secret: &packsync_core::redact::Secret,
+        ctx: &OpCtx,
+    ) -> Result<StorageStatus> {
+        let setting = StorageSetting::R2 {
+            account_id: account_id.trim().to_string(),
+            bucket: bucket.trim().to_string(),
+            prefix: prefix.trim().trim_matches('/').to_string(),
+            access_key_id: access_key_id.trim().to_string(),
+        };
+        let mut probe = self.settings();
+        probe.storage = setting.clone();
+        probe.validate()?;
+        if secret.is_empty() {
+            return Err(Error::Config("the secret access key is empty".into()));
+        }
+        self.creds
+            .set(&StorageSetting::r2_secret_account(account_id.trim(), access_key_id.trim()), secret)
+            .map_err(|e| Error::Config(e.to_string()))?;
+        let up = self.update_settings(|s| s.storage = setting)?;
+        if let Some(p) = up.storage_problem {
+            return Err(Error::Config(p));
+        }
+        self.engine.storage()?.list("instances/", ctx)?;
+        Ok(self.storage_status())
+    }
+
     /// Interactive sign-in (opens the system browser). Stores the refresh token in the OS credential
     /// store and remembers the account name in the settings.
     pub fn google_login(&self, opener: &dyn UrlOpener, ctx: &OpCtx) -> Result<AccountInfo> {
@@ -305,6 +339,9 @@ impl App {
             }
             auth.disconnect().map_err(|e| Error::from(e.to_storage_error()))?;
         }
+        if let StorageSetting::R2 { account_id, access_key_id, .. } = self.settings().storage {
+            let _ = self.creds.delete(&StorageSetting::r2_secret_account(&account_id, &access_key_id));
+        }
         self.update_settings(|s| s.storage = StorageSetting::None)?;
         Ok(())
     }
@@ -313,8 +350,10 @@ impl App {
     pub fn test_storage(&self, ctx: &OpCtx) -> Result<serde_json::Value> {
         let st = self.engine.storage()?;
         let q = st.quota(ctx)?;
+        let t = std::time::Instant::now();
         let n = st.list("instances/", ctx)?.len();
-        Ok(serde_json::json!({ "provider": st.provider_id(), "quota": q, "instances_in_cloud": n }))
+        let list_ms = t.elapsed().as_millis() as u64;
+        Ok(serde_json::json!({ "provider": st.provider_id(), "quota": q, "instances_in_cloud": n, "list_ms": list_ms }))
     }
 
     // ------------------------------------------------------------------------------ instances

@@ -379,6 +379,24 @@ pub enum StorageCmd {
         #[arg(long, default_value = "visible_folder")]
         space: String,
     },
+    /// Use Cloudflare R2. Asks for the secret access key (hidden) and keeps it in the OS credential store.
+    UseR2 {
+        /// Cloudflare account ID (dashboard → R2 → Account details).
+        #[arg(long)]
+        account_id: String,
+        /// The bucket (create it first in the dashboard).
+        #[arg(long)]
+        bucket: String,
+        /// The R2 API token's access key ID.
+        #[arg(long)]
+        access_key_id: String,
+        /// Folder inside the bucket that belongs to PackSync.
+        #[arg(long, default_value = "packsync")]
+        prefix: String,
+        /// Read the secret access key from standard input instead of asking (scripts).
+        #[arg(long)]
+        secret_stdin: bool,
+    },
     /// Check that the connection works.
     Test,
     /// Forget the connection (cloud data is not touched).

@@ -119,7 +119,7 @@ export interface LocalSettings {
 // ------------------------------------------------------------------------------------ storage
 
 export interface StorageStatus {
-  kind: "none" | "local" | "google";
+  kind: "none" | "local" | "google" | "r2";
   connected: boolean;
   detail: string;
   account: string | null;
@@ -137,7 +137,8 @@ export type OfflinePolicy = "play_local" | "block";
 export type StorageSetting =
   | { kind: "none" }
   | { kind: "local"; path: string }
-  | { kind: "google"; space: string; account?: string | null };
+  | { kind: "google"; space: string; account?: string | null }
+  | { kind: "r2"; account_id: string; bucket: string; prefix: string; access_key_id: string };
 
 export interface Settings {
   version: number;

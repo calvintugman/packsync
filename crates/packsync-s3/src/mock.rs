@@ -200,11 +200,7 @@ fn header<'a>(req: &'a tiny_http::Request, name: &str) -> Option<&'a str> {
 }
 
 /// Check the SigV4 `Authorization` header against the request as received.
-fn verify_signature(
-    req: &tiny_http::Request,
-    path: &str,
-    query: &str,
-) -> Result<(), Answer> {
+fn verify_signature(req: &tiny_http::Request, path: &str, query: &str) -> Result<(), Answer> {
     let auth = header(req, "authorization").ok_or_else(|| error(403, "AccessDenied", "no Authorization header"))?;
     let rest = auth
         .strip_prefix("AWS4-HMAC-SHA256 ")
@@ -278,13 +274,7 @@ fn iso(t: std::time::SystemTime) -> String {
     d.format(&time::format_description::well_known::Rfc3339).unwrap_or_default()
 }
 
-fn handle(
-    req: &tiny_http::Request,
-    body: &[u8],
-    bucket: &str,
-    state: &Mutex<State>,
-    page_cap: usize,
-) -> Answer {
+fn handle(req: &tiny_http::Request, body: &[u8], bucket: &str, state: &Mutex<State>, page_cap: usize) -> Answer {
     let url = req.url().to_string();
     let (raw_path, query) = url.split_once('?').unwrap_or((url.as_str(), ""));
     if let Err(e) = verify_signature(req, raw_path, query) {

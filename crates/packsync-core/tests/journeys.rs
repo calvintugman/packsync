@@ -147,7 +147,8 @@ fn a_small_edit_does_not_look_up_every_pack_it_depends_on_except_in_the_periodic
     let a = w.device_with("desktop", |c| c.snapshot.pack_target = 32 * 1024);
     let (_root, info, en) = a.new_instance("pack", &FixtureSpec::small());
     a.upload(en.instance);
-    let pack_lookups = |d: &packsync_core::storage_meter::MeterSnapshot| d.by_prefix.get("packs").map_or(0, |p| p.stats);
+    let pack_lookups =
+        |d: &packsync_core::storage_meter::MeterSnapshot| d.by_prefix.get("packs").map_or(0, |p| p.stats);
 
     let mut lookups = vec![];
     // the first upload was publication 1: edits 1..N-1 are publications 2..N, the last one the full check

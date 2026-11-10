@@ -21,7 +21,7 @@ use crate::settings::{Settings, StorageSetting};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StorageStatus {
-    /// `none`, `local` or `google`.
+    /// `none`, `local`, `google` or `r2`.
     pub kind: String,
     pub connected: bool,
     /// One line for the UI: the folder, or the account and where its files live.
@@ -58,6 +58,8 @@ pub fn client_error_to_error(e: ClientConfigError) -> Error {
 
 /// Counters of the Google Drive provider built most recently in this process (measurements only).
 static DRIVE_STATS: std::sync::Mutex<Option<packsync_drive::StatsHandle>> = std::sync::Mutex::new(None);
+/// The same for an R2 provider.
+static S3_STATS: std::sync::Mutex<Option<Arc<packsync_s3::S3Stats>>> = std::sync::Mutex::new(None);
 
 /// What this process has sent to and received from Google Drive so far: HTTP requests by kind, body
 /// bytes in both directions, retries. `None` when no Google provider was built (local folder, no storage).
@@ -67,6 +69,10 @@ pub fn drive_request_stats() -> Option<packsync_drive::RequestStats> {
 
 /// Cumulative HTTP requests and body bytes of this process's cloud provider (zeros for a local folder).
 pub fn transfer_counts() -> packsync_core::progress::TransferCounts {
+    if let Some(s) = S3_STATS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let (requests, bytes_up, bytes_down, _) = s.snapshot();
+        return packsync_core::progress::TransferCounts { requests, bytes_up, bytes_down };
+    }
     match drive_request_stats() {
         Some(s) => packsync_core::progress::TransferCounts {
             requests: s.total(),
@@ -102,6 +108,24 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
             *DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(drive.stats_handle().clone());
             Ok(Provider { storage: Some(Arc::new(drive)), auth: Some(auth) })
         }
+        StorageSetting::R2 { account_id, bucket, prefix, access_key_id } => {
+            let secret = creds
+                .get(&StorageSetting::r2_secret_account(account_id, access_key_id))
+                .map_err(|e| Error::Config(e.to_string()))?
+                .ok_or_else(|| {
+                    Error::Config(
+                        "the R2 secret access key is not stored on this computer; run `packsync storage use-r2` again"
+                            .into(),
+                    )
+                })?;
+            let st = packsync_s3::S3Storage::new(
+                packsync_s3::S3Config::r2(account_id, bucket, prefix, access_key_id),
+                secret,
+            )
+            .map_err(Error::from)?;
+            *S3_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(st.stats());
+            Ok(Provider { storage: Some(Arc::new(st)), auth: None })
+        }
     }
 }
 
@@ -129,6 +153,13 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
                 ..Default::default()
             }
         }
+        StorageSetting::R2 { account_id, bucket, prefix, .. } => StorageStatus {
+            kind: "r2".into(),
+            // whether the key works is what `packsync storage test` finds out
+            connected: true,
+            detail: format!("Cloudflare R2 — bucket {bucket}, folder {prefix}/ (account {account_id})"),
+            ..Default::default()
+        },
         StorageSetting::Google { space, account } => {
             let client = client_config(settings, paths);
             let (configured, source) = match &client {

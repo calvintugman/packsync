@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use packsync_app::StorageSetting;
 use packsync_core::error::{Error, Result};
@@ -6,6 +6,7 @@ use packsync_drive::oauth::{PrintUrl, SystemBrowser, UrlOpener};
 
 use super::Cx;
 use crate::args::{AuthCmd, DeviceArgs, SettingsCmd, StorageCmd};
+use crate::render::bytes;
 
 fn print_status(w: &mut dyn Write, s: &packsync_app::provider::StorageStatus) -> std::io::Result<()> {
     writeln!(w, "{}{}", s.detail, if s.connected { "  — connected" } else { "  — not connected" })?;
@@ -43,9 +44,37 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
                 _ => Ok(()),
             }
         }
+        StorageCmd::UseR2 { account_id, bucket, access_key_id, prefix, secret_stdin } => {
+            let secret = if secret_stdin || !std::io::stdin().is_terminal() {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).map_err(|e| Error::io("reading the secret access key", e))?;
+                line.trim().to_string()
+            } else {
+                rpassword::prompt_password("R2 secret access key (not shown): ")
+                    .map_err(|e| Error::io("reading the secret access key", e))?
+                    .trim()
+                    .to_string()
+            };
+            let secret = packsync_core::redact::Secret::new(secret);
+            let s = cx.app.use_r2(&account_id, &bucket, &prefix, &access_key_id, &secret, &ctx)?;
+            cx.out.emit(&s, |w| {
+                print_status(w, &s)?;
+                writeln!(w, "The connection works; the secret access key is in the OS credential store.")
+            })
+        }
         StorageCmd::Test => {
             let r = cx.app.test_storage(&ctx)?;
-            cx.out.emit(&r, |w| writeln!(w, "The connection works. {r}"))
+            cx.out.emit(&r, |w| {
+                writeln!(w, "The connection works.")?;
+                writeln!(w, "  storage:   {}", r["provider"].as_str().unwrap_or("?"))?;
+                writeln!(w, "  instances: {} in the cloud", r["instances_in_cloud"])?;
+                writeln!(w, "  listing:   {} ms", r["list_ms"])?;
+                match (r["quota"]["used"].as_u64(), r["quota"]["total"].as_u64()) {
+                    (Some(u), Some(t)) => writeln!(w, "  space:     {} used of {}", bytes(u), bytes(t)),
+                    (Some(u), None) => writeln!(w, "  space:     {} used", bytes(u)),
+                    _ => writeln!(w, "  space:     not reported by this storage"),
+                }
+            })
         }
         StorageCmd::Disconnect { revoke } => {
             if !cx
@@ -69,9 +98,9 @@ pub fn auth(cx: &Cx, c: AuthCmd) -> Result<()> {
                 StorageSetting::None => {
                     cx.app.use_google("visible_folder")?;
                 }
-                StorageSetting::Local { .. } => {
+                StorageSetting::Local { .. } | StorageSetting::R2 { .. } => {
                     return Err(Error::Config(
-                        "the storage is a local folder; run `packsync storage use-google` first".into(),
+                        "Google Drive is not the selected storage; run `packsync storage use-google` first".into(),
                     ));
                 }
             }
