@@ -118,11 +118,12 @@ pub fn process_start_ms(pid: u32) -> Option<i64> {
 /// world is open). Missing locks and probe errors count as "not held".
 pub fn world_locks_held(game_root: &Path) -> Vec<PathBuf> {
     let mut held = vec![];
-    let Ok(rd) = std::fs::read_dir(game_root.join("saves")) else { return held };
+    let saves = game_root.join("saves");
+    let Ok(rd) = std::fs::read_dir(crate::fsutil::long_path(&saves)) else { return held };
     for e in rd.flatten() {
         let lock = e.path().join("session.lock");
         if lock.is_file() && crate::fsutil::is_locked_by_other_process(&lock).unwrap_or(false) {
-            held.push(e.path());
+            held.push(saves.join(e.file_name())); // the caller's spelling, not the `\\?\` form
         }
     }
     held

@@ -159,7 +159,7 @@ pub fn parse_level_nbt(nbt: &[u8]) -> Option<LevelData> {
 }
 
 pub fn read_level_dat(path: &Path) -> Option<LevelData> {
-    let f = File::open(path).ok()?;
+    let f = File::open(crate::fsutil::long_path(path)).ok()?;
     let mut raw = Vec::new();
     GzDecoder::new(f).take(MAX_DECOMPRESSED).read_to_end(&mut raw).ok()?;
     parse_level_nbt(&raw)
@@ -169,7 +169,7 @@ pub fn read_level_dat(path: &Path) -> Option<LevelData> {
 /// it has a `level.dat` (even an unreadable one: the folder name is still reported).
 pub fn list_worlds(game_root: &Path) -> Vec<WorldInfo> {
     let mut out = vec![];
-    let Ok(rd) = std::fs::read_dir(game_root.join("saves")) else { return out };
+    let Ok(rd) = std::fs::read_dir(crate::fsutil::long_path(&game_root.join("saves"))) else { return out };
     for e in rd.flatten() {
         let p = e.path();
         if !p.is_dir() || !p.join("level.dat").is_file() {

@@ -44,9 +44,11 @@ details, so the change-time and lock behaviour below remains unverified on real 
 * **File metadata** (`fsutil.rs`): Unix uses `mtime`, `ctime`, `dev:ino`; Windows uses NTFS write time,
   ChangeTime and the volume-serial/file-id (via `GetFileInformationByHandleEx`, `windows-sys`) so a replaced file
   is noticed even when size and mtime are preserved. The Windows branch has not been compiled by the author.
-* **Game-folder locks:** `session.lock` is probed with POSIX `F_GETLK` on Unix; on Windows by opening it for
-  write, because Java's lock there is a mandatory byte-range lock (a sharing/lock violation, OS error 32 or 33,
-  means "held"). Both are best effort: process detection (below) is the main guard.
+* **Game-folder locks:** `session.lock` is probed with POSIX `F_GETLK` on Unix; on Windows by opening it
+  read-only and reading one byte, because Java's lock there is a mandatory byte-range lock: the file still
+  opens, but reading the locked range fails (OS error 33; a sharing violation on open, 32, also means "held").
+  The probe never writes or takes a lock itself. Both are best effort: process detection (below) is the main
+  guard, and old game versions (1.7.10, so GregTech: New Horizons) do not lock the file at all.
 * **Process detection** (`proc.rs`, Prism adapter): the game is found by its command line and working directory
   under the instance (`-Djava.library.path=<instance>/natives`), via `sysinfo`; Prism is recognised by `--dir`.
   This was verified with the real launcher on Linux; the Windows/macOS process tables behave differently in

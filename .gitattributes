@@ -1,0 +1,10 @@
+# Text files are stored and checked out with LF on every platform. Without this, a Windows checkout
+# with core.autocrlf=true rewrites shell scripts, embedded rule files (include_str!) and test data
+# to CRLF, which changes hashes and breaks `sh` scripts.
+* text=auto eol=lf
+
+*.png  binary
+*.ico  binary
+*.icns binary
+*.lock text eol=lf -diff
+package-lock.json text eol=lf -diff

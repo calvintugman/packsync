@@ -21,6 +21,9 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target/windows}"
 cargo zigbuild --target "$TARGET" --workspace --tests
 cargo zigbuild --target "$TARGET" -p packsync-fake-prism -p packsync-cli   # programs the tests start
 export WINEDEBUG=-all
+# Wine does not enforce byte-range locks on reads; the one test that needs that says so and skips the
+# assertion. On real Windows the variable is not set and the assertion runs.
+export PACKSYNC_TEST_UNDER_WINE=1
 deps="$CARGO_TARGET_DIR/$TARGET/debug/deps"
 fail=0
 # the newest build of each test program (older builds keep their hashed names)

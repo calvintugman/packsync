@@ -155,11 +155,24 @@ mod platform {
     }
 
     pub fn is_locked_by_other_process(path: &Path) -> io::Result<bool> {
-        // Java's FileChannel lock on Windows is a mandatory byte-range lock: opening for write
-        // fails with a sharing/lock violation while the game holds it.
-        match fs::OpenOptions::new().read(true).write(true).open(path) {
+        // Java's `FileChannel.lock()` is a mandatory byte-range lock (`LockFileEx`) on Windows. Such a
+        // lock does NOT stop the file being opened (Java opens it with read/write sharing): it makes
+        // reads and writes of the locked range fail with ERROR_LOCK_VIOLATION (33). So the probe opens
+        // the file read-only and reads one byte: nothing is written and no lock is ever taken, so a
+        // game that starts at the same moment cannot be disturbed by the probe.
+        // A sharing violation on open (32) means someone holds the file exclusively: also "held".
+        use std::io::Read;
+        use std::os::windows::fs::OpenOptionsExt;
+        const SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+        let held = |e: &io::Error| matches!(e.raw_os_error(), Some(32) | Some(33));
+        let mut f = match fs::OpenOptions::new().read(true).share_mode(SHARE_ALL).open(super::long_path(path)) {
+            Ok(f) => f,
+            Err(e) if held(&e) => return Ok(true),
+            Err(e) => return Err(e),
+        };
+        match f.read(&mut [0u8; 1]) {
             Ok(_) => Ok(false),
-            Err(e) if matches!(e.raw_os_error(), Some(32) | Some(33)) => Ok(true),
+            Err(e) if held(&e) => Ok(true),
             Err(e) => Err(e),
         }
     }
@@ -416,6 +429,37 @@ mod tests {
     fn free_space_of_missing_path_uses_ancestor() {
         let d = tempfile::tempdir().unwrap();
         assert!(available_space(&d.path().join("not/yet/there")).unwrap() > 0);
+    }
+
+    /// Windows: the lock Minecraft takes on `session.lock` (Java `FileChannel.lock()` = an exclusive
+    /// `LockFileEx` range) leaves the file openable; only reading it fails. Locks belong to a handle
+    /// there, so a second handle in this process stands in for the game.
+    #[cfg(windows)]
+    #[test]
+    fn lock_probe_sees_a_byte_range_lock_and_an_exclusive_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("session.lock");
+        fs::write(&f, "\u{2603}").unwrap(); // what the game writes
+        assert!(!is_locked_by_other_process(&f).unwrap(), "idle world");
+
+        let game = fs::OpenOptions::new().read(true).write(true).share_mode(7).open(&f).unwrap();
+        game.lock().unwrap();
+        // Wine records byte-range locks but does not enforce them on reads, so this one assertion can
+        // only hold on real Windows (`scripts/windows-check.sh` sets the variable).
+        if std::env::var_os("PACKSYNC_TEST_UNDER_WINE").is_none() {
+            assert!(is_locked_by_other_process(&f).unwrap(), "a byte-range lock is seen although the file opens");
+        } else {
+            eprintln!("skipped under Wine: byte-range lock detection (needs real Windows)");
+        }
+        game.unlock().unwrap();
+        assert!(!is_locked_by_other_process(&f).unwrap(), "released");
+        drop(game);
+
+        let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&f).unwrap();
+        assert!(is_locked_by_other_process(&f).unwrap(), "a file opened without sharing counts as held");
+        drop(exclusive);
+        assert!(!is_locked_by_other_process(&f).unwrap());
     }
 
     #[cfg(unix)]
