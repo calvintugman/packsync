@@ -103,6 +103,44 @@ impl Engine {
         }
     }
 
+    /// Keep this computer's lease of `id` fresh while its hook session lasts (the background `hook lease`
+    /// step): refresh every `every`, stop when the session has ended, or when no game process of the
+    /// instance has been seen once `startup` has passed (the game never started, or died without the
+    /// post-exit hook — Prism runs that only after a clean exit). Returns how many refreshes were written.
+    pub fn keep_lease_fresh(
+        &self,
+        id: InstanceId,
+        every: std::time::Duration,
+        startup: std::time::Duration,
+        ctx: &OpCtx,
+    ) -> Result<u32> {
+        let started = std::time::Instant::now();
+        let mut written = 0;
+        loop {
+            let Some(s) = self.db.sessions_open(id)?.into_iter().next() else { return Ok(written) };
+            if started.elapsed() > startup && !self.game_process_running(id)? {
+                return Ok(written);
+            }
+            let inst = self.instance(id)?;
+            if self.write_lease(&inst, &s, ctx).is_ok() {
+                written += 1;
+            }
+            if !self.sleeper.sleep(every, ctx) {
+                return Ok(written); // cancelled
+            }
+        }
+    }
+
+    /// Is a game process of this instance running (found by its command line or working directory, or
+    /// holding a world's lock)?
+    pub fn game_process_running(&self, id: InstanceId) -> Result<bool> {
+        let inst = self.instance(id)?;
+        let patterns = self.launcher(&inst.launcher).game_process_patterns(&inst.root);
+        let game_dir = if inst.game_root.is_empty() { inst.root.clone() } else { inst.root.join(&inst.game_root) };
+        Ok(!crate::proc::find_writers(&inst.root, &patterns, &[]).is_empty()
+            || !crate::proc::world_locks_held(&game_dir).is_empty())
+    }
+
     /// Remove this computer's advisory lease of `id` unless a session is open again (after a deferred end).
     pub fn release_lease(&self, id: InstanceId, ctx: &OpCtx) -> Result<()> {
         if !self.db.sessions_open(id)?.is_empty() || !self.has_storage() {

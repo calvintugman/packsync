@@ -346,3 +346,33 @@ fn deferred_leases_are_written_and_removed_by_the_background_steps() {
     a.engine.release_lease(en.instance, &a.ctx()).unwrap();
     assert!(!lease(), "…which removes it");
 }
+
+/// Found by review: a session started from Prism wrote its "playing" lease once, which other computers
+/// stop believing after about four minutes. The background step now keeps it fresh while the session
+/// lasts, and stops when the session ends or no game process shows up after the start-up allowance.
+#[test]
+fn the_background_lease_step_refreshes_while_the_session_lasts_and_then_stops() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &packsync_core::testkit::fixtures::FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.defer_leases(true);
+    let minute = std::time::Duration::from_secs(60);
+
+    // a session whose game never appears: the step gives up after the start-up allowance
+    let s = begin(&a, en.instance, "hook-1", false).unwrap();
+    let n = a.engine.keep_lease_fresh(en.instance, minute, std::time::Duration::ZERO, &a.ctx()).unwrap();
+    assert_eq!(n, 0, "no game process: nothing to keep alive");
+
+    // a session that lasts: refreshed until the post-exit hook ends it (the test sleeper does not wait)
+    let engine = a.engine.clone();
+    let ctx = a.ctx();
+    let worker = std::thread::spawn(move || {
+        engine.keep_lease_fresh(en.instance, minute, std::time::Duration::from_secs(3600), &ctx).unwrap()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    a.engine.end_session(s.session, ExitInfo { exit_code: Some(0), clean_signal: true }, false, &a.ctx()).unwrap();
+    let written = worker.join().unwrap();
+    assert!(written >= 1, "the lease was refreshed while the session lasted");
+    assert!(a.sleeper.slept.lock().contains(&minute), "…once a minute");
+}

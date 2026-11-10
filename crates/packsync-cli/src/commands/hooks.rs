@@ -204,7 +204,7 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
             for m in messages {
                 eprintln!("PackSync: {m}");
             }
-                        // pre-launch: write the "playing" lease; post-exit: upload what was saved, then remove it
+            // pre-launch: write the "playing" lease; post-exit: upload what was saved, then remove it
             if let Ok(id) = InstanceId::parse(&args.instance) {
                 spawn_background(id, cli, if pre { "lease" } else { "finish" });
             }
@@ -225,7 +225,11 @@ fn background(cli: &Cli, a: &HookArgs, finish: bool, out: &Out) -> Result<i32> {
     let r = if finish {
         app.engine().upload_pending(id, false, &ctx).map(|_| ()).and_then(|_| app.engine().release_lease(id, &ctx))
     } else {
-        app.engine().lease_for_open_session(id, &ctx)
+        // the lease is fresh for 2 × 120 s; refreshed every 60 s while the game runs (GTNH can take
+        // several minutes to start, so a missing game process only counts after 10 minutes)
+        app.engine()
+            .keep_lease_fresh(id, std::time::Duration::from_secs(60), std::time::Duration::from_secs(600), &ctx)
+            .map(|_| ())
     };
     if let Err(e) = r {
         // recorded in the activity log (this process has no terminal)
