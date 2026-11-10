@@ -99,7 +99,7 @@ impl Transport {
             .timeout_recv_response(Some(timeouts.response))
             .timeout_send_body(Some(timeouts.body_base))
             .timeout_recv_body(Some(timeouts.body_base))
-            .max_idle_connections_per_host(8)
+            .max_idle_connections_per_host(16)
             .build();
         Transport { agent: config.into(), timeouts, stats }
     }

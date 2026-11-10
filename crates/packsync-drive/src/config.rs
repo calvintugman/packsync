@@ -197,6 +197,9 @@ pub struct DriveConfig {
     /// How long `list` trusts cached folder IDs before re-resolving (duplicate folders created by
     /// other devices become visible after at most this long).
     pub folder_cache_ttl: Duration,
+    /// Trust a persisted folder set without a query when it was confirmed well after its newest folder
+    /// was created (see `FOLDER_STABLE_AFTER_MS`); off for tests that move folders under the adapter.
+    pub trust_stable_folders: bool,
     /// How often a single download may be resumed after a dropped connection.
     pub max_download_resumes: u32,
     /// Remember every object/folder created by this instance (used by the self-test to clean up
@@ -243,6 +246,7 @@ impl Default for DriveConfig {
             retry: RetryPolicy::network(),
             max_retry_after: Duration::from_secs(120),
             folder_cache_ttl: Duration::from_secs(60),
+            trust_stable_folders: true,
             max_download_resumes: 5,
             track_created: false,
             stats: StatsHandle::default(),

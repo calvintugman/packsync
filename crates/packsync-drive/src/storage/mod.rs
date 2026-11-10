@@ -34,7 +34,7 @@ use crate::model::{
 };
 use crate::oauth::AccessTokenSource;
 use crate::stats::{RequestKind, RequestStats, StatsHandle};
-use crate::util::{is_valid_drive_id, q_string, truncate_utf8, with_query};
+use crate::util::{is_valid_drive_id, now_ms, q_string, truncate_utf8, with_query};
 
 /// Upper bound on pages per listing (1000 × 10 000 objects); protects against servers that never
 /// stop returning page tokens.
@@ -71,6 +71,35 @@ struct DirEntry {
     ids: Vec<FolderRef>,
     /// `None` for hints loaded from the persisted state (never verified by this process).
     fetched: Option<Instant>,
+    /// When a folder query last confirmed this set (wall clock, persisted).
+    confirmed_ms: Option<i64>,
+}
+
+/// A folder set confirmed by a query made this long after its newest folder was created cannot gain a
+/// duplicate any more: a duplicate only appears when two computers create the folder at the same time,
+/// and a listing lags a creation by seconds, not an hour. Such a set is trusted from the persisted cache
+/// without a query (each lookup would cost a request per path component, on every run).
+const FOLDER_STABLE_AFTER_MS: i64 = 60 * 60 * 1000;
+/// ...but re-confirmed once a day anyway (folders moved or deleted by hand in Drive).
+const FOLDER_RECHECK_MS: i64 = 24 * 60 * 60 * 1000;
+
+/// The persisted form of a folder set: the IDs and when they were confirmed. (Older versions stored
+/// the bare list; it still loads, as unconfirmed.)
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum PersistedDir {
+    Confirmed { ids: Vec<FolderRef>, confirmed_ms: i64 },
+    Legacy(Vec<FolderRef>),
+}
+
+impl DirEntry {
+    /// Confirmed long enough after its newest folder appeared, and recently enough.
+    fn stable(&self, now_ms: i64) -> bool {
+        let Some(confirmed) = self.confirmed_ms else { return false };
+        let newest = self.ids.iter().map(|f| f.created_ms.unwrap_or(i64::MAX)).max().unwrap_or(i64::MAX);
+        now_ms.saturating_sub(confirmed) < FOLDER_RECHECK_MS
+            && confirmed.saturating_sub(newest) >= FOLDER_STABLE_AFTER_MS
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,22 +350,31 @@ impl Inner {
             return Some(e.clone());
         }
         let raw = self.state.load(&self.state_key("dir", path))?;
-        let mut ids: Vec<FolderRef> = serde_json::from_str(&raw).ok()?;
+        let (mut ids, confirmed_ms) = match serde_json::from_str::<PersistedDir>(&raw).ok()? {
+            PersistedDir::Confirmed { ids, confirmed_ms } => (ids, Some(confirmed_ms)),
+            PersistedDir::Legacy(ids) => (ids, None),
+        };
         ids.retain(|f| is_valid_drive_id(&f.id));
         if ids.is_empty() {
             return None;
         }
         sort_folders(&mut ids);
-        Some(DirEntry { ids, fetched: None })
+        let e = DirEntry { ids, fetched: None, confirmed_ms };
+        self.dirs.lock().insert(path.to_string(), e.clone());
+        Some(e)
     }
 
     fn store_dir(&self, path: &str, ids: &[FolderRef]) {
         let mut ids = ids.to_vec();
         sort_folders(&mut ids);
-        if let Ok(json) = serde_json::to_string(&ids) {
+        let confirmed_ms = now_ms();
+        if let Ok(json) = serde_json::to_string(&PersistedDir::Confirmed { ids: ids.clone(), confirmed_ms }) {
             self.state.save(&self.state_key("dir", path), &json);
         }
-        self.dirs.lock().insert(path.to_string(), DirEntry { ids, fetched: Some(Instant::now()) });
+        self.dirs.lock().insert(
+            path.to_string(),
+            DirEntry { ids, fetched: Some(Instant::now()), confirmed_ms: Some(confirmed_ms) },
+        );
     }
 
     /// Forget `rel` and all its ancestors (a parent vanished or was trashed).
@@ -360,12 +398,14 @@ impl Inner {
     fn is_fresh(&self, e: &DirEntry, fresh: Fresh) -> bool {
         match fresh {
             Fresh::Any => true,
-            Fresh::Ttl => e.fetched.is_some_and(|t| t.elapsed() < self.cfg.folder_cache_ttl),
+            Fresh::Ttl => self.entry_recent(e),
         }
     }
 
+    /// As good as a fresh query: queried by this process within the TTL, or a stable persisted set.
     fn entry_recent(&self, e: &DirEntry) -> bool {
         e.fetched.is_some_and(|t| t.elapsed() < self.cfg.folder_cache_ttl)
+            || (self.cfg.trust_stable_folders && e.stable(now_ms()))
     }
 
     // ----- queries -----------------------------------------------------------------------
@@ -1004,6 +1044,41 @@ impl Storage for DriveStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_set_is_trusted_without_a_query_only_when_confirmed_well_after_its_creation() {
+        let hour = 60 * 60 * 1000;
+        let now = 100 * 24 * hour;
+        let entry = |created: Option<i64>, confirmed: Option<i64>| DirEntry {
+            ids: vec![FolderRef { id: "a".repeat(28), created_ms: created }],
+            fetched: None,
+            confirmed_ms: confirmed,
+        };
+        // created a day ago, confirmed 10 minutes ago: no racing duplicate can still appear
+        assert!(entry(Some(now - 24 * hour), Some(now - 10 * 60_000)).stable(now));
+        // confirmed only 10 minutes after the folder appeared: a duplicate might not have been listed yet
+        assert!(!entry(Some(now - 2 * hour), Some(now - 2 * hour + 10 * 60_000)).stable(now));
+        // confirmed more than a day ago: re-checked (moved or deleted by hand)
+        assert!(!entry(Some(now - 30 * 24 * hour), Some(now - 25 * hour)).stable(now));
+        // never confirmed (an older version's cache), or no creation time known
+        assert!(!entry(Some(now - 24 * hour), None).stable(now));
+        assert!(!entry(None, Some(now - 60_000)).stable(now));
+    }
+
+    #[test]
+    fn the_folder_cache_of_an_older_version_still_loads() {
+        let legacy = r#"[{"id":"0123456789abcdefghijklmnopqr","c":5}]"#;
+        assert!(matches!(serde_json::from_str::<PersistedDir>(legacy).unwrap(), PersistedDir::Legacy(v) if v.len() == 1));
+        let new = serde_json::to_string(&PersistedDir::Confirmed {
+            ids: vec![FolderRef { id: "0123456789abcdefghijklmnopqr".into(), created_ms: Some(5) }],
+            confirmed_ms: 9,
+        })
+        .unwrap();
+        assert!(matches!(
+            serde_json::from_str::<PersistedDir>(&new).unwrap(),
+            PersistedDir::Confirmed { confirmed_ms: 9, .. }
+        ));
+    }
 
     #[test]
     fn key_splitting_and_components() {
