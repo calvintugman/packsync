@@ -517,6 +517,21 @@ impl Storage for S3Storage {
         Ok(Box::new(std::io::Cursor::new(r.body)))
     }
 
+    fn get_with_info(&self, key: &str, max: u64, ctx: &OpCtx) -> StorageResult<Option<(Vec<u8>, ObjectInfo)>> {
+        validate_key(key)?;
+        let r = self.call(ctx, "downloading", "GET", &self.object_path(key), &[], &[], None, max)?;
+        match r.status {
+            200 => {
+                let mut info = self.info_from_head(key, &r);
+                info.size = r.body.len() as u64;
+                ctx.add_down(r.body.len() as u64);
+                Ok(Some((r.body, info)))
+            }
+            404 => Ok(None),
+            _ => Err(classify(&r, "downloading")),
+        }
+    }
+
     fn put(&self, key: &str, src: PutSource<'_>, opts: &PutOptions, ctx: &OpCtx) -> StorageResult<ObjectInfo> {
         validate_key(key)?;
         if key.ends_with('/') {

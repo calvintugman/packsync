@@ -136,6 +136,68 @@ pub fn backoff_ms(attempts: u32) -> i64 {
 
 impl Uploader<'_> {
     /// Publish one snapshot. See the module docs for the protocol.
+    /// The fast path of a publication, for a computer that knows the cloud has not moved since its base
+    /// (its HEAD pointer is where it left it): no listings and no lookups. The new packs and their index
+    /// (side by side), then the manifest. The caller then moves the HEAD pointer by compare-and-swap; if
+    /// that fails, someone else published meanwhile and the caller takes the full path, which sees both
+    /// versions. Returns `None` when this snapshot cannot take the fast path (the caller uses `publish`).
+    pub fn publish_fast(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Option<UploadReport>> {
+        let db = self.db;
+        let Some(row) = db.snapshot_get(inst, id)? else { return Ok(None) };
+        if !matches!(row.state, SnapshotState::LocalComplete) {
+            return Ok(None);
+        }
+        let staged_rows = db.staged_for(id)?;
+        if staged_rows.iter().any(|p| p.next_attempt_ms.is_some()) {
+            return Ok(None); // an earlier attempt failed: the full path honours its backoff
+        }
+        let stored = std::fs::read(manifest_path(self.state_dir, id))
+            .map_err(|e| Error::io("reading local snapshot manifest", e))?;
+        let (m, _) = Manifest::decode(&stored, Some(id))?;
+        let meta = load_staged_meta(self.state_dir, id)?;
+        if meta.derived {
+            return Ok(None);
+        }
+        // No completeness check here: the fast path only publishes a snapshot created moments ago by the
+        // same operation, and creating it already refused any file whose data is neither in its own packs
+        // nor known to be in the cloud (`required_packs` in snapshot.rs); cloud data reported lost turns
+        // the fast path off. The full path checks again because time passes between saving and uploading.
+        db.snapshot_set_state(inst, id, SnapshotState::Uploading)?;
+        let mut report = UploadReport {
+            snapshot: id,
+            packs_uploaded: 0,
+            packs_already_present: 0,
+            bytes_uploaded: 0,
+            state: SnapshotState::Uploading,
+            deferred_until_ms: None,
+        };
+        ctx.mark(format!("fast publish: {} new packs and their index", meta.packs.len()));
+        let none = HashMap::new();
+        let (packs_res, index_res) = std::thread::scope(|s| {
+            let index = (!meta.packs.is_empty())
+                .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), ctx)));
+            let packs = self.upload_packs(id, &meta.packs, &none, &mut report, ctx);
+            (packs, index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+        });
+        let verified = packs_res?;
+        crate::failpoint!("upload.after_packs")?;
+        if let Some(index_id) = index_res.transpose()? {
+            self.remote.note_uploaded_index(index_id)?;
+        }
+        crate::failpoint!("upload.after_index")?;
+        if let Some(p) = meta.packs.iter().find(|p| verified.get(&p.id) != Some(&p.size)) {
+            return Err(Error::Corrupt(format!("pack {} did not verify after upload", p.id.short())));
+        }
+        crate::failpoint!("publish.before_manifest")?;
+        ctx.mark(format!("fast publish: manifest ({} bytes)", stored.len()));
+        self.remote.put_commit(&m, id, &stored, ctx)?;
+        crate::failpoint!("publish.after_manifest")?;
+        db.snapshot_set_state(inst, id, SnapshotState::Published)?;
+        db.set_publish_blocked(inst, None)?;
+        report.state = SnapshotState::Published;
+        Ok(Some(report))
+    }
+
     pub fn publish(&self, inst: InstanceId, id: SnapshotId, force: bool, ctx: &OpCtx) -> Result<UploadReport> {
         let db = self.db;
         let row = db.snapshot_get(inst, id)?.ok_or_else(|| Error::NotFound(format!("snapshot {}", id.short())))?;

@@ -23,7 +23,9 @@ type Answer = (u16, Vec<(String, String)>, Vec<u8>);
 
 #[derive(Clone)]
 struct Object {
+    /// The body, or empty when it is kept in a file (see [`MockS3::start_on_disk`]).
     data: Vec<u8>,
+    len: usize,
     etag: String,
     meta: BTreeMap<String, String>,
     modified: std::time::SystemTime,
@@ -32,6 +34,20 @@ struct Object {
 #[derive(Default)]
 struct State {
     objects: BTreeMap<String, Object>,
+    /// Keep bodies in files here instead of in memory (large benchmark uploads).
+    dir: Option<std::path::PathBuf>,
+}
+
+impl State {
+    fn body_path(&self, key: &str) -> Option<std::path::PathBuf> {
+        self.dir.as_ref().map(|d| d.join(hex::encode(Md5::digest(key.as_bytes()))))
+    }
+    fn body(&self, key: &str, o: &Object) -> Vec<u8> {
+        match self.body_path(key) {
+            Some(p) => std::fs::read(p).unwrap_or_default(),
+            None => o.data.clone(),
+        }
+    }
 }
 
 pub struct MockS3 {
@@ -94,6 +110,14 @@ fn query_pairs(q: &str) -> Vec<(String, String)> {
 impl MockS3 {
     pub fn start(bucket: &str) -> MockS3 {
         Self::start_with(bucket, 1000)
+    }
+
+    /// Like [`MockS3::start`], keeping object bodies in files under `dir` (for multi-gigabyte runs).
+    pub fn start_on_disk(bucket: &str, dir: &std::path::Path) -> MockS3 {
+        let m = Self::start_with(bucket, 1000);
+        std::fs::create_dir_all(dir).expect("create the mock's data folder");
+        m.state.lock().dir = Some(dir.to_path_buf());
+        m
     }
 
     pub fn start_with(bucket: &str, page_cap: usize) -> MockS3 {
@@ -325,10 +349,16 @@ fn handle(req: &tiny_http::Request, body: &[u8], bucket: &str, state: &Mutex<Sta
                     n.strip_prefix("x-amz-meta-").map(|k| (k.to_string(), h.value.as_str().to_string()))
                 })
                 .collect();
-            st.objects.insert(
-                key,
-                Object { data: body.to_vec(), etag: etag.clone(), meta, modified: std::time::SystemTime::now() },
-            );
+            let data = if let Some(p) = st.body_path(&key) {
+                if std::fs::write(&p, body).is_err() {
+                    return error(500, "InternalError", "the mock could not store the object");
+                }
+                vec![]
+            } else {
+                body.to_vec()
+            };
+            let o = Object { data, len: body.len(), etag: etag.clone(), meta, modified: std::time::SystemTime::now() };
+            st.objects.insert(key, o);
             (200, vec![("ETag".into(), format!("\"{etag}\""))], vec![])
         }
         ("GET", false) | ("HEAD", false) => {
@@ -348,7 +378,7 @@ fn handle(req: &tiny_http::Request, body: &[u8], bucket: &str, state: &Mutex<Sta
                 hs.push((format!("x-amz-meta-{k}"), v.clone()));
             }
             if method == "HEAD" {
-                return (200, hs, o.data.clone());
+                return (200, hs, st.body(&key, o));
             }
             if let Some(r) = header(req, "range") {
                 let spec = r.trim().strip_prefix("bytes=").unwrap_or("");
@@ -356,13 +386,14 @@ fn handle(req: &tiny_http::Request, body: &[u8], bucket: &str, state: &Mutex<Sta
                 let (Ok(a), Ok(b)) = (a.parse::<usize>(), b.parse::<usize>()) else {
                     return error(400, "InvalidRange", "bad range");
                 };
-                if a >= o.data.len() || b < a {
+                let data = st.body(&key, o);
+                if a >= data.len() || b < a {
                     return error(416, "InvalidRange", "The requested range is not satisfiable");
                 }
-                let b = b.min(o.data.len() - 1);
-                return (206, hs, o.data[a..=b].to_vec());
+                let b = b.min(data.len() - 1);
+                return (206, hs, data[a..=b].to_vec());
             }
-            (200, hs, o.data.clone())
+            (200, hs, st.body(&key, o))
         }
         ("DELETE", false) => {
             state.lock().objects.remove(&key);
@@ -421,7 +452,7 @@ fn list(query: &str, state: &Mutex<State>, page_cap: usize) -> Answer {
                 xml_escape(k),
                 iso(o.modified),
                 o.etag,
-                o.data.len()
+                o.len
             )),
             None => x.push_str(&format!("<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>", xml_escape(k))),
         }

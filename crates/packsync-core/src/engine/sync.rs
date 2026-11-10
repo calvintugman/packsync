@@ -7,13 +7,22 @@ use crate::db::{InstanceState, Origin, SnapshotRow, SnapshotState};
 use crate::graph::{self, Decision, Graph};
 use crate::manifest::SnapshotKind;
 use crate::progress::{Level, Phase};
-use crate::remote::LeaseRecord;
+use crate::remote::{HeadPointer, LeaseRecord};
 use crate::restore::{self, RestoreEnv};
 use crate::scan::{ScanMode, hash_phase, walk};
 use crate::snapshot::{self, SnapshotOutcome, SnapshotRequest};
 use crate::stage::CountingSink;
 use crate::storage::StorageError;
 use crate::upload::Uploader;
+
+/// Database key prefix: the HEAD pointer (snapshot and storage version) this computer last saw or wrote.
+const KNOWN_HEAD: &str = "known_head:";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct KnownHead {
+    snapshot: SnapshotId,
+    version: String,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct CloudView {
@@ -301,6 +310,7 @@ impl Engine {
         self.require_state(&inst, &[InstanceState::Ok, InstanceState::Conflict, InstanceState::CrashPending])?;
         let _lock = self.lock(id, "snapshot")?;
         if !opts.allow_running {
+            ctx.mark("snapshot: check that no game is running");
             self.ensure_idle(&inst)?;
         }
         self.snapshot_locked(&inst, opts, ctx)
@@ -313,6 +323,7 @@ impl Engine {
         ctx: &OpCtx,
     ) -> Result<SnapshotReport> {
         let ctx = &ctx.clone().with_instance(inst.id);
+        ctx.mark("snapshot: read the rules and the base manifest");
         let (rules, rules_text) = self.rules_for(inst, ctx)?;
         let base = inst.base_snapshot.map(|b| self.manifest(inst.id, b, ctx).map(|m| (m, b))).transpose()?;
         let launcher = self.launcher(&inst.launcher);
@@ -419,6 +430,27 @@ impl Engine {
     /// operation, so the local copy is known to be clean and is not scanned (and re-hashed) again. A
     /// fast-forward still proves it under the instance lock before it touches anything.
     fn reconcile_inner(
+        &self,
+        id: InstanceId,
+        opts: ReconcileOpts,
+        just_saved: bool,
+        ctx: &OpCtx,
+    ) -> Result<ReconcileReport> {
+        let rep = self.reconcile_full(id, opts, just_saved, ctx)?;
+        if matches!(
+            rep,
+            ReconcileReport::UpToDate { .. }
+                | ReconcileReport::FastForwarded { .. }
+                | ReconcileReport::LocalAhead { uploaded: true, .. }
+        ) && let Err(e) = self.sync_head_pointer(id, ctx)
+        {
+            tracing::info!(target: "packsync_core", "HEAD pointer not updated: {e}");
+            let _ = self.set_known_head(id, None);
+        }
+        Ok(rep)
+    }
+
+    fn reconcile_full(
         &self,
         id: InstanceId,
         opts: ReconcileOpts,
@@ -629,8 +661,172 @@ impl Engine {
                 Err(e) => return Err(e),
             }
         }
+        if just_saved
+            && let Some(s) = &snap
+            && let Some(rep) = self.try_fast_sync(id, &s.result, ctx)?
+        {
+            return Ok((snap, rep));
+        }
         let rep = self.reconcile_inner(id, ReconcileOpts::default(), just_saved, ctx)?;
         Ok((snap, rep))
+    }
+
+    // ---- HEAD pointer fast path -------------------------------------------------------------------------
+
+    fn known_head(&self, id: InstanceId) -> Result<Option<KnownHead>> {
+        Ok(self.db.meta_get(&format!("{KNOWN_HEAD}{id}"))?.and_then(|v| serde_json::from_str(&v).ok()))
+    }
+
+    fn set_known_head(&self, id: InstanceId, k: Option<&KnownHead>) -> Result<()> {
+        match k {
+            Some(k) => self.db.meta_set(&format!("{KNOWN_HEAD}{id}"), &serde_json::to_string(k)?),
+            None => self.db.meta_delete(&format!("{KNOWN_HEAD}{id}")),
+        }
+    }
+
+    /// Storage with atomic compare-and-swap (R2/S3): only there is a HEAD pointer kept.
+    fn head_pointer_remote(&self) -> Option<crate::remote::Remote> {
+        self.remote().ok().filter(|r| r.storage.capabilities().conditional_write)
+    }
+
+    fn new_head_pointer(&self, id: InstanceId, snapshot: SnapshotId, parent: Option<SnapshotId>) -> HeadPointer {
+        let (device_id, device_name) = self.device();
+        HeadPointer {
+            format: crate::remote::HEAD_POINTER_FORMAT.into(),
+            version: 1,
+            instance: id,
+            snapshot,
+            parent,
+            device_id,
+            device_name,
+            updated: crate::manifest::now_rfc3339(),
+        }
+    }
+
+    /// The fast path of `sync` (see [`HeadPointer`]): when this computer's last known HEAD is still the
+    /// cloud's, "nothing changed" is one read and a new snapshot is published with no listing at all.
+    /// `None`: not applicable or the cloud moved — the caller takes the full path.
+    fn try_fast_sync(&self, id: InstanceId, result: &SnapshotResult, ctx: &OpCtx) -> Result<Option<ReconcileReport>> {
+        let Some(remote) = self.head_pointer_remote() else { return Ok(None) };
+        let inst = self.instance(id)?;
+        if inst.state != InstanceState::Ok || self.db.deep_check_due(id)?.is_some() {
+            return Ok(None);
+        }
+        let Some(known) = self.known_head(id)? else { return Ok(None) };
+        self.guard_provider(&inst)?;
+        let ctx = &ctx.clone().with_instance(id);
+        match result {
+            SnapshotResult::Unchanged { base } => {
+                if inst.base_snapshot != Some(*base) || known.snapshot != *base {
+                    return Ok(None);
+                }
+                ctx.mark("fast path: read HEAD");
+                match remote.get_head_pointer(id, ctx) {
+                    Ok(Some((p, v))) if p.snapshot == *base => {
+                        self.set_known_head(id, Some(&KnownHead { snapshot: *base, version: v }))?;
+                        Ok(Some(ReconcileReport::UpToDate { head: *base }))
+                    }
+                    Ok(_) => Ok(None),
+                    Err(e) if is_offline(&e) => {
+                        Ok(Some(ReconcileReport::Offline { base: inst.base_snapshot, reason: e.to_string() }))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            SnapshotResult::Created { id: sid } => {
+                let graph = Graph::load(&self.db, id)?;
+                if graph.unpublished_in_order() != vec![*sid]
+                    || graph.get(*sid).map(|n| n.parents.as_slice()) != Some(&[known.snapshot][..])
+                    || self.db.full_check_peek(id, crate::upload::FULL_CHECK_EVERY)?
+                {
+                    return Ok(None);
+                }
+                let _ul = match crate::lock::InstanceLock::try_acquire_kind(&self.locks_dir(), id, "upload", "upload") {
+                    Ok(l) => l,
+                    Err(Error::Busy(_)) => return Ok(None),
+                    Err(e) => return Err(e),
+                };
+                let up = Uploader {
+                    remote: &remote,
+                    db: &self.db,
+                    state_dir: &self.cfg.state_dir,
+                    device: self.device(),
+                    concurrency: self.cfg.upload_concurrency,
+                };
+                match up.publish_fast(id, *sid, ctx) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Ok(None),
+                    Err(e) if is_offline(&e) => {
+                        return Ok(Some(ReconcileReport::LocalAhead {
+                            snapshots: vec![*sid],
+                            uploaded: false,
+                            upload_error: Some(e.to_string()),
+                        }));
+                    }
+                    Err(e) => return Err(e),
+                }
+                ctx.mark("fast path: move HEAD");
+                let p = self.new_head_pointer(id, *sid, Some(known.snapshot));
+                match remote.swap_head_pointer(&p, Some(known.version), ctx)? {
+                    Some(v) => {
+                        // the storage's listings are strongly consistent: published is discoverable
+                        self.db.snapshot_set_state(id, *sid, SnapshotState::Visible)?;
+                        let _ = std::fs::remove_dir_all(snapshot::snapshot_staging_dir(&self.cfg.state_dir, *sid));
+                        self.db.staged_remove_snapshot(*sid)?;
+                        self.db.count_publication(id, crate::upload::FULL_CHECK_EVERY)?;
+                        self.set_known_head(id, Some(&KnownHead { snapshot: *sid, version: v }))?;
+                        let pid = remote.provider_id();
+                        self.db.instance_update(id, |r| {
+                            r.last_synced_ms = Some(crate::db::now_ms());
+                            r.provider_id = Some(pid);
+                        })?;
+                        Ok(Some(ReconcileReport::LocalAhead {
+                            snapshots: vec![*sid],
+                            uploaded: true,
+                            upload_error: None,
+                        }))
+                    }
+                    // someone else published since: the snapshot is in the cloud, the full path sees both
+                    None => {
+                        self.set_known_head(id, None)?;
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
+    /// After the full path: point HEAD at this computer's base when that is a published descendant of
+    /// where HEAD is (or there is no HEAD yet), and remember it so the next sync can take the fast path.
+    /// Best effort: any failure just leaves the next sync on the full path.
+    fn sync_head_pointer(&self, id: InstanceId, ctx: &OpCtx) -> Result<()> {
+        let Some(remote) = self.head_pointer_remote() else { return Ok(()) };
+        let inst = self.instance(id)?;
+        let Some(base) = inst.base_snapshot else { return Ok(()) };
+        let published = self.db.snapshot_get(id, base)?.is_some_and(|r| {
+            matches!(r.state, SnapshotState::Published | SnapshotState::Visible | SnapshotState::Remote)
+        });
+        if !published {
+            return self.set_known_head(id, None);
+        }
+        ctx.mark("HEAD pointer");
+        let known = match remote.get_head_pointer(id, ctx)? {
+            Some((p, v)) if p.snapshot == base => Some(KnownHead { snapshot: base, version: v }),
+            Some((p, v)) => {
+                let g = Graph::load(&self.db, id)?;
+                if g.is_ancestor(p.snapshot, base) == crate::graph::Relation::Yes {
+                    let np = self.new_head_pointer(id, base, Some(p.snapshot));
+                    remote.swap_head_pointer(&np, Some(v), ctx)?.map(|v| KnownHead { snapshot: base, version: v })
+                } else {
+                    None
+                }
+            }
+            None => {
+                let np = self.new_head_pointer(id, base, None);
+                remote.swap_head_pointer(&np, None, ctx)?.map(|v| KnownHead { snapshot: base, version: v })
+            }
+        };
+        self.set_known_head(id, known.as_ref())
     }
 
     /// Re-hash the whole instance against its base snapshot (a *full* scan, ignoring the index).

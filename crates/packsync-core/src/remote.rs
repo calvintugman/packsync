@@ -66,6 +66,10 @@ pub fn leases_prefix(inst: InstanceId) -> String {
 pub fn lease_key(inst: InstanceId, dev: DeviceId) -> String {
     format!("instances/{inst}/leases/{dev}.json")
 }
+/// The instance's HEAD pointer: which snapshot is current, kept by compare-and-swap (see [`HeadPointer`]).
+pub fn head_pointer_key(inst: InstanceId) -> String {
+    format!("instances/{inst}/HEAD.json")
+}
 pub fn expired_prefix(inst: InstanceId) -> String {
     format!("instances/{inst}/expired/")
 }
@@ -75,6 +79,29 @@ pub fn expired_key(inst: InstanceId, id: SnapshotId) -> String {
 
 fn parse_name<'a>(key: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
     key.strip_prefix(prefix)?.strip_suffix(suffix)
+}
+
+pub const HEAD_POINTER_FORMAT: &str = "packsync.headptr";
+
+/// `instances/<id>/HEAD.json`: the snapshot this instance is at, moved only by compare-and-swap.
+///
+/// It lets a computer whose last known HEAD is still current skip every listing: "nothing changed in
+/// the cloud" is one read, and publishing is the new packs, the manifest and one conditional write.
+/// It is kept only on storage whose conditional writes are atomic (R2/S3); the history graph built
+/// from `commits/` stays the authority — HEAD is a fast path, and every disagreement (a failed swap, a
+/// HEAD this computer did not expect) sends the computer down the full path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeadPointer {
+    pub format: String,
+    pub version: u32,
+    pub instance: InstanceId,
+    pub snapshot: SnapshotId,
+    /// The snapshot the previous HEAD pointed at.
+    pub parent: Option<SnapshotId>,
+    pub device_id: DeviceId,
+    pub device_name: String,
+    /// RFC 3339.
+    pub updated: String,
 }
 
 /// One commit as seen in a listing (before its manifest has been read).
@@ -729,6 +756,38 @@ impl Remote {
     }
 
     // ------------------------------------------------------------------ heads and leases
+    /// The HEAD pointer and its version (`None` if there is none yet).
+    pub fn get_head_pointer(&self, inst: InstanceId, ctx: &OpCtx) -> Result<Option<(HeadPointer, String)>> {
+        let key = head_pointer_key(inst);
+        let Some((bytes, info)) =
+            self.call(ctx, "read HEAD", |_| self.storage.get_with_info(&key, MAX_RECORD_BYTES, ctx))?
+        else {
+            return Ok(None);
+        };
+        let p: HeadPointer =
+            serde_json::from_slice(&bytes).map_err(|e| Error::invalid("HEAD pointer", e.to_string()))?;
+        if p.format != HEAD_POINTER_FORMAT || p.version != 1 || p.instance != inst {
+            return Err(Error::invalid("HEAD pointer", "not a version 1 PackSync HEAD of this instance"));
+        }
+        let v = info.version.ok_or_else(|| Error::invalid("HEAD pointer", "the storage reports no version"))?;
+        Ok(Some((p, v)))
+    }
+
+    /// Move the HEAD pointer only if it is still at `expected` (`None`: only if there is none). Returns
+    /// the new version; `Ok(None)` when someone else moved it first (nothing was changed).
+    pub fn swap_head_pointer(&self, p: &HeadPointer, expected: Option<String>, ctx: &OpCtx) -> Result<Option<String>> {
+        let bytes = serde_json::to_vec(p)?;
+        let key = head_pointer_key(p.instance);
+        let opts = PutOptions::if_version(expected).with_tag("ps", "1").with_tag("kind", "headptr");
+        match self.storage.put(&key, PutSource::Bytes(&bytes), &opts, ctx) {
+            Ok(info) => {
+                Ok(Some(info.version.ok_or_else(|| Error::invalid("HEAD pointer", "the storage reports no version"))?))
+            }
+            Err(StorageError::Conflict(_)) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn put_head(&self, inst: InstanceId, rec: &HeadRecord, ctx: &OpCtx) -> Result<()> {
         let bytes = serde_json::to_vec(rec)?;
         let key = head_key(inst, rec.device_id);

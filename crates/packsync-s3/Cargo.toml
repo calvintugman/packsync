@@ -28,6 +28,10 @@ tracing.workspace = true
 uuid.workspace = true
 tiny_http = { workspace = true, optional = true }
 
+[[example]]
+name = "mock-s3-server"
+required-features = ["mock"]
+
 [dev-dependencies]
 packsync-core = { workspace = true, features = ["testkit"] }
 packsync-s3 = { path = ".", features = ["mock"] }

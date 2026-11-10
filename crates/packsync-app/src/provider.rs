@@ -118,11 +118,12 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
                             .into(),
                     )
                 })?;
-            let st = packsync_s3::S3Storage::new(
-                packsync_s3::S3Config::r2(account_id, bucket, prefix, access_key_id),
-                secret,
-            )
-            .map_err(Error::from)?;
+            let mut cfg = packsync_s3::S3Config::r2(account_id, bucket, prefix, access_key_id);
+            // testing only: another S3-compatible endpoint (the mock server, MinIO)
+            if let Ok(ep) = std::env::var("PACKSYNC_R2_ENDPOINT") {
+                cfg.endpoint = ep;
+            }
+            let st = packsync_s3::S3Storage::new(cfg, secret).map_err(Error::from)?;
             *S3_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(st.stats());
             Ok(Provider { storage: Some(Arc::new(st)), auth: None })
         }

@@ -672,9 +672,25 @@ impl Db {
             }
             if let Some((inst, rows)) = c.index {
                 let k = inst.to_string();
-                tx.execute("DELETE FROM file_index WHERE instance_id=?1", [&k])?;
+                // With the index as it was read before the scan, only what changed is written (a large
+                // instance has tens of thousands of rows; rewriting all of them cost 0.14 s per sync).
+                // Without it, the index is replaced as a whole.
+                let rows: Vec<&IndexRow> = match c.index_before {
+                    Some(before) => {
+                        let now: std::collections::HashSet<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+                        let mut del = tx.prepare_cached("DELETE FROM file_index WHERE instance_id=?1 AND path=?2")?;
+                        for gone in before.keys().filter(|p| !now.contains(p.as_str())) {
+                            del.execute(params![k, gone])?;
+                        }
+                        rows.iter().filter(|r| before.get(&r.path) != Some(*r)).collect()
+                    }
+                    None => {
+                        tx.execute("DELETE FROM file_index WHERE instance_id=?1", [&k])?;
+                        rows.iter().collect()
+                    }
+                };
                 let mut st = tx.prepare(
-                    "INSERT INTO file_index(instance_id,path,size,mtime_ns,ctime_ns,file_id,hash,recipe,mixed,content_size,hashed_at_ns,verified_at_ns) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    "INSERT OR REPLACE INTO file_index(instance_id,path,size,mtime_ns,ctime_ns,file_id,hash,recipe,mixed,content_size,hashed_at_ns,verified_at_ns) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                 )?;
                 for ix in rows {
                     st.execute(params![
@@ -830,6 +846,14 @@ impl Db {
             }
             Ok(())
         })
+    }
+
+    /// Would the next [`Db::count_publication`] report a full check as due? (Does not count.)
+    pub fn full_check_peek(&self, inst: InstanceId, every: u64) -> Result<bool> {
+        let n: u64 =
+            self.meta_get(&format!("publications_since_full_check:{inst}"))?.and_then(|v| v.parse().ok()).unwrap_or(0)
+                + 1;
+        Ok(every > 0 && n >= every)
     }
 
     /// Count a publication of `inst`; `true` every `every`-th time (a periodic full check is due).
@@ -1392,6 +1416,9 @@ pub struct LocalSnapshotCommit<'a> {
     pub staged: &'a [(Hash, PathBuf, u64)],
     /// When `Some`, replace this instance's file index and advance its base to the new snapshot.
     pub index: Option<(InstanceId, &'a [IndexRow])>,
+    /// The instance's file index as it was in the database when the scan began (same transaction
+    /// lock: the instance lock is held). When given, only the difference is written.
+    pub index_before: Option<&'a HashMap<String, IndexRow>>,
     pub full_scan: bool,
 }
 

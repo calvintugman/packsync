@@ -310,6 +310,17 @@ pub trait Storage: Send + Sync {
     fn delete(&self, key: &str, mode: DeleteMode, ctx: &OpCtx) -> StorageResult<()>;
     fn quota(&self, ctx: &OpCtx) -> StorageResult<Option<Quota>>;
 
+    /// Read a small object together with its metadata (and so its version). `None` if it does not
+    /// exist. Providers that can do it in one request (S3: the GET returns the ETag) override this.
+    fn get_with_info(&self, key: &str, max: u64, ctx: &OpCtx) -> StorageResult<Option<(Vec<u8>, ObjectInfo)>> {
+        let Some(info) = self.stat(key, ctx)? else { return Ok(None) };
+        match self.get_bytes(key, max, ctx) {
+            Ok(b) => Ok(Some((b, info))),
+            Err(StorageError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Convenience: read a whole (small) object into memory with an upper bound.
     fn get_bytes(&self, key: &str, max: u64, ctx: &OpCtx) -> StorageResult<Vec<u8>> {
         let mut r = self.get(key, None, ctx)?;

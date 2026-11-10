@@ -21,6 +21,50 @@ pub struct TestWorld {
     pub tmp: TempDir,
     pub remote_dir: PathBuf,
     pub shared: Arc<LocalDirStorage>,
+    /// Present the shared folder as storage with atomic compare-and-swap (like R2), so the HEAD
+    /// pointer fast path is used. In one test process the folder's per-key lock makes that true.
+    pub atomic_cas: bool,
+}
+
+/// Wraps a storage and reports [`crate::storage::Capabilities::conditional_write`] = true.
+pub struct AtomicCas(pub Arc<dyn Storage>);
+
+impl Storage for AtomicCas {
+    fn provider_id(&self) -> String {
+        self.0.provider_id()
+    }
+    fn capabilities(&self) -> crate::storage::Capabilities {
+        crate::storage::Capabilities { conditional_write: true, ..self.0.capabilities() }
+    }
+    fn list(&self, prefix: &str, ctx: &OpCtx) -> crate::storage::StorageResult<Vec<crate::storage::ObjectInfo>> {
+        self.0.list(prefix, ctx)
+    }
+    fn stat(&self, key: &str, ctx: &OpCtx) -> crate::storage::StorageResult<Option<crate::storage::ObjectInfo>> {
+        self.0.stat(key, ctx)
+    }
+    fn get(
+        &self,
+        key: &str,
+        range: Option<(u64, u64)>,
+        ctx: &OpCtx,
+    ) -> crate::storage::StorageResult<Box<dyn std::io::Read + Send>> {
+        self.0.get(key, range, ctx)
+    }
+    fn put(
+        &self,
+        key: &str,
+        src: crate::storage::PutSource<'_>,
+        opts: &crate::storage::PutOptions,
+        ctx: &OpCtx,
+    ) -> crate::storage::StorageResult<crate::storage::ObjectInfo> {
+        self.0.put(key, src, opts, ctx)
+    }
+    fn delete(&self, key: &str, mode: crate::storage::DeleteMode, ctx: &OpCtx) -> crate::storage::StorageResult<()> {
+        self.0.delete(key, mode, ctx)
+    }
+    fn quota(&self, ctx: &OpCtx) -> crate::storage::StorageResult<Option<crate::storage::Quota>> {
+        self.0.quota(ctx)
+    }
 }
 
 impl TestWorld {
@@ -28,7 +72,12 @@ impl TestWorld {
         let tmp = tempfile::tempdir().unwrap();
         let remote_dir = tmp.path().join("cloud");
         let shared = Arc::new(LocalDirStorage::new(&remote_dir).unwrap());
-        TestWorld { tmp, remote_dir, shared }
+        TestWorld { tmp, remote_dir, shared, atomic_cas: false }
+    }
+
+    /// Like [`TestWorld::new`], with a cloud that has atomic compare-and-swap (the R2 fast path).
+    pub fn with_atomic_cas() -> TestWorld {
+        TestWorld { atomic_cas: true, ..Self::new() }
     }
 
     /// A new computer connected to the shared cloud.
@@ -40,7 +89,7 @@ impl TestWorld {
     pub fn device_with(&self, name: &str, tweak: impl FnOnce(&mut EngineConfig)) -> TestDevice {
         let home = self.tmp.path().join(format!("device-{name}"));
         std::fs::create_dir_all(&home).unwrap();
-        TestDevice::build(name, home, self.shared.clone(), tweak)
+        TestDevice::build(name, home, self.shared.clone(), self.atomic_cas, tweak)
     }
 }
 
@@ -58,6 +107,7 @@ pub struct TestDevice {
     pub meter: Arc<Meter>,
     pub sleeper: Arc<RecordingSleeper>,
     shared: Arc<LocalDirStorage>,
+    atomic_cas: bool,
 }
 
 impl TestDevice {
@@ -65,6 +115,7 @@ impl TestDevice {
         name: &str,
         home: PathBuf,
         shared: Arc<LocalDirStorage>,
+        atomic_cas: bool,
         tweak: impl FnOnce(&mut EngineConfig),
     ) -> TestDevice {
         let sleeper = Arc::new(RecordingSleeper::default());
@@ -78,10 +129,15 @@ impl TestDevice {
         tweak(&mut cfg);
         let engine = Engine::open_with_sleeper(cfg, sleeper.clone()).unwrap();
         let plan = FaultPlan::new(0xC0FFEE);
-        let (metered, meter) = MeteredStorage::new(shared.clone() as Arc<dyn Storage>);
+        let (metered, meter) = MeteredStorage::new(Self::cloud(&shared, atomic_cas));
         let faulty = FaultyStorage::new(metered, plan.clone());
         engine.set_storage(Some(faulty)).unwrap();
-        TestDevice { name: name.to_string(), home, engine, plan, meter, sleeper, shared }
+        TestDevice { name: name.to_string(), home, engine, plan, meter, sleeper, shared, atomic_cas }
+    }
+
+    fn cloud(shared: &Arc<LocalDirStorage>, atomic_cas: bool) -> Arc<dyn Storage> {
+        let s = shared.clone() as Arc<dyn Storage>;
+        if atomic_cas { Arc::new(AtomicCas(s)) } else { s }
     }
 
     /// Simulate quitting and restarting the app: a new `Engine` over the same state directory.
@@ -89,7 +145,7 @@ impl TestDevice {
         let cfg = self.engine.cfg.clone();
         let sleeper = self.sleeper.clone();
         drop(std::mem::replace(&mut self.engine, Engine::open_with_sleeper(cfg, sleeper).unwrap()));
-        let (metered, meter) = MeteredStorage::new(self.shared.clone() as Arc<dyn Storage>);
+        let (metered, meter) = MeteredStorage::new(Self::cloud(&self.shared, self.atomic_cas));
         self.meter = meter;
         self.engine.set_storage(Some(FaultyStorage::new(metered, self.plan.clone()))).unwrap();
     }

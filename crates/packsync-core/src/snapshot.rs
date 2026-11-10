@@ -528,6 +528,7 @@ pub fn create(
         return Ok(SnapshotOutcome::Unchanged { base, stats, walk: wsum });
     }
 
+    ctx.mark("snapshot: encode the manifest");
     let (id, stored) = m.encode()?;
     stats.manifest_bytes = stored.len() as u64;
     stats.manifest_raw_bytes = serde_json::to_vec(&m).map(|v| v.len() as u64).unwrap_or(0);
@@ -564,6 +565,7 @@ pub fn create(
     crate::fsutil::write_atomic(&manifest_path(state_dir, id), &stored)
         .map_err(|e| Error::io("writing manifest", e))?;
     crate::failpoint!("snapshot.before_db_commit")?;
+    ctx.mark("snapshot: record it in the database");
 
     let row = SnapshotRow {
         id,
@@ -595,6 +597,8 @@ pub fn create(
         row: &row,
         staged: &staged_rows,
         index: moves_base.then_some((inst.id, &new_index[..])),
+        // a full scan starts from an empty index: replace it as a whole
+        index_before: (moves_base && !inst.needs_full_scan).then_some(&index),
         full_scan: scan_opts.mode == ScanMode::Full,
     })?;
     crate::failpoint!("snapshot.after_db_commit")?;
@@ -747,6 +751,7 @@ pub fn create_derived(db: &Db, state_dir: &Path, req: &DeriveRequest<'_>) -> Res
         row: &row,
         staged: &[],
         index: None,
+        index_before: None,
         full_scan: false,
     })?;
     Ok((id, m))
