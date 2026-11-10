@@ -22,7 +22,8 @@ use crate::pack::BlobEntry;
 use crate::storage::TransferStateStore;
 
 /// Each entry migrates from `user_version == index` to `index + 1`. Never edit a shipped entry.
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
 CREATE TABLE instances (
@@ -169,9 +170,16 @@ CREATE TABLE events (
 CREATE TABLE transfer_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
-  updated_ms INTEGER NOT NULL
+    updated_ms INTEGER NOT NULL
 ) WITHOUT ROWID;
-"#];
+"#,
+    // v2: which process runs a job, so that another process opening the database does not declare a live
+    // job interrupted
+    r#"
+ALTER TABLE jobs ADD COLUMN owner_pid INTEGER;
+ALTER TABLE jobs ADD COLUMN owner_start_ms INTEGER;
+"#,
+];
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
@@ -1071,9 +1079,18 @@ impl Db {
         self.with(|c| {
             let now = now_ms();
             let n = c.execute(
-                "INSERT INTO jobs(id,kind,instance_id,request_key,state,created_ms,updated_ms) VALUES (?1,?2,?3,?4,'running',?5,?5)
+                "INSERT INTO jobs(id,kind,instance_id,request_key,state,created_ms,updated_ms,owner_pid,owner_start_ms)
+                 VALUES (?1,?2,?3,?4,'running',?5,?5,?6,?7)
                  ON CONFLICT(request_key) DO NOTHING",
-                params![id.to_string(), kind, instance.map(|i| i.to_string()), request_key, now],
+                params![
+                    id.to_string(),
+                    kind,
+                    instance.map(|i| i.to_string()),
+                    request_key,
+                    now,
+                    std::process::id(),
+                    crate::proc::process_start_ms(std::process::id())
+                ],
             )?;
             let row = if n == 1 {
                 c.query_row(&format!("SELECT {JOB_COLS} FROM jobs WHERE id=?1"), [id.to_string()], job_from_row)?
@@ -1102,10 +1119,29 @@ impl Db {
         })
     }
 
-    /// Mark jobs left `running` by a previous process as `interrupted` (called at startup).
+    /// Mark jobs left `running` by a process that no longer exists as `interrupted` (called at startup).
+    /// The app, the CLI and the hooks' background steps share this database: opening it is no evidence
+    /// that the jobs of the others died. A job without a recorded owner (an older version) counts as dead.
     pub fn jobs_mark_interrupted(&self) -> Result<usize> {
+        let running: Vec<(String, Option<u32>, Option<i64>)> = self.with(|c| {
+            let mut st = c.prepare("SELECT id, owner_pid, owner_start_ms FROM jobs WHERE state='running'")?;
+            let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let dead: Vec<String> = running
+            .into_iter()
+            .filter(|(_, pid, start)| pid.is_none_or(|p| !crate::proc::pid_alive(p, *start)))
+            .map(|(id, ..)| id)
+            .collect();
         self.with(|c| {
-            Ok(c.execute("UPDATE jobs SET state='interrupted', updated_ms=?1 WHERE state='running'", [now_ms()])?)
+            let mut st =
+                c.prepare("UPDATE jobs SET state='interrupted', updated_ms=?2 WHERE id=?1 AND state='running'")?;
+            let now = now_ms();
+            let mut n = 0;
+            for id in &dead {
+                n += st.execute(params![id, now])?;
+            }
+            Ok(n)
         })
     }
 
@@ -1782,7 +1818,13 @@ mod tests {
         assert_eq!(a.id, b.id, "a duplicate request returns the existing job");
         let (c, created_c) = db.job_register(crate::ids::JobId::new(), "sync", None, None).unwrap();
         assert!(created_c && c.id != a.id);
-        assert_eq!(db.jobs_mark_interrupted().unwrap(), 2, "two distinct jobs were running");
+                assert_eq!(db.jobs_mark_interrupted().unwrap(), 0, "their owner (this process) is alive");
+        db.with(|c| {
+            c.execute("UPDATE jobs SET owner_pid=4000000", [])?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.jobs_mark_interrupted().unwrap(), 2, "two distinct jobs were running in a process now gone");
     }
 
     #[test]
