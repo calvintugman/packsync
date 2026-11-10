@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/packsync-core",
     "crates/packsync-drive",
+    "crates/packsync-s3",
     "crates/packsync-prism",
     "crates/packsync-app",
     "crates/packsync-cli",
@@ -56,6 +57,8 @@ ureq = { version = "3", features = ["json"] }
 tiny_http = "0.12"
 md-5 = "0.11"
 sha2 = "0.11"
+hmac = "0.13"
+httpdate = "1"
 base64 = "0.23"
 keyring = "4"
 oauth2 = "5"
@@ -64,6 +67,7 @@ webbrowser = "1"
 # workspace-internal crates
 packsync-core = { path = "crates/packsync-core" }
 packsync-drive = { path = "crates/packsync-drive" }
+packsync-s3 = { path = "crates/packsync-s3" }
 packsync-prism = { path = "crates/packsync-prism" }
 packsync-app = { path = "crates/packsync-app" }
 

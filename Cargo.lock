@@ -1729,6 +1729,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "packsync-s3"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hex",
+ "hmac",
+ "httpdate",
+ "md-5",
+ "packsync-core",
+ "packsync-s3",
+ "parking_lot",
+ "sha2",
+ "tempfile",
+ "time",
+ "tiny_http",
+ "tracing",
+ "ureq",
+ "uuid",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
