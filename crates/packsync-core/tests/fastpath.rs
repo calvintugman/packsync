@@ -91,9 +91,14 @@ fn a_computer_whose_head_is_stale_takes_the_full_path_and_catches_up() {
     let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
     assert!(matches!(rec, ReconcileReport::LocalAhead { uploaded: true, .. }), "{rec:?}");
 
-    // B: its HEAD is stale, so "nothing changed here" is not "up to date": it catches up
+    // B: its HEAD is stale, so "nothing changed here" is not "up to date": it catches up, reading the
+    // one index HEAD names instead of listing every pack and index
+    let before = b.meter.snapshot();
     let (_, rec) = b.engine.sync_now(en.instance, &b.ctx()).unwrap();
     assert!(matches!(rec, ReconcileReport::FastForwarded { .. }), "{rec:?}");
+    let d = b.meter.snapshot().since(&before);
+    let lists = |prefix: &str| d.by_prefix.get(prefix).map_or(0, |p| p.lists);
+    assert_eq!((lists("packs"), lists("index")), (0, 0), "{d:?}");
     assert_eq!(tree(&root_a), tree(&rb.root));
     // and is back on the fast path afterwards
     let before = b.meter.snapshot();

@@ -619,7 +619,7 @@ impl Engine {
     fn apply_fast_forward(&self, inst: &InstanceRow, to: SnapshotId, ctx: &OpCtx) -> Result<ReconcileReport> {
         let remote = self.remote()?;
         let target = self.manifest(inst.id, to, ctx)?;
-        remote.sync_index_cache(ctx)?;
+        self.learn_new_blobs(inst, to, &remote, ctx)?;
         let _lock = self.lock(inst.id, "fast-forward")?;
         self.ensure_idle(inst)?;
         // Under the lock, prove again that nothing changed locally (a session may have ended meanwhile).
@@ -717,7 +717,13 @@ impl Engine {
         self.remote().ok().filter(|r| r.storage.capabilities().conditional_write)
     }
 
-    fn new_head_pointer(&self, id: InstanceId, snapshot: SnapshotId, parent: Option<SnapshotId>) -> HeadPointer {
+    fn new_head_pointer(
+        &self,
+        id: InstanceId,
+        snapshot: SnapshotId,
+        parent: Option<SnapshotId>,
+        indexes: Vec<crate::hash::Hash>,
+    ) -> HeadPointer {
         let (device_id, device_name) = self.device();
         HeadPointer {
             format: crate::remote::HEAD_POINTER_FORMAT.into(),
@@ -728,6 +734,7 @@ impl Engine {
             device_id,
             device_name,
             updated: crate::manifest::now_rfc3339(),
+            indexes,
         }
     }
 
@@ -802,7 +809,8 @@ impl Engine {
                     Err(e) => return Err(e),
                 };
                 ctx.mark("fast path: move HEAD");
-                let p = self.new_head_pointer(id, *sid, Some(known.snapshot));
+                let new_index = report.as_ref().and_then(|r| r.index).into_iter().collect();
+                let p = self.new_head_pointer(id, *sid, Some(known.snapshot), new_index);
                 match remote.swap_head_pointer(&p, Some(known.version), ctx)? {
                     Some(v) => {
                         // the storage's listings are strongly consistent: published is discoverable
@@ -858,6 +866,41 @@ impl Engine {
         }
     }
 
+    /// Before a fast-forward to `to`: learn where its new data lives. When the HEAD pointer says `to` was
+    /// published on top of this computer's base and names the index uploaded with it, that one index is
+    /// all that is new (everything older this computer already knows): read it instead of listing every
+    /// pack and index in the cloud. HEAD only moves after the packs and the manifest are stored.
+    fn learn_new_blobs(
+        &self,
+        inst: &InstanceRow,
+        to: SnapshotId,
+        remote: &crate::remote::Remote,
+        ctx: &OpCtx,
+    ) -> Result<()> {
+        if let Some(r) = self.head_pointer_remote()
+            && let Ok(Some((p, _))) = r.get_head_pointer(inst.id, ctx)
+            && p.snapshot == to
+            && p.parent == inst.base_snapshot
+            && !p.indexes.is_empty()
+            && self.db.deep_check_due(inst.id)?.is_none()
+        {
+            ctx.mark("catch up: read the index named by HEAD");
+            for ix in &p.indexes {
+                if self.db.index_seen(*ix)? {
+                    continue;
+                }
+                let doc = remote.get_index(*ix, ctx)?;
+                for pk in &doc.packs {
+                    self.db.pack_put(pk.id, pk.size, None, None)?;
+                    self.db.blobs_put(pk.id, &pk.blobs)?;
+                }
+                self.db.index_mark_seen(*ix)?;
+            }
+            return Ok(());
+        }
+        remote.sync_index_cache(ctx).map(|_| ())
+    }
+
     /// After the full path: point HEAD at this computer's base when that is a published descendant of
     /// where HEAD is (or there is no HEAD yet), and remember it so the next sync can take the fast path.
     /// Best effort: any failure just leaves the next sync on the full path.
@@ -877,14 +920,14 @@ impl Engine {
             Some((p, v)) => {
                 let g = Graph::load(&self.db, id)?;
                 if g.is_ancestor(p.snapshot, base) == crate::graph::Relation::Yes {
-                    let np = self.new_head_pointer(id, base, Some(p.snapshot));
+                    let np = self.new_head_pointer(id, base, Some(p.snapshot), vec![]);
                     remote.swap_head_pointer(&np, Some(v), ctx)?.map(|v| KnownHead { snapshot: base, version: v })
                 } else {
                     None
                 }
             }
             None => {
-                let np = self.new_head_pointer(id, base, None);
+                let np = self.new_head_pointer(id, base, None, vec![]);
                 remote.swap_head_pointer(&np, None, ctx)?.map(|v| KnownHead { snapshot: base, version: v })
             }
         };

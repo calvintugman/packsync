@@ -48,6 +48,10 @@ pub struct UploadReport {
     pub state: SnapshotState,
     /// Set when a persisted backoff delayed the attempt: nothing was tried.
     pub deferred_until_ms: Option<i64>,
+    /// The index uploaded with this snapshot's packs (fast path), named in the HEAD pointer so that a
+    /// computer one version behind can catch up without listing the cloud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<Hash>,
 }
 
 pub struct Uploader<'a> {
@@ -170,6 +174,7 @@ impl Uploader<'_> {
             bytes_uploaded: 0,
             state: SnapshotState::Uploading,
             deferred_until_ms: None,
+            index: None,
         };
         ctx.mark(format!("fast publish: {} new packs and their index", meta.packs.len()));
         let none = HashMap::new();
@@ -183,6 +188,7 @@ impl Uploader<'_> {
         crate::failpoint!("upload.after_packs")?;
         if let Some(index_id) = index_res.transpose()? {
             self.remote.note_uploaded_index(index_id)?;
+            report.index = Some(index_id);
         }
         crate::failpoint!("upload.after_index")?;
         if let Some(p) = meta.packs.iter().find(|p| verified.get(&p.id) != Some(&p.size)) {
@@ -208,6 +214,7 @@ impl Uploader<'_> {
             bytes_uploaded: 0,
             state: row.state,
             deferred_until_ms: None,
+            index: None,
         };
         if matches!(row.state, SnapshotState::Visible) {
             return Ok(report);

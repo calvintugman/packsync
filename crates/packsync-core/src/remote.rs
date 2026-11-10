@@ -102,6 +102,10 @@ pub struct HeadPointer {
     pub device_name: String,
     /// RFC 3339.
     pub updated: String,
+    /// The index(es) uploaded with this snapshot's new packs, when the writer knows them. A computer at
+    /// `parent` reads just these instead of listing every pack and index to catch up.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<Hash>,
 }
 
 /// One commit as seen in a listing (before its manifest has been read).
