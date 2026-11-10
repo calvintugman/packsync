@@ -36,8 +36,11 @@ impl Engine {
     pub(crate) fn discover(&self, inst: InstanceId, ctx: &OpCtx) -> Result<CloudView> {
         let remote = self.remote()?;
         ctx.phase(Phase::Discovery, "looking at the cloud");
+        ctx.mark("discover: list snapshots");
         let listing = remote.list_commits(inst, ctx)?;
+        ctx.mark("discover: read head records");
         let head_records = remote.list_heads(inst, ctx).unwrap_or_default();
+        ctx.mark("discover: compare");
         let mut recent: HashMap<SnapshotId, crate::remote::RecentCommit> = HashMap::new();
         for h in &head_records {
             for r in &h.recent {
@@ -409,6 +412,19 @@ impl Engine {
     }
 
     pub fn reconcile(&self, id: InstanceId, opts: ReconcileOpts, ctx: &OpCtx) -> Result<ReconcileReport> {
+        self.reconcile_inner(id, opts, false, ctx)
+    }
+
+    /// `just_saved`: a snapshot of the instance was taken (or found unchanged) moments ago by this same
+    /// operation, so the local copy is known to be clean and is not scanned (and re-hashed) again. A
+    /// fast-forward still proves it under the instance lock before it touches anything.
+    fn reconcile_inner(
+        &self,
+        id: InstanceId,
+        opts: ReconcileOpts,
+        just_saved: bool,
+        ctx: &OpCtx,
+    ) -> Result<ReconcileReport> {
         let inst = self.instance(id)?;
         self.guard_provider(&inst)?;
         self.require_state(&inst, &[InstanceState::Ok, InstanceState::Conflict])?;
@@ -422,7 +438,20 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
-        let pending = self.pending_changes(id, ctx)?;
+        let pending = if just_saved {
+            PendingChanges {
+                dirty: false,
+                added: vec![],
+                removed: vec![],
+                modified: vec![],
+                issues: vec![],
+                exact: true,
+            }
+        } else {
+            ctx.mark("reconcile: look for local changes");
+            self.pending_changes(id, ctx)?
+        };
+        ctx.mark("reconcile: decide");
         let mut guard = 0;
         let decision = loop {
             let graph = Graph::load(&self.db, id)?;
@@ -583,9 +612,13 @@ impl Engine {
     pub fn sync_now(&self, id: InstanceId, ctx: &OpCtx) -> Result<(Option<SnapshotReport>, ReconcileReport)> {
         let inst = self.instance(id)?;
         let mut snap = None;
+        let mut just_saved = false;
         if inst.state == InstanceState::Ok {
             match self.snapshot(id, SnapshotOpts::default(), ctx) {
-                Ok(r) => snap = Some(r),
+                Ok(r) => {
+                    just_saved = true;
+                    snap = Some(r)
+                }
                 // playing: the end-of-session snapshot will cover it — but say so, or "nothing to upload"
                 // looks like "nothing changed"
                 Err(Error::GameRunning(why)) => ctx.note(
@@ -596,7 +629,7 @@ impl Engine {
                 Err(e) => return Err(e),
             }
         }
-        let rep = self.reconcile(id, ReconcileOpts::default(), ctx)?;
+        let rep = self.reconcile_inner(id, ReconcileOpts::default(), just_saved, ctx)?;
         Ok((snap, rep))
     }
 
