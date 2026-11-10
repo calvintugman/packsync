@@ -159,6 +159,9 @@ match = [
   "$GAME/XaeroWorldMap/**",
   "$GAME/Distant_Horizons_server_data/**",
   "$GAME/distanthorizons/**",
+  # Distant Horizons' level-of-detail database inside a world (1.2 GB in a GregTech: New Horizons world,
+  # partly rewritten every session): regenerated from the world's chunks
+  "$GAME/saves/**/DistantHorizons.sqlite*",
   "$GAME/debug/**",
 ]
 action = "exclude"

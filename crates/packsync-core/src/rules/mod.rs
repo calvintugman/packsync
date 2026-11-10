@@ -595,6 +595,8 @@ mod tests {
             ".minecraft/servers.dat",
             ".minecraft/journeymap/data/sp/My World~/waypoints/wp.json",
             ".minecraft/XaeroWaypoints/My World/dim%0/mw$default_1.txt",
+            // other saved data next to it still syncs
+            ".minecraft/saves/My World/data/villages.dat",
         ];
         for p in yes {
             assert!(r.decide(p).include, "{p} should sync: {}", r.decide(p).explain(p));
@@ -615,6 +617,10 @@ mod tests {
             ".minecraft/optionsof.txt",
             ".minecraft/journeymap/data/sp/My World~/DIM0/day/1,1.png",
             ".minecraft/hs_err_pid123.log",
+            // Distant Horizons' level-of-detail cache inside a world (and its SQLite side files)
+            ".minecraft/saves/My World/data/DistantHorizons.sqlite",
+            ".minecraft/saves/My World/data/DistantHorizons.sqlite-wal",
+            ".minecraft/saves/My World/DIM-1/data/DistantHorizons.sqlite",
         ];
         for p in no {
             assert!(!r.decide(p).include, "{p} must NOT sync: {}", r.decide(p).explain(p));
