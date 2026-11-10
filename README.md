@@ -2,12 +2,12 @@
 
 **Continue your Minecraft modpack on any computer.** PackSync keeps a [Prism Launcher](https://prismlauncher.org/)
 instance — mods, configuration and single-player worlds — in sync between your computers through **your own
-Google Drive**. Stop playing on the desktop, sit down at the laptop, press *Play*, and carry on.
+Google Drive or Cloudflare R2 bucket**. Stop playing on the desktop, sit down at the laptop, press *Play*, and carry on.
 
 ![PackSync showing two instances: one ready on the other computers, one saved here but not uploaded yet](docs/images/instances.png)
 
 * **Your cloud, your account.** There is no PackSync server and no PackSync account. The app talks to Google
-  Drive directly, with a permission you grant in your browser.
+  Drive (with a permission you grant in your browser) or to your own Cloudflare R2 bucket directly.
 * **Fast after the first sync.** Only what changed is uploaded: a few chunks of a region file, not the whole
   world; a renamed mod costs kilobytes (the new manifest), not the jar (`docs/performance.md`).
 * **It never merges your worlds.** If two computers changed the same instance, PackSync shows both versions
@@ -19,11 +19,12 @@ Google Drive**. Stop playing on the desktop, sit down at the laptop, press *Play
 * **Recoverable.** Every restore first saves what you have and keeps the replaced files for a while.
 * **Open source, MIT.** A Rust engine, a command-line tool, and a desktop app (Tauri + React).
 
-> **Status: pre-release, built from source, not published.** Everything below says what has and has not been
-> verified. In short: the engine, the CLI and the desktop app are implemented and tested — against Google
-> Drive **mocks**, a fake launcher, and (on Linux) the **real Prism Launcher 11.0.3**. It has **not** been
-> run against real Google Drive (nobody had credentials to test with), and it has only been built and run on
-> Linux. See [Status](#status) and [`docs/testing.md`](docs/testing.md).
+> **Status: pre-release, built from source.** Everything below says what has and has not been verified. In
+> short: the engine, the CLI and the desktop app are implemented and tested, and syncing has been run
+> against **real Google Drive** with a copy of a real 6.8 GB modpack (GregTech: New Horizons) on Linux. The
+> **Cloudflare R2** provider is tested against an S3 server mock but **not yet against real R2**, and
+> Windows has only been checked under Wine. See [Status](#status), [`docs/benchmarks.md`](docs/benchmarks.md)
+> and [`docs/testing.md`](docs/testing.md).
 
 ## Contents
 
@@ -132,12 +133,27 @@ none (nobody registered one for the project), so you create your own, free, in a
 | **Sign-in** | System browser (never an embedded web view), PKCE, loopback listener on `127.0.0.1`. |
 | **Disconnecting** | Forgets the token on this computer, optionally revokes it at Google. Never deletes cloud data. |
 
-**Not verified live:** the whole Google Drive path is tested against a faithful mock server (OAuth flow,
-resumable uploads, retries, revocation, duplicate names, secret hygiene…), but **never against real Google**.
-In particular, that files created on one computer stay visible to the same client on another under
-`drive.file` is Google's documented behaviour but unconfirmed here. [`docs/live-validation.md`](docs/live-validation.md)
-describes a short procedure — and a self-test binary — to confirm it for yourself with a throwaway folder
-before you trust it with a world.
+**Verified live (2026-11-10, a personal Google account, Linux):** the self-test's storage conformance suite
+(15 of 15 checks against real Drive); sign-in with the token in the OS keyring; a 6.8 GB instance uploaded,
+restored on a second profile **byte-identical**, kept in step through small edits; a conflict between two
+profiles detected with both versions kept; uploads killed mid-way resumed without re-sending finished data.
+Not verified: two *physical* computers (the second "computer" was a second profile on the same machine,
+same OAuth client), and the 7-day expiry of sign-ins in Testing mode.
+
+## Connecting Cloudflare R2
+
+R2 is S3-compatible storage with free egress (10 GB free). It is faster than Drive for PackSync because it
+has **atomic conditional writes**: a compare-and-swap HEAD pointer lets an up-to-date computer check the
+cloud with one request and publish a new snapshot with four (see [`docs/benchmarks.md`](docs/benchmarks.md)).
+
+1. Cloudflare dashboard → **R2** → create a bucket (e.g. `packsync`).
+2. **R2 → Manage API tokens → Create API token**: *Object Read & Write*, limited to that bucket.
+3. `packsync storage use-r2 --account-id <account ID> --bucket <bucket> --access-key-id <access key ID>`
+   asks for the secret access key without echoing it and keeps it **only in the OS credential store**.
+   Everything goes under the `packsync/` prefix of the bucket (`--prefix` to change).
+
+**Tested against an S3 server mock** (which re-verifies every request signature) and AWS's published
+Signature V4 test vectors; **not yet against real R2.**
 
 **Privacy:** PackSync does not encrypt your files (end-to-end encryption is not part of v1, and it will not
 invent its own cryptography). They sit unencrypted in your Drive, protected by your Google account. Worlds can
@@ -224,9 +240,9 @@ What it does **not** do:
 | | |
 |---|---|
 | **Implemented** | Sync engine (scan, chunking, packs, manifests, upload, reconcile, journaled restore, recovery, sessions, conflicts, crash quarantine, retention/cleanup); Google Drive adapter + OAuth; Prism adapter + hooks; command-line tool; desktop app (setup, instances, history/restore, conflicts, crashes, hooks, cloud, settings, cleanup). |
-| **Tested locally** (no credentials) | 395 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and all 380 of its tests pass as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. |
-| **Tested against a real service** | **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
-| **Not tested against real services** | **Google Drive and Google OAuth**; the OS credential store on this machine; **a real Windows installation** (only Wine) and **macOS** (never built); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
+| **Tested locally** (no credentials) | 413 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
+| **Tested against a real service** | **Google Drive and Google OAuth** (2026-11-10: conformance suite, a 6.8 GB GregTech: New Horizons copy uploaded, restored byte-identical, edits, a conflict, killed uploads resumed; Linux, KDE Wallet as the credential store). **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
+| **Not tested against real services** | **Cloudflare R2** (S3 mock only); **a real Windows installation** (only Wine; `scripts/windows-verify.ps1` is the procedure) and **macOS** (never built); two physical computers (a second profile stood in); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
 | **Not done** | End-to-end encryption; deleting history (v1 releases the *content* of old snapshots but keeps their manifests); signed installers and releases; auto-update; other launchers (the adapter interface is there). |
 
 Details, numbers and the bugs the tests found: [`docs/testing.md`](docs/testing.md).
@@ -238,6 +254,39 @@ Details, numbers and the bugs the tests found: [`docs/testing.md`](docs/testing.
 | **Linux** (x86_64) | ✔ | ✔ | ✔ (native and Flatpak paths) | built, tested and run here |
 | **Windows** | ✔ (long paths, reserved names, case folding, per-OS process detection) | Tauri supports it; not built yet | ✔ | cross-built; **tests pass under Wine**; never run on real Windows |
 | **macOS** | architecture-compatible | Tauri supports it | designed for it | **not built or run** |
+
+## Performance on a real modpack
+
+A copy of a heavily played GregTech: New Horizons instance (6.8 GB, 19,634 files) and the same small world
+edit every time ([`docs/benchmarks.md`](docs/benchmarks.md), which also has the method and the reproduction
+steps):
+
+| Sync after a small edit | Time | HTTP requests |
+|---|---:|---:|
+| Google Drive, before | 36.0 s | 243 |
+| Google Drive, Implementation 1 (3 runs) | 8.44–8.77 s | 22–23 |
+| R2 fast path against a local S3 server (2 runs, no network latency) | 0.68–0.71 s | 4 |
+| Cloudflare R2 | *not measured yet* | |
+
+First upload of the 6.8 GB instance to Google Drive: 239 s (≈ 28 MB/s). A sync with nothing changed: one
+request on R2's fast path.
+
+## Roadmap
+
+Deliberately not in this version:
+
+* **Syncing while the game runs.** PackSync saves and uploads after the game exits, never during play. A
+  modded world is written across region files, NBT data and databases with no transaction spanning them, so
+  a snapshot taken while the game holds the world (`session.lock`) can capture a state that never existed.
+  Saving after exit is consistent by construction; the work went into making that save fast instead.
+  (Uploading packs in the background during play, without publishing them, would be a safe next step.)
+* **One-click Prism integration in the desktop app.** The hooks exist (`packsync hooks install`,
+  [`docs/hooks.md`](docs/hooks.md)); a per-instance toggle in the app and a fast HEAD check in the
+  pre-launch hook are next.
+* **A Steam-style conflict dialog** at launch (conflicts are detected and resolvable today, in the app and the CLI).
+* **Changing an existing instance's rules** (an instance keeps the rules recorded in its snapshots; the
+  Distant Horizons exclusion applies to instances enabled from now on).
+* Real-Windows and macOS verification, signed installers, end-to-end encryption.
 
 ## Development
 
@@ -264,6 +313,7 @@ need a designated test account and are **never** run by default or in CI ([`docs
 ```
 crates/packsync-core    the engine: scan, chunking, packs, snapshots, upload, reconcile, restore, recovery, GC
 crates/packsync-drive   Google Drive adapter, OAuth, keyring, and a mock Drive server for tests
+crates/packsync-s3      Cloudflare R2 / S3 adapter (SigV4, conditional writes) and a mock S3 server
 crates/packsync-prism   Prism adapter: discovery, registration, launching, hooks, Qt INI/command-line ports
 crates/packsync-app     the application layer: settings, jobs, launch orchestration, JSON API (what the UI calls)
 crates/packsync-cli     the `packsync` command
@@ -284,6 +334,8 @@ examples/               sample settings and rules
 [Live validation](docs/live-validation.md) · [Desktop app](docs/desktop.md) ·
 [Performance](docs/performance.md) · [Testing and status](docs/testing.md) ·
 [Platforms](docs/platforms.md) · [Companion mod or Prism fork?](docs/integrations.md) ·
+[Benchmarks on a real modpack](docs/benchmarks.md) · [How it works, in plain language](docs/how-it-works.md) ·
+[Windows checklist](docs/windows-checklist.md) ·
 [Dependencies](docs/dependencies.md) · [Rebranding](docs/rebranding.md)
 
 ## Contributing
