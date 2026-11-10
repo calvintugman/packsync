@@ -56,6 +56,15 @@ pub fn client_error_to_error(e: ClientConfigError) -> Error {
     Error::Config(e.to_string())
 }
 
+/// Counters of the Google Drive provider built most recently in this process (measurements only).
+static DRIVE_STATS: std::sync::Mutex<Option<packsync_drive::StatsHandle>> = std::sync::Mutex::new(None);
+
+/// What this process has sent to and received from Google Drive so far: HTTP requests by kind, body
+/// bytes in both directions, retries. `None` when no Google provider was built (local folder, no storage).
+pub fn drive_request_stats() -> Option<packsync_drive::RequestStats> {
+    DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|h| h.snapshot())
+}
+
 pub struct Provider {
     pub storage: Option<Arc<dyn Storage>>,
     pub auth: Option<Arc<Authenticator>>,
@@ -78,6 +87,7 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
             let cfg = DriveConfig::new(account.clone().unwrap_or_default(), space);
             let state: Arc<dyn TransferStateStore> = db.clone();
             let drive = DriveStorage::new(cfg, auth.clone(), state).map_err(Error::from)?;
+            *DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(drive.stats_handle().clone());
             Ok(Provider { storage: Some(Arc::new(drive)), auth: Some(auth) })
         }
     }
