@@ -136,6 +136,53 @@ fn same_size_edit_with_restored_timestamp_is_detected() {
     assert_eq!(a.engine.pending_changes(en.instance, &a.ctx()).unwrap().modified.len(), 1);
 }
 
+/// Found by the first run on a real modpack: GregTech ships a zero-byte `DynamicConfig.cfg`, and the
+/// "publish no holes" check asked for the stored data of a file that has none. Empty files are in the
+/// first snapshot, appear later, and a file can be truncated to nothing — all of it must sync.
+#[test]
+fn empty_files_are_saved_uploaded_and_restored() {
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let root_a = a.instances_dir().join("pack");
+    let _info = packsync_core::testkit::fixtures::generate(&root_a, &FixtureSpec::tiny());
+    fs::write(root_a.join("config/empty-at-first.cfg"), b"").unwrap();
+    fs::write(root_a.join("config/emptied-later.cfg"), b"not empty yet").unwrap();
+    let en = a.enable(&root_a); // first snapshot: no base to compare with
+    a.upload(en.instance);
+
+    let b = w.device("laptop");
+    let rb = b
+        .engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: en.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    assert_eq!(fs::metadata(rb.root.join("config/empty-at-first.cfg")).unwrap().len(), 0);
+
+    // later: a new empty file, and an existing one truncated to nothing
+    fs::write(root_a.join("config/empty-added.cfg"), b"").unwrap();
+    fs::write(root_a.join("config/emptied-later.cfg"), b"").unwrap();
+    let rep = a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    assert!(matches!(rep.result, SnapshotResult::Created { .. }));
+    a.upload(en.instance);
+    let r = b.engine.reconcile(en.instance, ReconcileOpts::default(), &b.ctx()).unwrap();
+    assert!(matches!(r, ReconcileReport::FastForwarded { .. }), "{r:?}");
+    for f in ["empty-at-first.cfg", "empty-added.cfg", "emptied-later.cfg"] {
+        assert_eq!(fs::metadata(rb.root.join("config").join(f)).unwrap().len(), 0, "{f}");
+    }
+    assert_eq!(tree(&root_a), tree(&rb.root));
+}
+
 #[test]
 fn creation_deletion_rename_empty_dirs_unicode_and_long_paths_propagate() {
     let w = TestWorld::new();

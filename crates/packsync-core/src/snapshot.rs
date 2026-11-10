@@ -506,7 +506,11 @@ pub fn create(
     let (id, stored) = m.encode()?;
 
     // ---- required packs for publish-time verification -------------------------------------------
-    let required = required_packs(db, &m, req.base.map(|b| b.0), &staged.packs, &known_local_copy)?;
+    let required =
+        required_packs(db, &m, req.base.map(|b| b.0), &staged.packs, &known_local_copy).inspect_err(|_| {
+            // do not leave gigabytes of staged packs behind for the hourly orphan cleanup
+            let _ = fs::remove_dir_all(&tmp_dir);
+        })?;
 
     // ---- make it durable: staging dir, manifest file, then the single DB commit -------------------
     ctx.phase(Phase::Snapshot, "saving local snapshot");
@@ -592,15 +596,18 @@ fn required_packs(
     known_local: &HashSet<Hash>,
 ) -> Result<Vec<Hash>> {
     let staged_blobs: HashSet<Hash> = staged.iter().flat_map(|p| p.entries.iter().map(|e| e.hash)).collect();
+    // An empty file has no stored data at all (its hash is that of nothing), so there is nothing to find.
+    let has_data = |e: &&Entry| e.is_file() && e.s > 0;
     let changed: Vec<&Entry> = match base {
         Some(b) => {
             let bm: HashMap<&str, &Entry> = b.entries.iter().map(|e| (e.p.as_str(), e)).collect();
             m.entries
                 .iter()
-                .filter(|e| e.is_file() && bm.get(e.p.as_str()).is_none_or(|be| !be.same_content(e) || be.r != e.r))
+                .filter(has_data)
+                .filter(|e| bm.get(e.p.as_str()).is_none_or(|be| !be.same_content(e) || be.r != e.r))
                 .collect()
         }
-        None => m.entries.iter().filter(|e| e.is_file()).collect(),
+        None => m.entries.iter().filter(has_data).collect(),
     };
     let mut out: HashSet<Hash> = HashSet::new();
     for e in changed {
