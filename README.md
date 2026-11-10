@@ -22,7 +22,7 @@ Google Drive or Cloudflare R2 bucket**. Stop playing on the desktop, sit down at
 > **Status: pre-release, built from source.** Everything below says what has and has not been verified. In
 > short: the engine, the CLI and the desktop app are implemented and tested, and syncing has been run
 > against **real Google Drive** with a copy of a real 6.8 GB modpack (GregTech: New Horizons) on Linux. The
-> **Cloudflare R2** provider is tested against an S3 server mock but **not yet against real R2**, and
+> **Cloudflare R2** provider has been run against a real R2 bucket (see the benchmarks), and
 > Windows has only been checked under Wine. See [Status](#status), [`docs/benchmarks.md`](docs/benchmarks.md)
 > and [`docs/testing.md`](docs/testing.md).
 
@@ -152,8 +152,9 @@ cloud with one request and publish a new snapshot with four (see [`docs/benchmar
    asks for the secret access key without echoing it and keeps it **only in the OS credential store**.
    Everything goes under the `packsync/` prefix of the bucket (`--prefix` to change).
 
-**Tested against an S3 server mock** (which re-verifies every request signature) and AWS's published
-Signature V4 test vectors; **not yet against real R2.**
+**Verified against a real R2 bucket** (2026-11-11: first upload, syncs, the HEAD fast path and the Prism
+hooks; numbers in [`docs/benchmarks.md`](docs/benchmarks.md)), and tested against an S3 server mock that
+re-verifies every request signature, plus AWS's published Signature V4 test vectors.
 
 **Privacy:** PackSync does not encrypt your files (end-to-end encryption is not part of v1, and it will not
 invent its own cryptography). They sit unencrypted in your Drive, protected by your Google account. Worlds can
@@ -248,9 +249,9 @@ What it does **not** do:
 | | |
 |---|---|
 | **Implemented** | Sync engine (scan, chunking, packs, manifests, upload, reconcile, journaled restore, recovery, sessions, conflicts, crash quarantine, retention/cleanup); Google Drive adapter + OAuth; Prism adapter + hooks; command-line tool; desktop app (setup, instances, history/restore, conflicts, crashes, hooks, cloud, settings, cleanup). |
-| **Tested locally** (no credentials) | 413 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
+| **Tested locally** (no credentials) | 417 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
 | **Tested against a real service** | **Google Drive and Google OAuth** (2026-11-10: conformance suite, a 6.8 GB GregTech: New Horizons copy uploaded, restored byte-identical, edits, a conflict, killed uploads resumed; Linux, KDE Wallet as the credential store). **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
-| **Not tested against real services** | **Cloudflare R2** (S3 mock only); **a real Windows installation** (only Wine; `scripts/windows-verify.ps1` is the procedure) and **macOS** (never built); two physical computers (a second profile stood in); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
+| **Not tested against real services** | **a real Windows installation** (only Wine; `scripts/windows-verify.ps1` is the procedure) and **macOS** (never built); two physical computers (a second profile stood in); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
 | **Not done** | End-to-end encryption; deleting history (v1 releases the *content* of old snapshots but keeps their manifests); signed installers and releases; auto-update; other launchers (the adapter interface is there). |
 
 Details, numbers and the bugs the tests found: [`docs/testing.md`](docs/testing.md).
@@ -274,11 +275,15 @@ steps):
 | Google Drive, before | 36.0 s | 243 |
 | Google Drive, Implementation 1 (3 runs) | 8.44–8.77 s | 22–23 |
 | R2 fast path against a local S3 server (2 runs, no network latency) | 0.68–0.71 s | 4 |
-| Cloudflare R2 | *not measured yet* | |
+| **Cloudflare R2 (3 runs)** | 3.40–3.81 s | 4 |
+| Cloudflare R2, nothing changed (3 runs) | **0.71–0.86 s** | 1 |
 
-Through Prism's hooks (local S3 server, 3 rounds): the pre-launch check takes **0.14–0.24 s**, the post-exit
-hook hands control back to Prism after **0.68–1.13 s**, and the upload is in the cloud **0.86–1.30 s** after
-the game exits. First upload of the 6.8 GB instance to Google Drive: 239 s (≈ 28 MB/s).
+Through Prism's hooks on **real Cloudflare R2** (3 rounds): pressing Play takes **0.50–0.56 s** when nothing
+changed elsewhere, and closing the game hands control back to Prism after **0.66–0.67 s**; the upload finishes
+in the background 4.0–4.1 s after exit (R2 writes take ~1 s each from the test machine, and three must happen
+in order). Pressing Play on another computer after this one played takes 4.9–6.7 s on R2 (it downloads the
+changes first). First upload of the instance: 163 s for 5.4 GB to R2, 239 s for 6.8 GB to Google Drive;
+bringing it to a second computer: 209 s from R2, byte-identical.
 
 ## Roadmap
 

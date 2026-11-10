@@ -114,13 +114,39 @@ writes (the GTNH copy, local S3 server, 3 rounds, seeds 401–403; "play" = the 
 After the rounds, `verify --remote` found nothing missing or damaged, and the second profile's world was
 identical to the first's except the Distant Horizons caches (excluded; each computer regenerates its own).
 
-**Real Cloudflare R2: not measured yet.** On R2 the four requests become three sequential round trips
-plus the upload of ~4.5 MB; the table below is filled in from the run in the next section.
+### Real Cloudflare R2 (2026-11-11)
 
-| Synthetic edit, Cloudflare R2 | Whole process | HTTP requests | Sent |
+The same copy against a real R2 bucket, from the same machine and home connection. A listing took 0.24–0.31 s
+and **every write took about 0.8–1.2 s** from here, even the 442-byte HEAD swap: that, not the local work,
+sets what an edit costs.
+
+| Cloudflare R2 | Whole process | HTTP requests | Sent |
 |---|---:|---:|---:|
-| Implementation 2 (3 runs) | *to be measured* | | |
-| Nothing changed (3 runs) | *to be measured* | | |
+| First upload of the instance (snapshot + upload, 5.4 GB) | 163.4 s (≈ 33 MB/s) | — | 5.4 GB |
+| **Sync, nothing changed (3 runs)** | **0.71–0.86 s** | **1** | 0 |
+| Sync after the synthetic edit (3 runs, seeds 701–703) | 3.40–3.81 s | 4 | 4.5 MB |
+
+Where an edit's 3.8 s goes: local work 0.61 s (process check 0.11, rules 0.07, scan 0.23, hashing 0.07,
+manifest 0.07, database 0.05); then the three writes that have to happen in order — the new pack with its
+index 1.18 s, the manifest 0.84 s, the HEAD swap 1.15 s. The order is the guarantee that no computer ever sees
+a snapshot whose data is not stored yet, so it is kept.
+
+Through Prism's hooks on R2 (3 rounds, seeds 731–733), after moving the advisory "playing" lease to the
+background step (each lease write was another ~0.9 s the person waited for):
+
+| Prism hook on Cloudflare R2 | Time |
+|---|---:|
+| **Pre-launch, cloud unchanged** (HEAD read + other computers' leases) | **0.50–0.56 s** |
+| **Post-exit, until Prism gets control back** (the save, made locally) | **0.66–0.67 s** |
+| Upload in R2 and lease removed, in the background, counted from the game's exit | 4.0–4.1 s |
+| Second profile ("laptop"): pre-launch catching up after the desktop played (40 files, 3 rounds) | 4.9–6.7 s |
+
+Bringing the instance to the second profile from R2 (5.4 GB download): 209.5 s (≈ 26 MB/s). Afterwards and
+after every catch-up, `verify` on both profiles reported all 19,577 files identical to the same snapshot.
+Catching up is the slowest path on R2: about a dozen requests at ~0.25–0.3 s each (listing the history, the
+head records, the manifest, the HEAD pointer, the new index, the changed data). Taking it from the HEAD
+pointer alone is the next optimisation.
+
 
 ## Reproducing
 
