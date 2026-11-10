@@ -202,6 +202,8 @@ pub struct IndexSyncStats {
     /// Cached packs this listing did not show but that were seen too recently to be declared gone (the
     /// listing may lag). A publisher checks these with a direct (strongly consistent) lookup.
     pub unlisted_recent: Vec<Hash>,
+    /// Every pack this (fresh) listing showed, with its size.
+    pub listed: HashMap<Hash, u64>,
 }
 
 /// How long a pack must have been absent from listings before the cache forgets it. Listings can lag
@@ -436,9 +438,10 @@ impl Remote {
         let mut stats = IndexSyncStats::default();
         let packs = self.list_packs(ctx)?;
         stats.packs_listed = packs.len();
-        for (id, info) in &packs {
-            self.db.pack_put(*id, info.size, info.provider_ref.as_deref(), info.created_ms)?;
-        }
+        stats.listed = packs.iter().map(|(id, i)| (*id, i.size)).collect();
+        ctx.mark("index cache: record listed packs");
+        self.db.packs_put_many(packs.iter().map(|(id, i)| (*id, i.size, i.provider_ref.as_deref(), i.created_ms)))?;
+        ctx.mark("index cache: list and read new indexes");
         // Packs the cache relies on that the cloud no longer has (a cleanup on another computer, files
         // removed from Drive): forget them, so nothing new deduplicates against them, and have every
         // instance re-read its files and check its next publication in full.

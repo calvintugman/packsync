@@ -814,6 +814,33 @@ impl Db {
         })
     }
 
+    /// [`Db::pack_put`] for a whole listing, in one transaction (one disk flush instead of one per pack).
+    pub fn packs_put_many<'a>(
+        &self,
+        packs: impl IntoIterator<Item = (Hash, u64, Option<&'a str>, Option<i64>)>,
+    ) -> Result<()> {
+        let now = now_ms();
+        self.tx(|t| {
+            let mut st = t.prepare_cached(
+                "INSERT INTO remote_packs(id,size,provider_ref,created_ms,seen_ms) VALUES (?1,?2,?3,?4,?5)
+                 ON CONFLICT(id) DO UPDATE SET size=excluded.size, provider_ref=excluded.provider_ref, seen_ms=excluded.seen_ms",
+            )?;
+            for (id, size, provider_ref, created_ms) in packs {
+                st.execute(params![id.0.to_vec(), size as i64, provider_ref, created_ms, now])?;
+            }
+            Ok(())
+        })
+    }
+
+    /// Count a publication of `inst`; `true` every `every`-th time (a periodic full check is due).
+    pub fn count_publication(&self, inst: InstanceId, every: u64) -> Result<bool> {
+        let key = format!("publications_since_full_check:{inst}");
+        let n: u64 = self.meta_get(&key)?.and_then(|v| v.parse().ok()).unwrap_or(0) + 1;
+        let due = every > 0 && n >= every;
+        self.meta_set(&key, &(if due { 0 } else { n }).to_string())?;
+        Ok(due)
+    }
+
     pub fn index_seen(&self, id: Hash) -> Result<bool> {
         self.with(|c| {
             Ok(c.query_row("SELECT 1 FROM remote_indexes WHERE id=?1", [id.0.to_vec()], |_| Ok(()))

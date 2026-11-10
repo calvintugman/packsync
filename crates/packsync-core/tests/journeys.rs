@@ -136,6 +136,33 @@ fn same_size_edit_with_restored_timestamp_is_detected() {
     assert_eq!(a.engine.pending_changes(en.instance, &a.ctx()).unwrap().modified.len(), 1);
 }
 
+/// Found on Google Drive with a real 6.8 GB modpack: a small edit took 36 s, 23 of them looking up, one
+/// request at a time, each of the 215 packs that the changed files' unchanged blocks live in — although
+/// the upload had just listed every pack. A publication now trusts that fresh listing and looks packs up
+/// directly only in a periodic full check (or when cloud data was lost, covered by other tests).
+#[test]
+fn a_small_edit_does_not_look_up_every_pack_it_depends_on_except_in_the_periodic_full_check() {
+    let w = TestWorld::new();
+    // packs of 32 KiB: one region file's unchanged blocks are spread over many packs
+    let a = w.device_with("desktop", |c| c.snapshot.pack_target = 32 * 1024);
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::small());
+    a.upload(en.instance);
+    let pack_lookups = |d: &packsync_core::storage_meter::MeterSnapshot| d.by_prefix.get("packs").map_or(0, |p| p.stats);
+
+    let mut lookups = vec![];
+    // the first upload was publication 1: edits 1..N-1 are publications 2..N, the last one the full check
+    for i in 1..packsync_core::upload::FULL_CHECK_EVERY {
+        fixtures::edit_region(&info.regions[0], 2, 100 + i);
+        let before = a.meter.snapshot();
+        let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+        assert!(matches!(rec, ReconcileReport::LocalAhead { uploaded: true, .. }), "{rec:?}");
+        lookups.push(pack_lookups(&a.meter.snapshot().since(&before)));
+    }
+    let (last, rest) = lookups.split_last().unwrap();
+    assert!(rest.iter().all(|n| *n == 0), "ordinary publications look up no packs: {lookups:?}");
+    assert!(*last > 1, "every {}th publication looks each dependency up: {lookups:?}", lookups.len());
+}
+
 /// Found by the first run on a real modpack: GregTech ships a zero-byte `DynamicConfig.cfg`, and the
 /// "publish no holes" check asked for the stored data of a file that has none. Empty files are in the
 /// first snapshot, appear later, and a file can be truncated to nothing — all of it must sync.

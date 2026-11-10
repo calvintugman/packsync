@@ -17,7 +17,7 @@
 //! There is no shared mutable pointer to overwrite, so concurrent publications from the same
 //! parent produce two commits (two heads), never a lost update.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +34,10 @@ use crate::progress::{Level, OpCtx, Phase};
 use crate::remote::{HEAD_FORMAT, HEAD_WINDOW, HeadRecord, RecentCommit, Remote};
 use crate::snapshot::{LocalBlobs, load_staged_meta, manifest_path, snapshot_staging_dir};
 use crate::storage::StorageError;
+
+/// Every this-many publications of an instance, all of its dependency packs are looked up directly
+/// instead of trusting the listing (see the dependency check in [`Uploader`]).
+pub const FULL_CHECK_EVERY: u64 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadReport {
@@ -168,6 +172,7 @@ impl Uploader<'_> {
         let (m, decoded_id) = Manifest::decode(&stored, Some(id))?;
         debug_assert_eq!(decoded_id, id);
         if row.state != SnapshotState::Published {
+            ctx.mark("upload: check parents are in the cloud");
             self.require_parents_in_cloud(&m, inst, ctx)?;
             db.snapshot_set_state(inst, id, SnapshotState::Uploading)?;
             report.state = SnapshotState::Uploading;
@@ -175,15 +180,29 @@ impl Uploader<'_> {
 
             // ---- 2. dependencies exist ------------------------------------------------------------------
             let meta = load_staged_meta(self.state_dir, id)?;
+            ctx.mark("upload: refresh the cloud index cache");
             let sync = self.remote.sync_index_cache(ctx)?;
             // cached packs the listing did not show may have just been removed: a direct lookup decides
             let mut lost_dep = self.remote.confirm_unlisted(&sync, ctx)? > 0;
-            let deps: HashSet<Hash> = meta.required_packs.iter().chain(meta.reused_packs.iter()).copied().collect();
-            for p in deps {
-                if self.remote.stat_pack(p, ctx)?.is_none() {
+            let deps: BTreeSet<Hash> = meta.required_packs.iter().chain(meta.reused_packs.iter()).copied().collect();
+            // The listing just made shows the packs the cloud has. Only a pack it did not show needs a direct
+            // (strongly consistent) lookup — unless a full check is due: after cloud data was lost, and on
+            // every FULL_CHECK_EVERY-th publication, every dependency is looked up directly. (A listing can
+            // lag a deletion by seconds; a cleanup only deletes packs unused for its grace period, and the
+            // periodic and `verify --remote` checks catch what that leaves.)
+            let periodic = db.count_publication(inst, FULL_CHECK_EVERY)?;
+            let full = periodic || meta.derived || lost_dep || self.db.deep_check_due(inst)?.is_some();
+            let deps: Vec<Hash> = deps.into_iter().filter(|p| full || !sync.listed.contains_key(p)).collect();
+            ctx.mark(format!(
+                "upload: look up {} dependency packs{}",
+                deps.len(),
+                if full { " (full check)" } else { " the listing did not show" }
+            ));
+            for (p, info) in deps.iter().zip(self.stat_packs(&deps, ctx)?) {
+                if info.is_none() {
                     // gone (a cleanup on another computer, or removed outside PackSync): forget it and let the
                     // full check below decide whether this version still has all its data somewhere
-                    self.db.blobs_forget_pack(p)?;
+                    self.db.blobs_forget_pack(*p)?;
                     self.db.mark_cloud_data_lost()?;
                     lost_dep = true;
                 }
@@ -192,6 +211,7 @@ impl Uploader<'_> {
             // and that data may have been removed since (a cleanup elsewhere while this computer was away).
             let deep_due = self.db.deep_check_due(inst)?;
             let deep = meta.derived || lost_dep || deep_due.is_some();
+            ctx.mark(if deep { "upload: completeness check (deep)" } else { "upload: completeness check" });
             let own = LocalBlobs::of_snapshot(self.state_dir, id, &meta.packs);
             let gaps = completeness_gaps(self.remote, &m, &own, deep, ctx)?;
             if !gaps.is_empty() {
@@ -202,22 +222,34 @@ impl Uploader<'_> {
             }
             crate::failpoint!("upload.before_packs")?;
 
-            // ---- 3. packs ---------------------------------------------------------------------------------
-            self.upload_packs(id, &meta.packs, &mut report, ctx)?;
+            // ---- 3 + 4. packs, and the index that describes them, side by side --------------------------------
+            // Their order does not matter: a reader only uses an index entry for a pack the cloud lists with
+            // the recorded size, so an index that arrives first is simply not used yet. Both come before the
+            // manifest, which is what makes them visible.
+            ctx.mark(format!("upload: {} new packs and their index", meta.packs.len()));
+            let (packs_res, index_res) = std::thread::scope(|s| {
+                let index = (!meta.packs.is_empty())
+                    .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), ctx)));
+                let packs = self.upload_packs(id, &meta.packs, &sync.listed, &mut report, ctx);
+                (packs, index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+            });
+            let verified = packs_res?;
             crate::failpoint!("upload.after_packs")?;
-
-            // ---- 4. index -----------------------------------------------------------------------------------
-            if !meta.packs.is_empty() {
-                let doc = crate::snapshot::staged_index_doc(&meta);
-                let index_id = self.remote.put_index(&doc, ctx)?;
-                // every pack it lists was uploaded or found present above: nothing to learn from it
+            if let Some(index_id) = index_res.transpose()? {
+                // every pack it lists was uploaded or found present: nothing to learn from it
                 self.remote.note_uploaded_index(index_id)?;
             }
             crate::failpoint!("upload.after_index")?;
 
             // ---- 5. verify -----------------------------------------------------------------------------------
-            for p in &meta.packs {
-                match self.remote.stat_pack(p.id, ctx)? {
+            // A pack whose upload response (or lookup) reported the expected size was verified by the provider
+            // (Drive checks the checksum of what it stored); any other pack is looked up again.
+            let unverified: Vec<&IndexPack> =
+                meta.packs.iter().filter(|p| verified.get(&p.id) != Some(&p.size)).collect();
+            ctx.mark(format!("upload: verify {} packs", unverified.len()));
+            let uploaded_ids: Vec<Hash> = unverified.iter().map(|p| p.id).collect();
+            for (p, info) in unverified.iter().zip(self.stat_packs(&uploaded_ids, ctx)?) {
+                match info {
                     Some(info) if info.size == p.size => {}
                     other => {
                         return Err(Error::Corrupt(format!(
@@ -232,6 +264,7 @@ impl Uploader<'_> {
             crate::failpoint!("publish.before_manifest")?;
 
             // ---- 6. publish: the manifest, last ----------------------------------------------------------------
+            ctx.mark(format!("upload: manifest ({} bytes)", stored.len()));
             self.remote.put_commit(&m, id, &stored, ctx)?;
             crate::failpoint!("publish.after_manifest")?;
 
@@ -245,6 +278,7 @@ impl Uploader<'_> {
             })?;
         }
         crate::failpoint!("publish.before_head")?;
+        ctx.mark("upload: head record");
         // The head record is a hint: failing to write it must not undo a successful publication.
         if let Err(e) = self.write_head(inst, id, ctx) {
             if crate::failpoint::is_crash(&e) {
@@ -258,6 +292,7 @@ impl Uploader<'_> {
         }
 
         // ---- 8. visibility, as another device would discover it -------------------------------------------------------
+        ctx.mark("upload: confirm it is listed");
         match self.remote.list_commits(inst, ctx) {
             Ok(list) if list.iter().any(|c| c.id == id) => {
                 db.snapshot_set_state(inst, id, SnapshotState::Visible)?;
@@ -308,7 +343,54 @@ impl Uploader<'_> {
         Ok(())
     }
 
-    fn upload_packs(&self, id: SnapshotId, packs: &[IndexPack], report: &mut UploadReport, ctx: &OpCtx) -> Result<()> {
+    /// Look up many packs in the cloud, a few requests at a time; results are in the order of `ids`.
+    ///
+    /// Each lookup is an independent, strongly consistent request. One after another, the few hundred
+    /// packs a large instance depends on took about 20 seconds on Google Drive — longer than a small
+    /// upload itself (`docs/benchmarks.md`). With `concurrency` 1 the lookups stay strictly sequential.
+    fn stat_packs(&self, ids: &[Hash], ctx: &OpCtx) -> Result<Vec<Option<crate::storage::ObjectInfo>>> {
+        const LOOKUPS_IN_FLIGHT: usize = 16;
+        let workers = if self.concurrency <= 1 { 1 } else { LOOKUPS_IN_FLIGHT }.min(ids.len());
+        let next = AtomicU64::new(0);
+        let failed = std::sync::atomic::AtomicBool::new(false);
+        let slots: Vec<parking_lot::Mutex<Option<Result<Option<crate::storage::ObjectInfo>>>>> =
+            ids.iter().map(|_| parking_lot::Mutex::new(None)).collect();
+        std::thread::scope(|s| {
+            for _ in 0..workers {
+                s.spawn(|| {
+                    while !failed.load(Ordering::Relaxed) && !ctx.is_cancelled() {
+                        let i = next.fetch_add(1, Ordering::Relaxed) as usize;
+                        let Some(id) = ids.get(i) else { return };
+                        let r = self.remote.stat_pack(*id, ctx);
+                        if r.is_err() {
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                        *slots[i].lock() = Some(r);
+                    }
+                });
+            }
+        });
+        let mut results: Vec<Option<Result<Option<crate::storage::ObjectInfo>>>> =
+            slots.into_iter().map(|m| m.into_inner()).collect();
+        // the first failure in pack order, so the error does not depend on thread timing
+        if let Some(i) = results.iter().position(|r| matches!(r, Some(Err(_)))) {
+            return Err(results.swap_remove(i).expect("just matched").expect_err("just matched"));
+        }
+        ctx.check()?;
+        results
+            .into_iter()
+            .map(|r| r.ok_or_else(|| Error::other("a pack lookup did not run")).and_then(|r| r))
+            .collect()
+    }
+
+    fn upload_packs(
+        &self,
+        id: SnapshotId,
+        packs: &[IndexPack],
+        listed: &HashMap<Hash, u64>,
+        report: &mut UploadReport,
+        ctx: &OpCtx,
+    ) -> Result<HashMap<Hash, u64>> {
         let dir = snapshot_staging_dir(self.state_dir, id);
         let total: u64 = packs.iter().map(|p| p.size).sum();
         let done = AtomicU64::new(0);
@@ -321,27 +403,36 @@ impl Uploader<'_> {
         }
         drop(tx);
         let first_err: parking_lot::Mutex<Option<Error>> = parking_lot::Mutex::new(None);
-        let refs = (&done, &uploaded, &present, &bytes, &first_err, &dir);
+        // packs whose size the provider confirmed in this run (upload response or lookup)
+        let verified: parking_lot::Mutex<HashMap<Hash, u64>> = parking_lot::Mutex::new(HashMap::new());
+        let refs = (&done, &uploaded, &present, &bytes, &first_err, &dir, &verified);
         std::thread::scope(|s| {
             for _ in 0..self.concurrency.max(1) {
                 let rx = rx.clone();
                 s.spawn(move || {
-                    let (done, uploaded, present, bytes, first_err, dir) = refs;
+                    let (done, uploaded, present, bytes, first_err, dir, verified) = refs;
                     while let Ok(p) = rx.recv() {
                         if first_err.lock().is_some() || ctx.is_cancelled() {
                             return;
                         }
                         let res: Result<bool> = (|| {
-                            // already there with the right size? (a retry after a crash, or a dedup'd twin)
-                            if let Some(info) = self.remote.stat_pack(p.id, ctx)?
+                            // Already there with the right size (a retry after a crash, a dedup'd twin)? The
+                            // listing just made says so. A pack it does not show is simply put: a put is
+                            // create-only by content, and an interrupted upload of it is resumed or found by the
+                            // provider (Drive keeps the session and the pre-generated file ID), so looking it
+                            // up first would only cost a request per new pack.
+                            if listed.get(&p.id) == Some(&p.size)
+                                && let Some(info) = self.remote.stat_pack(p.id, ctx)?
                                 && info.size == p.size
                             {
                                 self.remote.note_uploaded_pack(p, &info)?;
+                                verified.lock().insert(p.id, info.size);
                                 return Ok(false);
                             }
                             let path = dir.join(format!("{}.pack", p.id.to_hex()));
                             let info = self.remote.put_pack(&path, p.id, p.size, ctx)?;
                             self.remote.note_uploaded_pack(p, &info)?;
+                            verified.lock().insert(p.id, info.size);
                             Ok(true)
                         })();
                         match res {
@@ -398,7 +489,7 @@ impl Uploader<'_> {
             return Err(e);
         }
         ctx.check()?;
-        Ok(())
+        Ok(verified.into_inner())
     }
 
     /// Update this device's single-writer head record with a window of recent cloud-side history.
