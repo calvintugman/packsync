@@ -101,6 +101,17 @@ pub enum HookOutcome {
     ChooseVersion { question: String, cloud_head: Option<packsync_core::ids::SnapshotId>, messages: Vec<String> },
 }
 
+/// "just now", "12 minutes ago", "3 hours ago", "2 days ago".
+fn ago(secs: i64) -> String {
+    let unit = |n: i64, what: &str| format!("{n} {what}{} ago", if n == 1 { "" } else { "s" });
+    match secs.max(0) {
+        0..60 => "just now".into(),
+        s @ 60..3600 => unit(s / 60, "minute"),
+        s @ 3600..86_400 => unit(s / 3600, "hour"),
+        s => unit(s / 86_400, "day"),
+    }
+}
+
 /// Errors that mean "the cloud is not reachable right now" rather than "something is wrong with the
 /// local data": playing the local copy is allowed (policy permitting).
 pub fn is_connectivity_error(e: &Error) -> bool {
@@ -547,11 +558,12 @@ impl App {
     fn version_question(&self, id: InstanceId, ctx: &OpCtx) -> Option<HookOutcome> {
         let opts = ReconcileOpts { apply_fast_forward: false, upload_local: false };
         let Ok(ReconcileReport::Conflict(c)) = self.engine().reconcile(id, opts, ctx) else { return None };
+        // relative times: no time zone to get wrong, and what a person compares at a glance
         let when = |s: &packsync_core::engine::SnapshotSummary| {
-            s.created
-                .as_deref()
-                .map(|t| t.replace('T', " ").chars().take(16).collect::<String>())
-                .unwrap_or_else(|| "?".into())
+            s.created.as_deref().and_then(packsync_core::manifest::parse_rfc3339).map_or_else(
+                || "at an unknown time".to_string(),
+                |t| ago((time::OffsetDateTime::now_utc() - t).whole_seconds()),
+            )
         };
         let local = match (&c.local, c.local_dirty) {
             (Some(l), true) => format!("This PC: last saved {}, with changes made since", when(l)),

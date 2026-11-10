@@ -174,6 +174,8 @@ protected.
   computers changed it since they last synced, the dialog shows both versions ("This PC: saved …",
   "Cloud: from laptop, saved …") with **Keep this PC**, **Keep cloud** and **Don't play**; the other version
   stays in the history.
+
+  ![The launch dialog when both computers changed an instance](docs/images/launch-choose-version.png)
 * **Hooks — nothing in the background.** If you prefer to start instances from Prism, install PackSync's
   pre-launch and post-exit commands for that instance: PackSync then runs only for the seconds around
   pressing Play and closing the game, and the desktop app can stay closed. (Why this, rather than a

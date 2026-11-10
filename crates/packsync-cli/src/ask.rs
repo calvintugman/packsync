@@ -50,6 +50,7 @@ fn platform(title: &str, question: &str, yes: &str, no: &str) -> Option<bool> {
                 format!("--ok-label={yes}"),
                 format!("--cancel-label={no}"),
                 "--icon=dialog-warning".into(),
+                "--width=460".into(),
             ],
         ),
         (
@@ -140,6 +141,7 @@ fn choose_platform(title: &str, question: &str, first: &str, second: &str, cance
             &format!("--extra-button={second}"),
             &format!("--cancel-label={cancel}"),
             "--icon=dialog-warning",
+            "--width=460",
         ])
         .output()
     {
