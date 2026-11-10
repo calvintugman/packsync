@@ -4,7 +4,7 @@ use packsync_core::engine::{ReconcileOpts, ReconcileReport, SnapshotOpts, Snapsh
 use packsync_core::error::{Error, Result, exit};
 
 use super::Cx;
-use crate::args::{HistoryArgs, InstanceArg, ReconcileArgs, SnapshotArgs, UploadArgs, VerifyArgs};
+use crate::args::{HistoryArgs, InstanceArg, ReconcileArgs, SnapshotArgs, SyncArgs, UploadArgs, VerifyArgs};
 use crate::render::{ago, bytes, short, when};
 use crate::resolve;
 
@@ -138,10 +138,22 @@ fn reconcile_code(r: &ReconcileReport) -> i32 {
     }
 }
 
-pub fn sync_now(cx: &Cx, a: InstanceArg) -> Result<i32> {
+pub fn sync_now(cx: &Cx, a: SyncArgs) -> Result<i32> {
+    let started = std::time::Instant::now();
     let id = resolve::instance(&cx.app, &a.instance)?;
-    let (snap, rec) = cx.app.engine().sync_now(id, &cx.out.ctx())?;
-    cx.out.emit(&serde_json::json!({ "snapshot": snap, "reconcile": rec }), |w| {
+    let mut ctx = cx.out.ctx();
+    let trace = a.explain.then(|| packsync_core::progress::Trace::new(packsync_app::provider::transfer_counts));
+    if let Some(t) = &trace {
+        ctx = ctx.with_trace(t.clone());
+    }
+    let (snap, rec) = cx.app.engine().sync_now(id, &ctx)?;
+    let explain = trace.map(|t| Explain {
+        total_ms: started.elapsed().as_millis() as u64,
+        steps: t.finish(),
+        requests_by_kind: packsync_app::provider::drive_request_stats(),
+        snapshot: snap.as_ref().map(|s| s.stats.clone()),
+    });
+    cx.out.emit(&serde_json::json!({ "snapshot": snap, "reconcile": rec, "explain": explain }), |w| {
         if let Some(s) = &snap {
             match &s.result {
                 SnapshotResult::Created { id } => {
@@ -150,9 +162,87 @@ pub fn sync_now(cx: &Cx, a: InstanceArg) -> Result<i32> {
                 SnapshotResult::Unchanged { .. } => writeln!(w, "No local changes.")?,
             }
         }
-        print_reconcile(w, &rec)
+        print_reconcile(w, &rec)?;
+        if let Some(e) = &explain {
+            print_explain(w, e)?;
+        }
+        Ok(())
     })?;
     Ok(reconcile_code(&rec))
+}
+
+/// What `sync --explain` reports.
+#[derive(serde::Serialize)]
+struct Explain {
+    total_ms: u64,
+    steps: Vec<packsync_core::progress::TraceStep>,
+    requests_by_kind: Option<packsync_drive::RequestStats>,
+    snapshot: Option<packsync_core::snapshot::SnapshotStats>,
+}
+
+fn print_explain(w: &mut dyn Write, e: &Explain) -> std::io::Result<()> {
+    let total_req: u64 = e.steps.iter().map(|s| s.requests).sum();
+    let up: u64 = e.steps.iter().map(|s| s.bytes_up).sum();
+    let down: u64 = e.steps.iter().map(|s| s.bytes_down).sum();
+    writeln!(w)?;
+    writeln!(
+        w,
+        "Explain: {:.2} s, {total_req} HTTP requests, {} sent, {} received",
+        e.total_ms as f64 / 1000.0,
+        bytes(up),
+        bytes(down)
+    )?;
+    writeln!(w, "  {:<52} {:>9} {:>9} {:>10} {:>10}", "step", "time", "requests", "sent", "received")?;
+    for s in e.steps.iter().filter(|s| s.ms > 0 || s.requests > 0) {
+        let name: String = s.step.chars().take(52).collect();
+        writeln!(
+            w,
+            "  {:<52} {:>7.2} s {:>9} {:>10} {:>10}",
+            name,
+            s.ms as f64 / 1000.0,
+            s.requests,
+            bytes(s.bytes_up),
+            bytes(s.bytes_down)
+        )?;
+    }
+    if let Some(k) = &e.requests_by_kind {
+        writeln!(
+            w,
+            "  by kind: list {}, get {}, create {}, upload sessions {}, upload chunks {}, update {}, delete {}, \
+             token {}, other {}; retries {}",
+            k.list, k.get, k.create, k.resumable_init, k.chunk, k.update, k.delete, k.token, k.other, k.retries
+        )?;
+    }
+    if let Some(s) = &e.snapshot {
+        writeln!(
+            w,
+            "Snapshot: {} files hashed ({}), {} reused from the cache; {} new chunks, {} new data ({} stored) in {} packs",
+            s.hashed_files,
+            bytes(s.hashed_bytes),
+            s.reused_files,
+            s.new_blobs,
+            bytes(s.new_raw_bytes),
+            bytes(s.new_stored_bytes),
+            s.packs
+        )?;
+        if s.manifest_bytes > 0 {
+            writeln!(w, "Manifest: {} stored ({} as JSON)", bytes(s.manifest_bytes), bytes(s.manifest_raw_bytes))?;
+        }
+        if !s.costliest.is_empty() {
+            writeln!(w, "Costliest files:  {:>10} {:>10} {:>10}  path", "hashed", "new", "stored")?;
+            for c in &s.costliest {
+                writeln!(
+                    w,
+                    "                  {:>10} {:>10} {:>10}  {}",
+                    bytes(c.hashed),
+                    bytes(c.new_raw),
+                    bytes(c.new_stored),
+                    c.path
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn reconcile(cx: &Cx, a: ReconcileArgs) -> Result<i32> {

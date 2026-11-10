@@ -85,6 +85,20 @@ pub struct SnapshotRequest<'a> {
     pub new_instance_id: Option<InstanceId>,
 }
 
+/// One file's share of a snapshot's work (for `--explain`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathCost {
+    pub path: String,
+    /// Bytes read and hashed (0 when the cached hash could be reused).
+    pub hashed: u64,
+    /// New data this file contributed, before and after compression.
+    pub new_raw: u64,
+    pub new_stored: u64,
+}
+
+/// How many files `SnapshotStats::costliest` lists.
+pub const COSTLIEST_FILES: usize = 15;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SnapshotStats {
     pub files: u64,
@@ -97,6 +111,14 @@ pub struct SnapshotStats {
     pub reused_blobs: u64,
     pub new_raw_bytes: u64,
     pub new_stored_bytes: u64,
+    /// The snapshot's manifest as stored (compressed) and as JSON.
+    #[serde(default)]
+    pub manifest_bytes: u64,
+    #[serde(default)]
+    pub manifest_raw_bytes: u64,
+    /// The files that cost the most: new data first, then bytes hashed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub costliest: Vec<PathCost>,
     pub packs: u64,
     pub added: u64,
     pub removed: u64,
@@ -471,6 +493,9 @@ pub fn create(
         reused_blobs: staged.stats.blobs_reused,
         new_raw_bytes: staged.stats.raw_bytes_new,
         new_stored_bytes: staged.stats.stored_bytes_new,
+        manifest_bytes: 0,
+        manifest_raw_bytes: 0,
+        costliest: costliest(&phase.hashed, &staged.stats.new_by_path),
         packs: staged.packs.len() as u64,
         added: summary.added,
         removed: summary.removed,
@@ -504,6 +529,8 @@ pub fn create(
     }
 
     let (id, stored) = m.encode()?;
+    stats.manifest_bytes = stored.len() as u64;
+    stats.manifest_raw_bytes = serde_json::to_vec(&m).map(|v| v.len() as u64).unwrap_or(0);
 
     // ---- required packs for publish-time verification -------------------------------------------
     let required =
@@ -584,6 +611,23 @@ pub fn create(
     );
     let _ = started_ns;
     Ok(SnapshotOutcome::Created { id, manifest: Box::new(m), stats, walk: wsum })
+}
+
+fn costliest(hashed: &[crate::scan::HashedFile], new_by_path: &HashMap<String, (u64, u64)>) -> Vec<PathCost> {
+    let mut by: HashMap<&str, PathCost> = HashMap::new();
+    for h in hashed {
+        let e = by.entry(h.path.as_str()).or_insert_with(|| PathCost { path: h.path.clone(), ..Default::default() });
+        e.hashed = h.content.size;
+    }
+    for (p, (raw, stored)) in new_by_path {
+        let e = by.entry(p.as_str()).or_insert_with(|| PathCost { path: p.clone(), ..Default::default() });
+        e.new_raw = *raw;
+        e.new_stored = *stored;
+    }
+    let mut v: Vec<PathCost> = by.into_values().collect();
+    v.sort_by(|a, b| b.new_stored.cmp(&a.new_stored).then(b.hashed.cmp(&a.hashed)).then(a.path.cmp(&b.path)));
+    v.truncate(COSTLIEST_FILES);
+    v
 }
 
 /// Packs holding the blobs referenced by entries that are new or changed relative to the base.

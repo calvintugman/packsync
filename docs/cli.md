@@ -66,7 +66,7 @@ Instances are named by their **ID** (or a unique prefix of at least 4 characters
 
 | Command | What it does |
 |---|---|
-| `sync INSTANCE` | Snapshot local changes, then bring this computer and the cloud in step. Exit 12 on a conflict, 15 if the upload is still pending. |
+| `sync INSTANCE [--explain]` | Snapshot local changes, then bring this computer and the cloud in step. Exit 12 on a conflict, 15 if the upload is still pending. `--explain` adds where the time went: each step with its duration, HTTP requests and bytes, requests by kind, the costliest files (new data, bytes hashed) and the manifest size (also under `explain` in `--json`). |
 | `snapshot INSTANCE [--force] [--note T] [--confirm-mass-delete]` | Save the current state locally. |
 | `upload INSTANCE [--force]` | Upload saved snapshots (honours the persisted backoff unless `--force`). |
 | `reconcile INSTANCE [--no-fast-forward] [--no-upload]` | Compare with the cloud: apply a newer version if this computer is clean, upload local snapshots, report conflicts. |
@@ -125,6 +125,7 @@ strict offline policy), and always runs your own chained command with its exit s
 | `PACKSYNC_LOG` | Log filter directives (`packsync_core=debug`); crates that can log credentials are pinned to `warn` and cannot be raised. |
 | `PACKSYNC_LAUNCH_POLL_MS` | How often `launch` looks for the game process (default 500). |
 | `PACKSYNC_FAILPOINTS` | Only in builds with `--features failpoints` (tests): inject a crash at a named boundary. |
+| `PACKSYNC_TRANSFER_STATS`, `PACKSYNC_TRANSFER_LABEL` | Benchmarks: append one JSON line per run (wall-clock time, exit code, HTTP requests and bytes) to this file, labelled. |
 | `PACKSYNC_PRISM_SEED` | Only for `scripts/prism-smoke.sh`: Prism data directory to copy read-only caches from. |
 
 ## JSON

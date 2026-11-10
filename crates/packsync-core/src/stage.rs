@@ -29,6 +29,8 @@ pub struct StageStats {
     pub raw_bytes_new: u64,
     pub stored_bytes_new: u64,
     pub compressed_blobs: u64,
+    /// New (not yet stored anywhere) data per file: path → (raw bytes, stored bytes).
+    pub new_by_path: HashMap<String, (u64, u64)>,
 }
 
 pub trait BlobSink: Sync {
@@ -82,6 +84,7 @@ pub struct StagingSink {
     raw_new: AtomicU64,
     stored_new: AtomicU64,
     compressed: AtomicU64,
+    new_by_path: Mutex<HashMap<String, (u64, u64)>>,
 }
 
 pub struct StagedOutput {
@@ -110,6 +113,7 @@ impl StagingSink {
             raw_new: AtomicU64::new(0),
             stored_new: AtomicU64::new(0),
             compressed: AtomicU64::new(0),
+            new_by_path: Mutex::new(HashMap::new()),
         })
     }
 
@@ -161,6 +165,7 @@ impl StagingSink {
                 raw_bytes_new: self.raw_new.load(Ordering::Relaxed),
                 stored_bytes_new: self.stored_new.load(Ordering::Relaxed),
                 compressed_blobs: self.compressed.load(Ordering::Relaxed),
+                new_by_path: std::mem::take(&mut *self.new_by_path.lock()),
             },
         })
     }
@@ -197,6 +202,12 @@ impl BlobSink for StagingSink {
         self.stored_new.fetch_add(stored.len() as u64, Ordering::Relaxed);
         if codec == Codec::Zstd {
             self.compressed.fetch_add(1, Ordering::Relaxed);
+        }
+        {
+            let mut by = self.new_by_path.lock();
+            let e = by.entry(path_hint.to_string()).or_default();
+            e.0 += raw.len() as u64;
+            e.1 += stored.len() as u64;
         }
         // Queue it with the other blobs of this thread's file; the run goes into the pack in one piece.
         let full_run = {

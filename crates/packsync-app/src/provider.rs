@@ -65,6 +65,18 @@ pub fn drive_request_stats() -> Option<packsync_drive::RequestStats> {
     DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|h| h.snapshot())
 }
 
+/// Cumulative HTTP requests and body bytes of this process's cloud provider (zeros for a local folder).
+pub fn transfer_counts() -> packsync_core::progress::TransferCounts {
+    match drive_request_stats() {
+        Some(s) => packsync_core::progress::TransferCounts {
+            requests: s.total(),
+            bytes_up: s.bytes_up,
+            bytes_down: s.bytes_down,
+        },
+        None => Default::default(),
+    }
+}
+
 pub struct Provider {
     pub storage: Option<Arc<dyn Storage>>,
     pub auth: Option<Arc<Authenticator>>,

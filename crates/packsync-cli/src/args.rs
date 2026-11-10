@@ -58,7 +58,7 @@ pub enum Command {
     /// Upload saved snapshots to the cloud.
     Upload(UploadArgs),
     /// Snapshot, then bring this computer and the cloud in step (the "Sync now" button).
-    Sync(InstanceArg),
+    Sync(SyncArgs),
     /// Compare with the cloud: download newer versions, upload local ones, report conflicts.
     Reconcile(ReconcileArgs),
     /// List snapshots of an instance.
@@ -116,6 +116,16 @@ pub enum Command {
 pub struct InstanceArg {
     /// Instance: its ID (or unique prefix), its name, or the path of its folder.
     pub instance: String,
+}
+
+#[derive(Args, Debug)]
+pub struct SyncArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
+    pub instance: String,
+    /// Afterwards, show where the time and the requests went: each step with its duration, HTTP
+    /// requests and bytes, the files that cost the most, and the manifest size.
+    #[arg(long)]
+    pub explain: bool,
 }
 
 #[derive(Args, Debug)]

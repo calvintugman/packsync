@@ -36,7 +36,19 @@ impl Api {
             return Err(StorageError::Cancelled);
         }
         let token = self.tokens.access_token(ctx)?;
+        let started = std::time::Instant::now();
         let resp = self.transport.send(req, Some(&token))?;
+        // only the path: the query can hold a resumable session's upload_id (a capability)
+        tracing::debug!(
+            target: "packsync_drive::request",
+            kind = ?req.kind,
+            path = req.url.split('?').next().unwrap_or(""),
+            // the files.list query (folder IDs and object names: no secrets), to see what a listing was for
+            q = req.url.split(['?', '&']).find_map(|p| p.strip_prefix("q=")).unwrap_or(""),
+            status = http::status(&resp),
+            ms = started.elapsed().as_millis() as u64,
+            "request"
+        );
         if http::status(&resp) != 401 {
             return Ok(resp);
         }
