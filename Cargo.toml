@@ -44,7 +44,7 @@ fs4 = "1"
 filetime = "0.2"
 file-id = "0.2"
 unicode-normalization = "0.1"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 fastrand = "2"
