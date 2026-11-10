@@ -313,6 +313,9 @@ impl Engine {
             needs_full_scan: true,
         })?;
         restore::finish_new_restore(&self.db, &staged, &reg.root);
+        // The restore wrote every file from verified data: record them in the file index so the first
+        // scan on this computer does not read the whole instance again (14.6 s for 5.4 GB).
+        self.trust_restored_files(req.instance, &reg.root, &target)?;
         Ok(RestoredInstance { instance: req.instance, root: reg.root, snapshot: sid, notes: reg.notes, report })
     }
 

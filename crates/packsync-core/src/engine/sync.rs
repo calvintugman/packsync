@@ -965,6 +965,44 @@ impl Engine {
         Ok(VerifyReport { files_checked: hp.hashed.len() as u64, changed, missing, extra })
     }
 
+    /// After a restore that wrote the instance from verified data: the file index is the manifest's
+    /// content hashes with each file's metadata as it is now, as a scan would have recorded it. Files
+    /// written within the racy window are still hashed again by the next scan (see `scan::classify`).
+    pub(crate) fn trust_restored_files(
+        &self,
+        id: InstanceId,
+        root: &std::path::Path,
+        m: &crate::manifest::Manifest,
+    ) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let mut rows = Vec::with_capacity(m.entries.len());
+        for e in m.entries.iter().filter(|e| e.is_file()) {
+            let Ok(st) = crate::fsutil::stat_nofollow(&root.join(&e.p)) else { continue };
+            if st.kind != crate::fsutil::FileKind::File {
+                continue;
+            }
+            rows.push(crate::db::IndexRow {
+                path: e.p.clone(),
+                size: st.size,
+                mtime_ns: st.mtime_ns,
+                ctime_ns: st.ctime_ns,
+                file_id: st.file_id,
+                hash: e.h.unwrap_or(crate::hash::Hash::of(b"")),
+                recipe: e.r,
+                mixed: e.mx.clone(),
+                content_size: e.s,
+                hashed_at_ns: now,
+                verified_at_ns: now,
+            });
+        }
+        self.db.index_replace(id, &rows)?;
+        self.db.instance_update(id, |r| r.needs_full_scan = false)?;
+        Ok(())
+    }
+
     /// Mark the file index untrusted: the next snapshot hashes everything.
     pub fn rescan(&self, id: InstanceId) -> Result<()> {
         self.db.instance_update(id, |r| r.needs_full_scan = true)?;
