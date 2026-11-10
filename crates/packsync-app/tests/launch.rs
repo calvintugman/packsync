@@ -429,3 +429,28 @@ fn while_the_app_is_open_a_pending_upload_is_retried_on_its_own() {
     assert_eq!(st.pending_snapshots, 0, "{st:?}");
     assert!(a.app.retry_uploads_once().is_empty(), "nothing left to do");
 }
+
+/// Pressing Play in Prism on one computer while another is playing the same instance: the pre-launch
+/// hook does not just log a warning nobody sees, it asks (the CLI shows a native dialog; "no" ends the
+/// session it opened and refuses the launch).
+#[test]
+fn the_pre_launch_hook_asks_when_another_computer_is_playing() {
+    let w = World::new();
+    let a = w.device("desktop");
+    let (inst, _root) = a.new_synced_instance("Pack One");
+    let b = w.device("laptop");
+    b.app.restore_cloud_instance(Default::default(), &b.ctx()).unwrap();
+
+    // the desktop starts playing through its hook (its lease is fresh)
+    assert!(matches!(a.app.hook_pre_launch(inst, &a.ctx()), HookOutcome::Proceed { .. }));
+    // the laptop presses Play
+    let pre = b.app.hook_pre_launch(inst, &b.ctx());
+    let HookOutcome::Ask { question, .. } = pre else { panic!("expected a question, got {pre:?}") };
+    assert!(question.contains("desktop") && question.contains("Play anyway"), "{question}");
+    // "don't play": the hook ends its session again, nothing is left open
+    b.app.hook_post_exit(inst, &b.ctx());
+    assert!(b.app.engine().db().sessions_open(inst).unwrap().is_empty());
+    // once the desktop has finished, the laptop is not asked
+    a.app.hook_post_exit(inst, &a.ctx());
+    assert!(matches!(b.app.hook_pre_launch(inst, &b.ctx()), HookOutcome::Proceed { .. }));
+}

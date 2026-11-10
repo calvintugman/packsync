@@ -108,7 +108,8 @@ writes (the GTNH copy, local S3 server, 3 rounds, seeds 401–403; "play" = the 
 | Pre-launch hook, cloud unchanged (one read of HEAD) | **0.14–0.24 s** |
 | Post-exit hook, until Prism gets control back (snapshot saved; upload started in the background) | **0.68–1.13 s** |
 | Background upload finished, counted from the game's exit | **0.86–1.30 s** |
-| Pre-launch hook on a second profile after the first one played (downloads the 40 changed files; full path) | 4.1 s (1 run) |
+| Pre-launch hook on a second profile after the first one played (downloads the 40 changed files; full path) | 2.39–2.55 s (3 runs) |
+| First pre-launch hook on a computer the instance was just brought to | 0.50 s (1 run; before the restore recorded its file index: 16.8 s) |
 
 After the rounds, `verify --remote` found nothing missing or damaged, and the second profile's world was
 identical to the first's except the Distant Horizons caches (excluded; each computer regenerates its own).

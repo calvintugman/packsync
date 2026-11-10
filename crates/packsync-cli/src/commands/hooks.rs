@@ -143,7 +143,26 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
             .map_err(|_| Error::invalid("hook", "--instance must be a PackSync instance ID"))?;
         let app = open_app(cli)?;
         let ctx = out.ctx();
-        Ok(if pre { app.hook_pre_launch(id, &ctx) } else { app.hook_post_exit(id, &ctx) })
+        Ok(match if pre { app.hook_pre_launch(id, &ctx) } else { app.hook_post_exit(id, &ctx) } {
+            HookOutcome::Ask { question, mut messages } => {
+                let answer = crate::ask::yes_no("PackSync", &question, "Play anyway", "Don't play");
+                messages.push(format!(
+                    "{question} — {}",
+                    match answer {
+                        Some(true) => "answered: play anyway",
+                        Some(false) => "answered: don't play",
+                        None => "no dialog could be shown; playing (the warning is advisory)",
+                    }
+                ));
+                if answer == Some(false) {
+                    let _ = app.hook_post_exit(id, &ctx); // close the session this launch opened
+                    HookOutcome::Block { message: "the launch was cancelled".into(), exit_code: 1 }
+                } else {
+                    HookOutcome::Proceed { messages, upload: None }
+                }
+            }
+            other => other,
+        })
     })();
     match ours {
         Ok(HookOutcome::Block { message, exit_code }) => {
@@ -158,6 +177,7 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
                 spawn_background_upload(id, cli);
             }
         }
+        Ok(HookOutcome::Ask { .. }) => unreachable!("answered above"),
         Err(e) => eprintln!("PackSync could not run its part of the hook ({e}); continuing without syncing"),
     }
     Ok(run_chained(&args.chained))

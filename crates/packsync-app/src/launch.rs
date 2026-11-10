@@ -93,6 +93,9 @@ pub enum HookOutcome {
     },
     /// Refuse to start the game (non-zero exit from the pre-launch command).
     Block { message: String, exit_code: i32 },
+    /// Ask the person first (pre-launch): another computer seems to be playing this instance. The
+    /// session is open; if the answer is no, end it (`hook_post_exit`) and refuse the launch.
+    Ask { question: String, messages: Vec<String> },
 }
 
 /// Errors that mean "the cloud is not reachable right now" rather than "something is wrong with the
@@ -512,10 +515,14 @@ impl App {
         match engine.begin_session(id, BeginSession { owner: SessionOwner::Hook, token, offline }, ctx) {
             Ok(b) => {
                 if !b.playing_elsewhere.is_empty() {
-                    messages.push(format!(
-                        "{} appears to be playing this instance right now (advisory only).",
-                        b.playing_elsewhere.join(", ")
-                    ));
+                    return HookOutcome::Ask {
+                        question: format!(
+                            "{} is playing {} right now. If you play here too, you will have to choose one of the two versions afterwards (nothing is lost). Play anyway?",
+                            b.playing_elsewhere.join(" and "),
+                            inst.name
+                        ),
+                        messages,
+                    };
                 }
                 HookOutcome::Proceed { messages, upload: None }
             }

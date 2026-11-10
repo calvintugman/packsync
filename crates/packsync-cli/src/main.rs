@@ -1,6 +1,7 @@
 //! The `packsync` command-line tool. See `docs/cli.md`.
 
 mod args;
+mod ask;
 mod commands;
 mod render;
 mod resolve;

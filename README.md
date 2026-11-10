@@ -168,6 +168,9 @@ protected.
   what other rules say.
 * **Play.** The *Play* button (and `packsync launch`) syncs first, starts Prism itself, tracks the game
   process, and saves and uploads when the game closes.
+* **One step.** Enabling sync in the desktop app also adds PackSync to the instance's Play button in Prism
+  (an option, on by default). Pressing Play then checks the cloud in one request when nothing changed, and
+  if another computer is playing the same instance right now, a dialog asks before the game starts.
 * **Hooks — nothing in the background.** If you prefer to start instances from Prism, install PackSync's
   pre-launch and post-exit commands for that instance: PackSync then runs only for the seconds around
   pressing Play and closing the game, and the desktop app can stay closed. (Why this, rather than a
@@ -281,11 +284,12 @@ Deliberately not in this version:
   a snapshot taken while the game holds the world (`session.lock`) can capture a state that never existed.
   Saving after exit is consistent by construction; the work went into making that save fast instead.
   (Uploading packs in the background during play, without publishing them, would be a safe next step.)
-* **One-click Prism integration in the desktop app.** The hooks exist and use the fast path
-  (`packsync hooks install`, [`docs/hooks.md`](docs/hooks.md)); a per-instance toggle in the app is next.
-  Catching up from another computer still takes the full path (4.1 s in the benchmark).
+* **Catching up from another computer on the fast path.** Pressing Play after another computer played
+  takes the full path: 2.4–2.6 s in the benchmark (40 changed files). The HEAD pointer could carry the
+  new index so that no listing is needed.
 * **Signing in with the Microsoft account Prism already has**, for true plug-and-play (not started).
-* **A Steam-style conflict dialog** at launch (conflicts are detected and resolvable today, in the app and the CLI).
+* **A Steam-style "keep this PC / keep cloud" dialog** at launch (conflicts are detected and resolvable today,
+  in the app and the CLI; the launch hook already asks before playing while another computer plays).
 * **Changing an existing instance's rules** (an instance keeps the rules recorded in its snapshots; the
   Distant Horizons exclusion applies to instances enabled from now on).
 * Real-Windows and macOS verification, signed installers, end-to-end encryption.

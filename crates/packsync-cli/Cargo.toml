@@ -40,3 +40,6 @@ packsync-core = { workspace = true, features = ["testkit"] }
 [features]
 # Compile deterministic crash injection into the binary (tests kill real processes with it).
 failpoints = ["packsync-core/failpoints"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
