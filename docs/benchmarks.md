@@ -82,7 +82,8 @@ Horizons…"):
 * a **HEAD pointer** moved only by compare-and-swap (`If-Match`): while a computer's last known HEAD is
   still the cloud's, "nothing changed" is **one read** and a new snapshot is **four requests** (packs and
   index side by side, the manifest, the HEAD swap) with no listing; any disagreement falls back to the
-  full path;
+  full path, and so does a recorded fork (a computer that lost the race to move HEAD) or a last full look
+  at the cloud older than 30 minutes;
 * the Distant Horizons database is excluded as a regenerable cache; the file index is updated by
   difference; no repeated completeness check right after saving.
 

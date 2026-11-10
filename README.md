@@ -145,6 +145,9 @@ same OAuth client), and the 7-day expiry of sign-ins in Testing mode.
 R2 is S3-compatible storage with free egress (10 GB free). It is faster than Drive for PackSync because it
 has **atomic conditional writes**: a compare-and-swap HEAD pointer lets an up-to-date computer check the
 cloud with one request and publish a new snapshot with four (see [`docs/benchmarks.md`](docs/benchmarks.md)).
+HEAD is only a shortcut, never the authority: a computer that loses the race to move it records its version
+in HEAD as a *fork*, nobody acts on HEAD alone while a fork is recorded, and every computer takes a full look
+at the cloud's history at least every 30 minutes, so a conflict is always reported on both computers.
 
 1. Cloudflare dashboard → **R2** → create a bucket (e.g. `packsync`).
 2. **R2 → Manage API tokens → Create API token**: *Object Read & Write*, limited to that bucket.
@@ -249,7 +252,7 @@ What it does **not** do:
 | | |
 |---|---|
 | **Implemented** | Sync engine (scan, chunking, packs, manifests, upload, reconcile, journaled restore, recovery, sessions, conflicts, crash quarantine, retention/cleanup); Google Drive adapter + OAuth; Prism adapter + hooks; command-line tool; desktop app (setup, instances, history/restore, conflicts, crashes, hooks, cloud, settings, cleanup). |
-| **Tested locally** (no credentials) | 417 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
+| **Tested locally** (no credentials) | 423 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
 | **Tested against a real service** | **Google Drive and Google OAuth** (2026-11-10: conformance suite, a 6.8 GB GregTech: New Horizons copy uploaded, restored byte-identical, edits, a conflict, killed uploads resumed; Linux, KDE Wallet as the credential store). **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
 | **Not tested against real services** | **a real Windows installation** (only Wine; `scripts/windows-verify.ps1` is the procedure) and **macOS** (never built); two physical computers (a second profile stood in); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
 | **Not done** | End-to-end encryption; deleting history (v1 releases the *content* of old snapshots but keeps their manifests); signed installers and releases; auto-update; other launchers (the adapter interface is there). |
@@ -295,8 +298,10 @@ Deliberately not in this version:
   Saving after exit is consistent by construction; the work went into making that save fast instead.
   (Uploading packs in the background during play, without publishing them, would be a safe next step.)
 * **Catching up from another computer on the fast path.** Pressing Play after another computer played
-  takes the full path: 2.4–2.6 s in the benchmark (40 changed files). The HEAD pointer could carry the
-  new index so that no listing is needed.
+  still lists the history: 4.9–6.7 s on R2 in the benchmark (40 changed files). Taking it from the HEAD
+  pointer and reusing one scan should halve that.
+* **Rules for every GregTech: New Horizons file.** 718 files (76 MB) of a GTNH instance match no rule and
+  are not synced (for example `visualprospecting/`, `serverutilities/`); some of them may be progress.
 * **Signing in with the Microsoft account Prism already has**, for true plug-and-play (not started).
 * **Changing an existing instance's rules** (an instance keeps the rules recorded in its snapshots; the
   Distant Horizons exclusion applies to instances enabled from now on).
