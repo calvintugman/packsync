@@ -37,3 +37,7 @@ Thumbs.db
 
 # agent worktrees / local tooling state
 .claude/
+
+# assistant instructions and session files (never commit)
+CLAUDE.md
+**/CLAUDE.md

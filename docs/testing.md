@@ -147,7 +147,7 @@ One reviewer read the code against these documents and the original requirements
 | F14 | Concurrent instance-row updates from two processes reverted each other | one IMMEDIATE transaction |
 | F15 | Stale UI list responses; jobs with other parameters merged; incomplete Drive listings trusted; `--json` printed two documents on failure | each fixed |
 
-### Then: three automated cloud reviews of the engine (ultrareview)
+### Then: three more reviews of the engine
 
 The engine's storage, file/restore and session/conflict code (about 17,000 lines) went through three more
 independent reviews. Fixed, each with a test unless noted:
