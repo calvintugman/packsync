@@ -106,6 +106,11 @@ pub struct HeadPointer {
     /// `parent` reads just these instead of listing every pack and index to catch up.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indexes: Vec<Hash>,
+    /// Versions published from an older HEAD that lost the race to move it (two computers played from
+    /// the same version). While any is listed, no computer may trust HEAD alone: the full path sees the
+    /// conflict. A version that resolves it (a descendant of all of them) clears the list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forks: Vec<SnapshotId>,
 }
 
 /// One commit as seen in a listing (before its manifest has been read).

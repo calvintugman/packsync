@@ -17,6 +17,11 @@ use crate::upload::Uploader;
 
 /// Database key prefix: the HEAD pointer (snapshot and storage version) this computer last saw or wrote.
 const KNOWN_HEAD: &str = "known_head:";
+/// Database key prefix: when this computer last built its view of the cloud from the listing.
+const LAST_DISCOVERY: &str = "last_discovery_ms:";
+/// HEAD alone is trusted for at most this long without a full look at the cloud: a computer that lost
+/// the race to move HEAD and crashed before recording itself as a fork is found within this time.
+const HEAD_TRUST_MS: i64 = 30 * 60 * 1000;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct KnownHead {
@@ -47,6 +52,7 @@ impl Engine {
         ctx.phase(Phase::Discovery, "looking at the cloud");
         ctx.mark("discover: list snapshots");
         let listing = remote.list_commits(inst, ctx)?;
+        self.db.meta_set(&format!("{LAST_DISCOVERY}{inst}"), &crate::db::now_ms().to_string())?;
         ctx.mark("discover: read head records");
         let head_records = remote.list_heads(inst, ctx).unwrap_or_default();
         ctx.mark("discover: compare");
@@ -712,6 +718,36 @@ impl Engine {
         }
     }
 
+    /// May this computer act on HEAD alone? Not while a fork is recorded in it, and not when its last full
+    /// look at the cloud is older than [`HEAD_TRUST_MS`].
+    fn head_trusted(&self, id: InstanceId, p: &HeadPointer) -> Result<bool> {
+        let last: i64 = self.db.meta_get(&format!("{LAST_DISCOVERY}{id}"))?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(p.forks.is_empty() && crate::db::now_ms() - last < HEAD_TRUST_MS)
+    }
+
+    fn discovery_recent(&self, id: InstanceId) -> Result<bool> {
+        let last: i64 = self.db.meta_get(&format!("{LAST_DISCOVERY}{id}"))?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(crate::db::now_ms() - last < HEAD_TRUST_MS)
+    }
+
+    /// This computer published `fork` but lost the race to move HEAD: record it in HEAD (compare-and-swap,
+    /// retried), so that the computer that won — and every other — sees the conflict instead of trusting
+    /// HEAD. Best effort: if it cannot be recorded, the periodic full look still finds it.
+    fn record_fork(&self, id: InstanceId, fork: SnapshotId, remote: &crate::remote::Remote, ctx: &OpCtx) {
+        for _ in 0..5 {
+            let Ok(Some((mut p, v))) = remote.get_head_pointer(id, ctx) else { return };
+            if p.snapshot == fork || p.forks.contains(&fork) {
+                return;
+            }
+            p.forks.push(fork);
+            p.updated = crate::manifest::now_rfc3339();
+            match remote.swap_head_pointer(&p, Some(v), ctx) {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => continue, // moved meanwhile: read it again
+            }
+        }
+    }
+
     /// Storage with atomic compare-and-swap (R2/S3): only there is a HEAD pointer kept.
     fn head_pointer_remote(&self) -> Option<crate::remote::Remote> {
         self.remote().ok().filter(|r| r.storage.capabilities().conditional_write)
@@ -735,6 +771,7 @@ impl Engine {
             device_name,
             updated: crate::manifest::now_rfc3339(),
             indexes,
+            forks: vec![],
         }
     }
 
@@ -762,7 +799,7 @@ impl Engine {
                 }
                 ctx.mark("fast path: read HEAD");
                 match remote.get_head_pointer(id, ctx) {
-                    Ok(Some((p, v))) if p.snapshot == *base => {
+                    Ok(Some((p, v))) if p.snapshot == *base && self.head_trusted(id, &p)? => {
                         self.set_known_head(id, Some(&KnownHead { snapshot: *base, version: v }))?;
                         Ok(Some((ReconcileReport::UpToDate { head: *base }, None)))
                     }
@@ -778,6 +815,7 @@ impl Engine {
                 if graph.unpublished_in_order() != vec![*sid]
                     || graph.get(*sid).map(|n| n.parents.as_slice()) != Some(&[known.snapshot][..])
                     || self.db.full_check_peek(id, crate::upload::FULL_CHECK_EVERY)?
+                    || !self.discovery_recent(id)?
                 {
                     return Ok(None);
                 }
@@ -832,9 +870,11 @@ impl Engine {
                             }),
                         )))
                     }
-                    // someone else published since: the snapshot is in the cloud, the full path sees both
+                    // someone else published since: the snapshot is in the cloud; record it in HEAD so that
+                    // the other computer sees the conflict too, and let the full path report it here
                     None => {
                         self.set_known_head(id, None)?;
+                        self.record_fork(id, *sid, &remote, ctx);
                         Ok(None)
                     }
                 }
@@ -858,7 +898,7 @@ impl Engine {
         self.guard_provider(&inst)?;
         ctx.mark("read HEAD");
         match remote.get_head_pointer(id, ctx)? {
-            Some((p, v)) if p.snapshot == known.snapshot => {
+            Some((p, v)) if p.snapshot == known.snapshot && self.head_trusted(id, &p)? => {
                 self.set_known_head(id, Some(&KnownHead { snapshot: known.snapshot, version: v }))?;
                 Ok(true)
             }
@@ -915,16 +955,29 @@ impl Engine {
             return self.set_known_head(id, None);
         }
         ctx.mark("HEAD pointer");
+        let g = Graph::load(&self.db, id)?;
+        let descends = |a: SnapshotId, b: SnapshotId| g.is_ancestor(a, b) == crate::graph::Relation::Yes;
         let known = match remote.get_head_pointer(id, ctx)? {
-            Some((p, v)) if p.snapshot == base => Some(KnownHead { snapshot: base, version: v }),
-            Some((p, v)) => {
-                let g = Graph::load(&self.db, id)?;
-                if g.is_ancestor(p.snapshot, base) == crate::graph::Relation::Yes {
-                    let np = self.new_head_pointer(id, base, Some(p.snapshot), vec![]);
-                    remote.swap_head_pointer(&np, Some(v), ctx)?.map(|v| KnownHead { snapshot: base, version: v })
-                } else {
-                    None
+            // trusted only without recorded forks
+            Some((p, v)) if p.snapshot == base => {
+                p.forks.is_empty().then_some(KnownHead { snapshot: base, version: v })
+            }
+            Some((p, v)) if descends(p.snapshot, base) => {
+                // moving HEAD forward; a fork this version descends from is resolved by it
+                let mut np = self.new_head_pointer(id, base, Some(p.snapshot), vec![]);
+                np.forks = p.forks.iter().copied().filter(|f| *f != base && !descends(*f, base)).collect();
+                let unresolved = !np.forks.is_empty();
+                remote
+                    .swap_head_pointer(&np, Some(v), ctx)?
+                    .filter(|_| !unresolved)
+                    .map(|v| KnownHead { snapshot: base, version: v })
+            }
+            Some((p, _)) => {
+                // this computer's published version is on another branch than HEAD: make it visible
+                if !descends(base, p.snapshot) {
+                    self.record_fork(id, base, &remote, ctx);
                 }
+                None
             }
             None => {
                 let np = self.new_head_pointer(id, base, None, vec![]);

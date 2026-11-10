@@ -149,6 +149,9 @@ fn the_launch_hooks_check_the_cloud_in_one_read_and_upload_on_the_fast_path() {
     let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
     a.upload(en.instance); // the first upload also creates the HEAD pointer
     assert!(w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance)).exists());
+    // HEAD is only trusted after a full look at the cloud (the first sync or launch after enabling)
+    assert!(!a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
 
     let before = a.meter.snapshot();
     assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
@@ -176,4 +179,71 @@ fn the_launch_hooks_check_the_cloud_in_one_read_and_upload_on_the_fast_path() {
     a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
     a.engine.upload_pending(en.instance, false, &a.ctx()).unwrap();
     assert!(!b.engine.cloud_unchanged(en.instance, &b.ctx()).unwrap());
+}
+
+/// Found by review: the computer that won the race to move HEAD kept trusting HEAD and reported
+/// "up to date" although the other computer had published a competing version. The loser now records
+/// its version in HEAD, and nobody trusts a HEAD with a recorded fork.
+#[test]
+fn the_computer_that_won_the_race_also_sees_the_conflict() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    let rb = restore_on(&b, en.instance);
+    b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+
+    fs::write(&info.configs[0], b"desktop=1\n").unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let rel = info.configs[1].strip_prefix(&info.root).unwrap();
+    fs::write(rb.root.join(rel), b"laptop=1\n").unwrap();
+    let (_, loser) = b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    assert!(matches!(loser, ReconcileReport::Conflict(_)), "{loser:?}");
+    let (_, winner) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(winner, ReconcileReport::Conflict(_)), "the winner must see both versions: {winner:?}");
+    assert!(!a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap(), "nor may a launch trust HEAD");
+
+    // resolving it publishes a version that descends from both: HEAD is trusted again
+    a.engine.resolve_conflict(en.instance, Resolution::KeepLocal, &a.ctx()).unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&fs::read(w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance))).unwrap())
+            .unwrap();
+    assert!(v.get("forks").is_none(), "the fork is resolved: {v}");
+    assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+}
+
+/// If the computer that lost the race crashed before it could record itself in HEAD, the winner still
+/// finds the other version: HEAD alone is trusted for at most 30 minutes after a full look at the cloud.
+#[test]
+fn an_unrecorded_competing_version_is_found_by_the_periodic_full_look() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    let rb = restore_on(&b, en.instance);
+    b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    fs::write(&info.configs[0], b"desktop=1\n").unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    // the laptop publishes a competing version but never touches HEAD (as if it crashed right after)
+    let rel = info.configs[1].strip_prefix(&info.root).unwrap();
+    fs::write(rb.root.join(rel), b"laptop=1\n").unwrap();
+    let head = w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance));
+    let head_before = fs::read(&head).unwrap();
+    b.engine.snapshot(en.instance, SnapshotOpts::default(), &b.ctx()).unwrap();
+    b.engine.upload_pending(en.instance, true, &b.ctx()).unwrap();
+    // …and HEAD as if the laptop had died before recording its version there
+    fs::write(&head, &head_before).unwrap();
+
+    // within the trust window the desktop cannot know
+    assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    // 31 minutes later it looks at the listing again and finds the other version
+    let old = packsync_core::db::now_ms() - 31 * 60 * 1000;
+    a.engine.db().meta_set(&format!("last_discovery_ms:{}", en.instance), &old.to_string()).unwrap();
+    let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::Conflict(_)), "{rec:?}");
 }
