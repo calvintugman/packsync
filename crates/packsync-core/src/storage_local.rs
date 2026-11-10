@@ -13,6 +13,23 @@ use crate::storage::*;
 
 const TMP_DIR: &str = ".tmp-packsync";
 const TAGS_DIR: &str = ".tags-packsync";
+/// Per-key lock files for `PutMode::IfVersion`.
+const LOCKS_DIR: &str = ".locks-packsync";
+
+/// An object's version: changes whenever the file is replaced (a rename gives a new inode and time).
+fn version_of(meta: &fs::Metadata) -> String {
+    let ns = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let ino = std::os::unix::fs::MetadataExt::ino(meta);
+    #[cfg(not(unix))]
+    let ino = 0u64;
+    format!("{}-{ns}-{ino}", meta.len())
+}
 
 pub struct LocalDirStorage {
     root: PathBuf,
@@ -55,6 +72,7 @@ impl LocalDirStorage {
         info.created_ms = ms(meta.modified());
         info.modified_ms = ms(meta.modified());
         info.tags = self.load_tags(key);
+        info.version = Some(version_of(meta));
         info
     }
 
@@ -92,7 +110,9 @@ impl Storage for LocalDirStorage {
             name: "local-dir".into(),
             unique_keys: true,
             atomic_replace: true,
+            // atomic on one machine (a lock file per key); a folder on a network share may not honour locks
             conditional_write: false,
+            owned_namespace: false,
             range_reads: true,
             resumable_uploads: false,
             server_checksums: vec![ChecksumKind::Blake3],
@@ -119,7 +139,7 @@ impl Storage for LocalDirStorage {
         for ent in rd {
             let ent = ent?;
             let name = ent.file_name().to_string_lossy().into_owned();
-            if name == TMP_DIR || name == TAGS_DIR || name.starts_with(".tmp-") {
+            if name == TMP_DIR || name == TAGS_DIR || name == LOCKS_DIR || name.starts_with(".tmp-") {
                 continue;
             }
             let meta = ent.metadata()?;
@@ -252,7 +272,36 @@ impl Storage for LocalDirStorage {
             Ok(info)
         };
 
-        match opts.mode {
+        match &opts.mode {
+            PutMode::IfVersion(expected) => {
+                let locks = self.root.join(LOCKS_DIR);
+                fs::create_dir_all(&locks)?;
+                let lock = fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(locks.join(format!("{}.lock", key.replace('/', "__"))))?;
+                lock.lock()?; // released when `lock` is dropped
+                let current = match fs::metadata(&dest) {
+                    Ok(m) => Some(version_of(&m)),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    Err(e) => {
+                        let _ = fs::remove_file(&tmp);
+                        return Err(e.into());
+                    }
+                };
+                if &current != expected {
+                    let _ = fs::remove_file(&tmp);
+                    return Err(StorageError::Conflict(format!(
+                        "{key} changed (version {current:?}, expected {expected:?})"
+                    )));
+                }
+                fs::rename(&tmp, &dest).inspect_err(|_| {
+                    let _ = fs::remove_file(&tmp);
+                })?;
+                fsync_dir(parent);
+                finish(&dest)
+            }
             PutMode::Replace => {
                 fs::rename(&tmp, &dest).inspect_err(|_| {
                     let _ = fs::remove_file(&tmp);

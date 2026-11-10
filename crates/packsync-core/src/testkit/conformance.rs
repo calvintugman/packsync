@@ -416,6 +416,56 @@ fn quota_call(st: &dyn Storage, env: &Env) -> Result<(), String> {
     st.quota(&env.ctx).map(|_| ()).map_err(|e| format!("quota(): {e}"))
 }
 
+/// `PutMode::IfVersion`: create-if-absent, replace-if-unchanged, and a stale version is refused. One
+/// writer at a time here: whether two simultaneous writers are told apart is what
+/// `Capabilities::conditional_write` states, and only an atomic provider is tested for it.
+fn compare_and_swap(st: &dyn Storage, env: &Env) -> Result<(), String> {
+    let key = format!("{}cas/HEAD.json", env.ns);
+    let put = |body: &[u8], expected: Option<String>| {
+        st.put(&key, PutSource::Bytes(body), &PutOptions::if_version(expected), &env.ctx)
+    };
+    let v1 = put(b"one", None).map_err(|e| format!("create-if-absent: {e}"))?.version;
+    let v1 = v1.ok_or("a created object reports no version")?;
+    if !matches!(put(b"one", None), Err(StorageError::Conflict(_))) {
+        return Err("create-if-absent succeeded although the object exists".into());
+    }
+    let stat = st.stat(&key, &env.ctx).map_err(|e| e.to_string())?.ok_or("created object not found")?;
+    if stat.version.as_deref() != Some(v1.as_str()) {
+        return Err(format!("stat reports version {:?}, the put reported {v1:?}", stat.version));
+    }
+    let v2 = put(b"two", Some(v1.clone())).map_err(|e| format!("replace-if-unchanged: {e}"))?.version;
+    let v2 = v2.ok_or("a replaced object reports no version")?;
+    if v2 == v1 {
+        return Err("the version did not change when the content was replaced".into());
+    }
+    if !matches!(put(b"three", Some(v1)), Err(StorageError::Conflict(_))) {
+        return Err("a write with a stale version was accepted".into());
+    }
+    let got = st.get_bytes(&key, 100, &env.ctx).map_err(|e| e.to_string())?;
+    if got != b"two" {
+        return Err(format!("content after a refused write: {:?}", String::from_utf8_lossy(&got)));
+    }
+    if env.caps.conditional_write {
+        // atomic providers: of several writers racing from the same version exactly one wins
+        let wins = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for i in 0..env.opts.writers.max(2) {
+                let (wins, v2) = (&wins, v2.clone());
+                s.spawn(move || {
+                    if put(format!("racer {i}").as_bytes(), Some(v2)).is_ok() {
+                        wins.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        let w = wins.into_inner();
+        if w != 1 {
+            return Err(format!("{w} of the racing compare-and-swap writers succeeded; exactly one may"));
+        }
+    }
+    st.delete(&key, DeleteMode::Permanent, &env.ctx).map_err(|e| e.to_string())
+}
+
 /// Run every check; returns `(name, result)` pairs. Never panics on a failing check.
 pub fn run_all(st: &dyn Storage, opts: ConformanceOptions) -> Vec<(&'static str, Result<(), String>)> {
     let env = Env {
@@ -440,6 +490,7 @@ pub fn run_all(st: &dyn Storage, opts: ConformanceOptions) -> Vec<(&'static str,
         ("concurrent_distinct_creates", concurrent_distinct_keys),
         ("large_object_and_range_inside_it", large_object),
         ("quota_is_queryable", quota_call),
+        ("compare_and_swap_on_a_small_key", compare_and_swap),
     ];
     checks.iter().map(|(n, f)| (*n, f(st, &env))).collect()
 }

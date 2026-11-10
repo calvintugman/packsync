@@ -285,7 +285,7 @@ pub(super) fn put(
         if ctx.is_cancelled() {
             return Err(StorageError::Cancelled);
         }
-        match put_once(inner, key, &mut source, &hashes, &props, opts.mode, ctx) {
+        match put_once(inner, key, &mut source, &hashes, &props, &opts.mode, ctx) {
             Ok((file, dups)) => {
                 let mut info = object_info(key, &file, dups);
                 info.checksums.blake3 = Some(hashes.blake3.to_hex());
@@ -307,7 +307,7 @@ fn put_once(
     source: &mut Source<'_>,
     h: &Hashes,
     props: &Props,
-    mode: PutMode,
+    mode: &PutMode,
     ctx: &OpCtx,
 ) -> Result<(DriveFile, u32), PutErr> {
     let (dir, name) = split_key(key);
@@ -326,7 +326,50 @@ fn put_once(
             }
         }
         (PutMode::Replace, Some(f)) => update_existing(inner, key, name, f, dups, source, h, props, ctx),
-        (_, None) => create_new(inner, key, &parent, dir, name, source, h, props, mode, ctx).map(|f| (f, 0)),
+        // Compare-and-swap, best effort (Drive API v3 has no preconditions): compare the version just
+        // read, write, and confirm by reading back that the object holds what was written. Two writers
+        // within the same second can both succeed; `Capabilities::conditional_write` says so.
+        (PutMode::IfVersion(Some(_)), None) => {
+            Err(PutErr::Fail(StorageError::Conflict(format!("{key} no longer exists"))))
+        }
+        (PutMode::IfVersion(None), Some(_)) => {
+            Err(PutErr::Fail(StorageError::Conflict(format!("{key} already exists"))))
+        }
+        (PutMode::IfVersion(Some(expected)), Some(f)) => {
+            if drive_version(f).as_deref() != Some(expected.as_str()) {
+                return Err(PutErr::Fail(StorageError::Conflict(format!("{key} changed since it was read"))));
+            }
+            let (file, dups) = update_existing(inner, key, name, f, dups, source, h, props, ctx)?;
+            confirm_written(inner, key, &file, h, ctx).map(|f| (f, dups))
+        }
+        (_, None) => {
+            let file = create_new(inner, key, &parent, dir, name, source, h, props, mode, ctx)?;
+            match mode {
+                PutMode::IfVersion(None) => confirm_written(inner, key, &file, h, ctx).map(|f| (f, 0)),
+                _ => Ok((file, 0)),
+            }
+        }
+    }
+}
+
+/// The version of a Drive file as `ObjectInfo::version` reports it: its content checksum and the time
+/// it was last modified (every content update changes the latter).
+pub(super) fn drive_version(f: &DriveFile) -> Option<String> {
+    Some(format!("{}@{}", f.md5.as_deref()?, f.modified_ms?))
+}
+
+/// Read a just-written single-writer object back by ID: it must still hold what this call wrote (the
+/// last step of the best-effort compare-and-swap; a write that landed in between is reported).
+fn confirm_written(
+    inner: &Arc<Inner>,
+    key: &str,
+    written: &DriveFile,
+    h: &Hashes,
+    ctx: &OpCtx,
+) -> Result<DriveFile, PutErr> {
+    match inner.get_by_id(&written.id, ctx, Phase::Upload)? {
+        Some(f) if f.md5.as_deref() == Some(h.md5.as_str()) => Ok(f),
+        _ => Err(PutErr::Fail(StorageError::Conflict(format!("{key} was changed by another writer at the same time")))),
     }
 }
 
@@ -442,7 +485,7 @@ fn create_new(
     source: &mut Source<'_>,
     h: &Hashes,
     props: &Props,
-    mode: PutMode,
+    mode: &PutMode,
     ctx: &OpCtx,
 ) -> Result<DriveFile, PutErr> {
     let len = source.len();
@@ -457,7 +500,7 @@ fn create_new(
             s
         }
     };
-    if mode == PutMode::Replace {
+    if !matches!(mode, PutMode::CreateOnly) {
         // Single-writer key: remember the ID before the create so that a create whose response
         // was lost is found (by ID, strongly consistent) instead of duplicated.
         inner.state.save(&inner.state_key("file", key), &st.file_id);
@@ -504,7 +547,7 @@ fn create_new(
         Err(VerifyErr::Bad(msg)) => {
             let removed = delete_created_object(inner, &file.id, ctx);
             inner.state.clear(&skey);
-            if mode == PutMode::Replace {
+            if !matches!(mode, PutMode::CreateOnly) {
                 inner.forget_file(key);
             }
             let tail = if removed { "the uploaded object was removed" } else { "removing the uploaded object failed" };

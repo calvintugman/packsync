@@ -197,6 +197,7 @@ fn object_info(key: &str, f: &DriveFile, duplicates: u32) -> ObjectInfo {
         is_dir: false,
         duplicates,
         tags: f.user_tags(),
+        version: upload::drive_version(f),
     }
 }
 
@@ -1004,6 +1005,7 @@ impl Storage for DriveStorage {
             // complete); not verified against live Drive.
             atomic_replace: true,
             conditional_write: false,
+            owned_namespace: false,
             range_reads: true,
             resumable_uploads: true,
             // sha256Checksum is documented but only verified when the server returns it.
@@ -1068,7 +1070,9 @@ mod tests {
     #[test]
     fn the_folder_cache_of_an_older_version_still_loads() {
         let legacy = r#"[{"id":"0123456789abcdefghijklmnopqr","c":5}]"#;
-        assert!(matches!(serde_json::from_str::<PersistedDir>(legacy).unwrap(), PersistedDir::Legacy(v) if v.len() == 1));
+        assert!(
+            matches!(serde_json::from_str::<PersistedDir>(legacy).unwrap(), PersistedDir::Legacy(v) if v.len() == 1)
+        );
         let new = serde_json::to_string(&PersistedDir::Confirmed {
             ids: vec![FolderRef { id: "0123456789abcdefghijklmnopqr".into(), created_ms: Some(5) }],
             confirmed_ms: 9,

@@ -11,8 +11,12 @@
 //! * `PutMode::CreateOnly` is *idempotent*: if the key already exists with identical content the
 //!   existing object is returned (a retry after an ambiguous timeout must never fail or duplicate);
 //!   if it exists with different content the call fails with [`StorageError::Conflict`].
-//! * `PutMode::Replace` is only used for single-writer keys (per-device head/lease records);
-//!   there is no conditional/CAS variant because the Drive API provides none.
+//! * `PutMode::Replace` is only used for single-writer keys (per-device head/lease records).
+//! * `PutMode::IfVersion` is a compare-and-swap on a small key: replace only if the object's
+//!   [`ObjectInfo::version`] is still the expected one (or create only if absent), else
+//!   [`StorageError::Conflict`]. It is atomic where [`Capabilities::conditional_write`] says so (S3/R2
+//!   `If-Match`); elsewhere (Google Drive, a local folder) it is best effort: read, compare, write,
+//!   read back — two writers in the same moment can both succeed, and the caller must tolerate that.
 //! * `list` may be eventually consistent ([`Capabilities::list_consistency`]); `stat`/`get` by key
 //!   should be strongly consistent where the provider can offer it. The engine never relies on
 //!   `list` alone to prove an object is *absent*.
@@ -137,9 +141,14 @@ pub struct ObjectInfo {
     pub is_dir: bool,
     /// Number of *additional* physical objects sharing this key (Drive permits duplicate names).
     pub duplicates: u32,
-    /// Provider-side tags that were written with the object (small, optional).
+    /// Provider-side tags that were written with the object (small, optional). Not every provider
+    /// returns them in a listing (S3 does not); see [`Capabilities::owned_namespace`].
     #[serde(default)]
     pub tags: BTreeMap<String, String>,
+    /// Opaque value that changes whenever the object's content is replaced (S3 ETag, Drive file
+    /// version, local size+time+inode). `None` when the provider did not report one.
+    #[serde(default)]
+    pub version: Option<String>,
 }
 
 impl ObjectInfo {
@@ -154,6 +163,7 @@ impl ObjectInfo {
             is_dir: false,
             duplicates: 0,
             tags: BTreeMap::new(),
+            version: None,
         }
     }
 }
@@ -182,8 +192,13 @@ pub struct Capabilities {
     pub unique_keys: bool,
     /// Readers never observe a half-written replacement.
     pub atomic_replace: bool,
-    /// Compare-and-swap writes available. `false` for Drive API v3 (no etag/If-Match).
+    /// `PutMode::IfVersion` is atomic (the server checks the precondition). `false` for Drive API v3
+    /// (no etag/If-Match) and a local folder (possibly on a network share): there it is best effort.
     pub conditional_write: bool,
+    /// Everything under the provider's root belongs to PackSync (a dedicated bucket or prefix), so an
+    /// object counts as PackSync's even when the listing carries no tags (S3 listings never do).
+    #[serde(default)]
+    pub owned_namespace: bool,
     pub range_reads: bool,
     pub resumable_uploads: bool,
     /// Checksums the *server* reports after an upload (used to verify without re-downloading).
@@ -195,13 +210,17 @@ pub struct Capabilities {
     pub recommended_pack_size: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PutMode {
     /// Idempotent create (see module docs).
     CreateOnly,
     /// Replace the content of a single-writer key (or create it).
     Replace,
+    /// Compare-and-swap (small keys only): `Some(v)` replaces the object only while its version is
+    /// still `v`; `None` creates it only if it does not exist (even with the same content). Fails with
+    /// [`StorageError::Conflict`] otherwise. See the module docs for atomicity.
+    IfVersion(Option<String>),
 }
 
 /// Content digest the caller already knows (so providers can verify without a second pass).
@@ -249,6 +268,10 @@ impl PutOptions {
     }
     pub fn replace() -> Self {
         Self { mode: PutMode::Replace, digest: None, tags: BTreeMap::new() }
+    }
+    /// Compare-and-swap; see [`PutMode::IfVersion`].
+    pub fn if_version(expected: Option<String>) -> Self {
+        Self { mode: PutMode::IfVersion(expected), digest: None, tags: BTreeMap::new() }
     }
     pub fn with_tag(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.tags.insert(k.into(), v.into());
