@@ -247,3 +247,33 @@ fn an_unrecorded_competing_version_is_found_by_the_periodic_full_look() {
     let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
     assert!(matches!(rec, ReconcileReport::Conflict(_)), "{rec:?}");
 }
+
+/// Found by review: HEAD names the index uploaded with its snapshot, and a supported cleanup may merge
+/// that index into another one and delete it. Catching up must then fall back to the listing.
+#[test]
+fn catching_up_survives_a_cleanup_that_merged_the_named_index() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    restore_on(&b, en.instance);
+    b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    fs::write(&info.configs[0], b"new_save=1\n").unwrap();
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+
+    // make every index old enough for the cleanup to consolidate them, and run it
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
+    for entry in fs::read_dir(w.remote_dir.join("index")).unwrap() {
+        filetime::set_file_mtime(entry.unwrap().path(), filetime::FileTime::from_system_time(old)).unwrap();
+    }
+    let params = packsync_core::gc::GcParams::default();
+    let plan = a.engine.gc_plan(&params, &a.ctx()).unwrap();
+    assert!(plan.consolidate.is_some(), "the test needs a consolidation: {plan:?}");
+    let cleaned = a.engine.gc_run(&plan.id, &params, &a.ctx()).unwrap();
+    assert!(cleaned.deleted_indexes >= 2, "{cleaned:?}");
+
+    let (_, rec) = b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::FastForwarded { .. }), "{rec:?}");
+}

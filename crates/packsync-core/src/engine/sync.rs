@@ -929,7 +929,13 @@ impl Engine {
                 if self.db.index_seen(*ix)? {
                     continue;
                 }
-                let doc = remote.get_index(*ix, ctx)?;
+                // HEAD's index is an optimisation: a cleanup may have merged it into another one, or it may
+                // be unreadable. Then learn from the listing as usual (the data itself is checked anyway).
+                let doc = match remote.get_index(*ix, ctx) {
+                    Ok(d) => d,
+                    Err(e) if e.is_cancelled() => return Err(e),
+                    Err(_) => return remote.sync_index_cache(ctx).map(|_| ()),
+                };
                 for pk in &doc.packs {
                     self.db.pack_put(pk.id, pk.size, None, None)?;
                     self.db.blobs_put(pk.id, &pk.blobs)?;
