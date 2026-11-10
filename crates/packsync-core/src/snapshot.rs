@@ -506,7 +506,12 @@ pub fn create(
 
     // Index bookkeeping happens even when nothing changed (fresh stats, verification times).
     let commit_index = |db: &Db| -> Result<()> {
-        db.index_replace(inst.id, &new_index)?;
+        // by difference, unless this was a full scan (which starts from an empty index)
+        if inst.needs_full_scan {
+            db.index_replace(inst.id, &new_index)?;
+        } else {
+            db.index_update(inst.id, &new_index, &index)?;
+        }
         db.instance_update(inst.id, |r| {
             r.last_scan_ms = Some(crate::db::now_ms());
             if scan_opts.mode == ScanMode::Full {

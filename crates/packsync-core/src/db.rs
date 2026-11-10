@@ -524,6 +524,40 @@ impl Db {
         })
     }
 
+    /// Write the file index of `id` as `rows`, by difference against `before` (the index read when the
+    /// scan began, under the instance lock): only changed rows are written and vanished paths deleted. A
+    /// large instance has tens of thousands of rows, almost all unchanged on every sync.
+    pub fn index_update(&self, id: InstanceId, rows: &[IndexRow], before: &HashMap<String, IndexRow>) -> Result<()> {
+        self.tx(|tx| {
+            let k = id.to_string();
+            let now: std::collections::HashSet<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+            let mut del = tx.prepare_cached("DELETE FROM file_index WHERE instance_id=?1 AND path=?2")?;
+            for gone in before.keys().filter(|p| !now.contains(p.as_str())) {
+                del.execute(params![k, gone])?;
+            }
+            let mut st = tx.prepare_cached(
+                "INSERT OR REPLACE INTO file_index(instance_id,path,size,mtime_ns,ctime_ns,file_id,hash,recipe,mixed,content_size,hashed_at_ns,verified_at_ns) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            )?;
+            for r in rows.iter().filter(|r| before.get(&r.path) != Some(*r)) {
+                st.execute(params![
+                    k,
+                    r.path,
+                    r.size as i64,
+                    r.mtime_ns,
+                    r.ctime_ns,
+                    r.file_id,
+                    r.hash.0.to_vec(),
+                    r.recipe.map(|h| h.0.to_vec()),
+                    r.mixed,
+                    r.content_size as i64,
+                    r.hashed_at_ns,
+                    r.verified_at_ns
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
     pub fn index_clear(&self, id: InstanceId) -> Result<()> {
         self.with(|c| {
             c.execute("DELETE FROM file_index WHERE instance_id=?1", [id.to_string()])?;
