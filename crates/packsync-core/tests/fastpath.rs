@@ -133,3 +133,42 @@ fn two_computers_publishing_from_the_same_head_end_in_a_conflict_not_a_lost_vers
         assert!(names.iter().any(|n| n.starts_with(&id.to_hex())), "{id:?} missing from {names:?}");
     }
 }
+
+/// What Prism's hooks do: before launch, "is the cloud where I left it?" in one read; after exit, the
+/// saved snapshot is uploaded on the fast path (the post-exit hook runs `packsync upload` in the
+/// background); a computer whose HEAD is stale gets `false` and takes the full path.
+#[test]
+fn the_launch_hooks_check_the_cloud_in_one_read_and_upload_on_the_fast_path() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance); // the first upload also creates the HEAD pointer
+    assert!(w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance)).exists());
+
+    let before = a.meter.snapshot();
+    assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    let d = a.meter.snapshot().since(&before);
+    assert_eq!(d.lists, 0, "{d:?}");
+    assert!(d.requests <= 2, "{d:?}");
+
+    // the game exits: a snapshot, then the upload
+    fs::write(&info.configs[0], b"played = true\n").unwrap();
+    let SnapshotResult::Created { id } =
+        a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap().result
+    else {
+        panic!("a snapshot was expected")
+    };
+    let before = a.meter.snapshot();
+    let up = a.engine.upload_pending(en.instance, false, &a.ctx()).unwrap();
+    let d = a.meter.snapshot().since(&before);
+    assert_eq!((up.remaining, d.lists, d.stats), (0, 0, 0), "{up:?} {d:?}");
+    assert_eq!(head_snapshot(&w, en.instance), id.to_hex());
+
+    // another computer that last saw an older HEAD is told "unknown", not "unchanged"
+    let b = w.device("laptop");
+    restore_on(&b, en.instance);
+    fs::write(&info.configs[1], b"later = true\n").unwrap();
+    a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap();
+    a.engine.upload_pending(en.instance, false, &a.ctx()).unwrap();
+    assert!(!b.engine.cloud_unchanged(en.instance, &b.ctx()).unwrap());
+}

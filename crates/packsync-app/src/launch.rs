@@ -208,6 +208,12 @@ impl App {
         warnings: &mut Vec<String>,
     ) -> Result<(Option<ReconcileReport>, bool)> {
         let policy = self.settings().hook_offline_policy;
+        // the fast path: one read says the cloud is where this computer left it
+        if let Ok(true) = self.engine().cloud_unchanged(id, ctx)
+            && let Some(head) = self.engine().instance(id)?.base_snapshot
+        {
+            return Ok((Some(ReconcileReport::UpToDate { head }), false));
+        }
         let opts = ReconcileOpts { apply_fast_forward: true, upload_local: false };
         match self.engine().reconcile(id, opts, ctx) {
             Ok(ReconcileReport::Conflict(c)) => Err(Error::Conflict(format!(

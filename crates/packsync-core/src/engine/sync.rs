@@ -368,6 +368,34 @@ impl Engine {
     /// Upload every local snapshot that the cloud does not have yet, parents first. Safe to call
     /// repeatedly; resumes after crashes and honours persisted retry backoff unless `force`.
     pub fn upload_pending(&self, id: InstanceId, force: bool, ctx: &OpCtx) -> Result<UploadSummary> {
+        // One saved version, a child of the HEAD this computer last saw: the HEAD pointer fast path.
+        if !force && self.head_pointer_remote().is_some() {
+            let order = Graph::load(&self.db, id)?.unpublished_in_order();
+            if let [sid] = order[..]
+                && let Some((ReconcileReport::LocalAhead { uploaded: true, .. }, report)) =
+                    self.try_fast_sync(id, &SnapshotResult::Created { id: sid }, ctx)?
+            {
+                let bytes = report.as_ref().map(|r| r.bytes_uploaded).unwrap_or(0);
+                return Ok(UploadSummary {
+                    snapshots: report.into_iter().collect(),
+                    bytes_uploaded: bytes,
+                    deferred_until_ms: None,
+                    remaining: 0,
+                });
+            }
+        }
+        let summary = self.upload_pending_full(id, force, ctx)?;
+        if summary.remaining == 0
+            && summary.deferred_until_ms.is_none()
+            && let Err(e) = self.sync_head_pointer(id, ctx)
+        {
+            tracing::info!(target: "packsync_core", "HEAD pointer not updated: {e}");
+            let _ = self.set_known_head(id, None);
+        }
+        Ok(summary)
+    }
+
+    fn upload_pending_full(&self, id: InstanceId, force: bool, ctx: &OpCtx) -> Result<UploadSummary> {
         let inst = self.instance(id)?;
         self.guard_provider(&inst)?;
         let remote = self.remote()?;
@@ -663,7 +691,7 @@ impl Engine {
         }
         if just_saved
             && let Some(s) = &snap
-            && let Some(rep) = self.try_fast_sync(id, &s.result, ctx)?
+            && let Some((rep, _)) = self.try_fast_sync(id, &s.result, ctx)?
         {
             return Ok((snap, rep));
         }
@@ -706,7 +734,12 @@ impl Engine {
     /// The fast path of `sync` (see [`HeadPointer`]): when this computer's last known HEAD is still the
     /// cloud's, "nothing changed" is one read and a new snapshot is published with no listing at all.
     /// `None`: not applicable or the cloud moved — the caller takes the full path.
-    fn try_fast_sync(&self, id: InstanceId, result: &SnapshotResult, ctx: &OpCtx) -> Result<Option<ReconcileReport>> {
+    fn try_fast_sync(
+        &self,
+        id: InstanceId,
+        result: &SnapshotResult,
+        ctx: &OpCtx,
+    ) -> Result<Option<(ReconcileReport, Option<crate::upload::UploadReport>)>> {
         let Some(remote) = self.head_pointer_remote() else { return Ok(None) };
         let inst = self.instance(id)?;
         if inst.state != InstanceState::Ok || self.db.deep_check_due(id)?.is_some() {
@@ -724,11 +757,11 @@ impl Engine {
                 match remote.get_head_pointer(id, ctx) {
                     Ok(Some((p, v))) if p.snapshot == *base => {
                         self.set_known_head(id, Some(&KnownHead { snapshot: *base, version: v }))?;
-                        Ok(Some(ReconcileReport::UpToDate { head: *base }))
+                        Ok(Some((ReconcileReport::UpToDate { head: *base }, None)))
                     }
                     Ok(_) => Ok(None),
                     Err(e) if is_offline(&e) => {
-                        Ok(Some(ReconcileReport::Offline { base: inst.base_snapshot, reason: e.to_string() }))
+                        Ok(Some((ReconcileReport::Offline { base: inst.base_snapshot, reason: e.to_string() }, None)))
                     }
                     Err(e) => Err(e),
                 }
@@ -753,18 +786,21 @@ impl Engine {
                     device: self.device(),
                     concurrency: self.cfg.upload_concurrency,
                 };
-                match up.publish_fast(id, *sid, ctx) {
-                    Ok(Some(_)) => {}
+                let report = match up.publish_fast(id, *sid, ctx) {
+                    Ok(Some(r)) => Some(r),
                     Ok(None) => return Ok(None),
                     Err(e) if is_offline(&e) => {
-                        return Ok(Some(ReconcileReport::LocalAhead {
-                            snapshots: vec![*sid],
-                            uploaded: false,
-                            upload_error: Some(e.to_string()),
-                        }));
+                        return Ok(Some((
+                            ReconcileReport::LocalAhead {
+                                snapshots: vec![*sid],
+                                uploaded: false,
+                                upload_error: Some(e.to_string()),
+                            },
+                            None,
+                        )));
                     }
                     Err(e) => return Err(e),
-                }
+                };
                 ctx.mark("fast path: move HEAD");
                 let p = self.new_head_pointer(id, *sid, Some(known.snapshot));
                 match remote.swap_head_pointer(&p, Some(known.version), ctx)? {
@@ -780,11 +816,13 @@ impl Engine {
                             r.last_synced_ms = Some(crate::db::now_ms());
                             r.provider_id = Some(pid);
                         })?;
-                        Ok(Some(ReconcileReport::LocalAhead {
-                            snapshots: vec![*sid],
-                            uploaded: true,
-                            upload_error: None,
-                        }))
+                        Ok(Some((
+                            ReconcileReport::LocalAhead { snapshots: vec![*sid], uploaded: true, upload_error: None },
+                            report.map(|mut r| {
+                                r.state = SnapshotState::Visible;
+                                r
+                            }),
+                        )))
                     }
                     // someone else published since: the snapshot is in the cloud, the full path sees both
                     None => {
@@ -793,6 +831,30 @@ impl Engine {
                     }
                 }
             }
+        }
+    }
+
+    /// Before a launch: is the cloud still where this computer left it? One read of the HEAD pointer
+    /// (storage with atomic compare-and-swap only). `true` means there is nothing to download; local
+    /// changes, if any, are saved when the game exits. `false`: unknown — take the full path.
+    pub fn cloud_unchanged(&self, id: InstanceId, ctx: &OpCtx) -> Result<bool> {
+        let Some(remote) = self.head_pointer_remote() else { return Ok(false) };
+        let inst = self.instance(id)?;
+        let Some(known) = self.known_head(id)? else { return Ok(false) };
+        if inst.state != InstanceState::Ok
+            || inst.base_snapshot != Some(known.snapshot)
+            || self.db.deep_check_due(id)?.is_some()
+        {
+            return Ok(false);
+        }
+        self.guard_provider(&inst)?;
+        ctx.mark("read HEAD");
+        match remote.get_head_pointer(id, ctx)? {
+            Some((p, v)) if p.snapshot == known.snapshot => {
+                self.set_known_head(id, Some(&KnownHead { snapshot: known.snapshot, version: v }))?;
+                Ok(true)
+            }
+            _ => Ok(false),
         }
     }
 

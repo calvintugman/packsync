@@ -98,6 +98,21 @@ Where the 0.66 s goes: walking 19.5k files 0.24 s, the "is a game running?" proc
 reading the base manifest 0.07 s, hashing the changed files (40.7 MB) 0.07 s, encoding the manifest
 0.07 s, the database 0.06 s, the four requests 0.05 s.
 
+### Through Prism's hooks
+
+The same, as Prism runs it: the exact `PreLaunchCommand`/`PostExitCommand` that `packsync hooks install`
+writes (the GTNH copy, local S3 server, 3 rounds, seeds 401–403; "play" = the synthetic edit):
+
+| Step | Time |
+|---|---:|
+| Pre-launch hook, cloud unchanged (one read of HEAD) | **0.14–0.24 s** |
+| Post-exit hook, until Prism gets control back (snapshot saved; upload started in the background) | **0.68–1.13 s** |
+| Background upload finished, counted from the game's exit | **0.86–1.30 s** |
+| Pre-launch hook on a second profile after the first one played (downloads the 40 changed files; full path) | 4.1 s (1 run) |
+
+After the rounds, `verify --remote` found nothing missing or damaged, and the second profile's world was
+identical to the first's except the Distant Horizons caches (excluded; each computer regenerates its own).
+
 **Real Cloudflare R2: not measured yet.** On R2 the four requests become three sequential round trips
 plus the upload of ~4.5 MB; the table below is filled in from the run in the next section.
 

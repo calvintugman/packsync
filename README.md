@@ -268,8 +268,9 @@ steps):
 | R2 fast path against a local S3 server (2 runs, no network latency) | 0.68–0.71 s | 4 |
 | Cloudflare R2 | *not measured yet* | |
 
-First upload of the 6.8 GB instance to Google Drive: 239 s (≈ 28 MB/s). A sync with nothing changed: one
-request on R2's fast path.
+Through Prism's hooks (local S3 server, 3 rounds): the pre-launch check takes **0.14–0.24 s**, the post-exit
+hook hands control back to Prism after **0.68–1.13 s**, and the upload is in the cloud **0.86–1.30 s** after
+the game exits. First upload of the 6.8 GB instance to Google Drive: 239 s (≈ 28 MB/s).
 
 ## Roadmap
 
@@ -280,9 +281,10 @@ Deliberately not in this version:
   a snapshot taken while the game holds the world (`session.lock`) can capture a state that never existed.
   Saving after exit is consistent by construction; the work went into making that save fast instead.
   (Uploading packs in the background during play, without publishing them, would be a safe next step.)
-* **One-click Prism integration in the desktop app.** The hooks exist (`packsync hooks install`,
-  [`docs/hooks.md`](docs/hooks.md)); a per-instance toggle in the app and a fast HEAD check in the
-  pre-launch hook are next.
+* **One-click Prism integration in the desktop app.** The hooks exist and use the fast path
+  (`packsync hooks install`, [`docs/hooks.md`](docs/hooks.md)); a per-instance toggle in the app is next.
+  Catching up from another computer still takes the full path (4.1 s in the benchmark).
+* **Signing in with the Microsoft account Prism already has**, for true plug-and-play (not started).
 * **A Steam-style conflict dialog** at launch (conflicts are detected and resolvable today, in the app and the CLI).
 * **Changing an existing instance's rules** (an instance keeps the rules recorded in its snapshots; the
   Distant Horizons exclusion applies to instances enabled from now on).
