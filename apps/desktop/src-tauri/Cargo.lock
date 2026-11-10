@@ -2904,6 +2904,7 @@ dependencies = [
  "packsync-core",
  "packsync-drive",
  "packsync-prism",
+ "packsync-s3",
  "parking_lot",
  "serde",
  "serde_json",
@@ -3001,6 +3002,24 @@ dependencies = [
  "time",
  "tracing",
  "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "packsync-s3"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "hmac",
+ "httpdate",
+ "md-5",
+ "packsync-core",
+ "parking_lot",
+ "sha2 0.11.0",
+ "time",
+ "tracing",
+ "ureq",
  "uuid",
 ]
 
