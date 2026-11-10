@@ -161,6 +161,34 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
                     HookOutcome::Proceed { messages, upload: None }
                 }
             }
+            HookOutcome::ChooseVersion { question, cloud_head, mut messages } => {
+                let pick = crate::ask::choose("PackSync", &question, "Keep this PC", "Keep cloud", "Don't play");
+                let res = match pick {
+                    Some(Some(0)) => Some(packsync_core::engine::Resolution::KeepLocal),
+                    Some(Some(1)) => Some(packsync_core::engine::Resolution::KeepCloud { head: cloud_head }),
+                    _ => None,
+                };
+                match res {
+                    Some(r) => match app.engine().resolve_conflict(id, r, &ctx) {
+                        // resolved (both versions stay in the history): the launch check again, now clean
+                        Ok(_) => match app.hook_pre_launch(id, &ctx) {
+                            HookOutcome::Proceed { messages: m, upload } => {
+                                messages.extend(m);
+                                HookOutcome::Proceed { messages, upload }
+                            }
+                            HookOutcome::Ask { .. } | HookOutcome::ChooseVersion { .. } => {
+                                HookOutcome::Proceed { messages, upload: None }
+                            }
+                            block => block,
+                        },
+                        Err(e) => HookOutcome::Block { message: format!("the version could not be chosen: {e}"), exit_code: e.exit_code() },
+                    },
+                    None => HookOutcome::Block {
+                        message: "this instance changed here and in the cloud; choose a version in PackSync (or `packsync resolve`) and play again".into(),
+                        exit_code: packsync_core::error::exit::CONFLICT,
+                    },
+                }
+            }
             other => other,
         })
     })();
@@ -177,7 +205,7 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
                 spawn_background_upload(id, cli);
             }
         }
-        Ok(HookOutcome::Ask { .. }) => unreachable!("answered above"),
+        Ok(HookOutcome::Ask { .. } | HookOutcome::ChooseVersion { .. }) => unreachable!("answered above"),
         Err(e) => eprintln!("PackSync could not run its part of the hook ({e}); continuing without syncing"),
     }
     Ok(run_chained(&args.chained))

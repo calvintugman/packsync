@@ -170,7 +170,10 @@ protected.
   process, and saves and uploads when the game closes.
 * **One step.** Enabling sync in the desktop app also adds PackSync to the instance's Play button in Prism
   (an option, on by default). Pressing Play then checks the cloud in one request when nothing changed, and
-  if another computer is playing the same instance right now, a dialog asks before the game starts.
+  if another computer is playing the same instance right now, a dialog asks before the game starts. If both
+  computers changed it since they last synced, the dialog shows both versions ("This PC: saved …",
+  "Cloud: from laptop, saved …") with **Keep this PC**, **Keep cloud** and **Don't play**; the other version
+  stays in the history.
 * **Hooks — nothing in the background.** If you prefer to start instances from Prism, install PackSync's
   pre-launch and post-exit commands for that instance: PackSync then runs only for the seconds around
   pressing Play and closing the game, and the desktop app can stay closed. (Why this, rather than a
@@ -288,8 +291,6 @@ Deliberately not in this version:
   takes the full path: 2.4–2.6 s in the benchmark (40 changed files). The HEAD pointer could carry the
   new index so that no listing is needed.
 * **Signing in with the Microsoft account Prism already has**, for true plug-and-play (not started).
-* **A Steam-style "keep this PC / keep cloud" dialog** at launch (conflicts are detected and resolvable today,
-  in the app and the CLI; the launch hook already asks before playing while another computer plays).
 * **Changing an existing instance's rules** (an instance keeps the rules recorded in its snapshots; the
   Distant Horizons exclusion applies to instances enabled from now on).
 * Real-Windows and macOS verification, signed installers, end-to-end encryption.

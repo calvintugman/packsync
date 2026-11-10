@@ -96,6 +96,9 @@ pub enum HookOutcome {
     /// Ask the person first (pre-launch): another computer seems to be playing this instance. The
     /// session is open; if the answer is no, end it (`hook_post_exit`) and refuse the launch.
     Ask { question: String, messages: Vec<String> },
+    /// Pre-launch: this computer and the cloud both changed. Ask which version to play (the other one
+    /// is kept in the history): `KeepLocal`, or `KeepCloud { head: cloud_head }`; then run the hook again.
+    ChooseVersion { question: String, cloud_head: Option<packsync_core::ids::SnapshotId>, messages: Vec<String> },
 }
 
 /// Errors that mean "the cloud is not reachable right now" rather than "something is wrong with the
@@ -508,6 +511,15 @@ impl App {
         let mut warnings = vec![];
         let (offline, _rep) = match self.pre_launch_sync(id, ctx, &mut warnings) {
             Ok((r, off)) => (off, r),
+            Err(Error::Conflict(_)) => {
+                if let Some(q) = self.version_question(id, ctx) {
+                    return q;
+                }
+                return blocked(
+                    &Error::Conflict("this instance has diverged; choose a version in PackSync".into()),
+                    messages,
+                );
+            }
             Err(e) => return blocked(&e, messages),
         };
         messages.extend(warnings);
@@ -528,6 +540,38 @@ impl App {
             }
             Err(e) => blocked(&e, messages),
         }
+    }
+
+    /// The "which version?" question for a diverged instance, worded like a game launcher's cloud save
+    /// prompt. `None` when the conflict cannot be described (then the launch is refused with advice).
+    fn version_question(&self, id: InstanceId, ctx: &OpCtx) -> Option<HookOutcome> {
+        let opts = ReconcileOpts { apply_fast_forward: false, upload_local: false };
+        let Ok(ReconcileReport::Conflict(c)) = self.engine().reconcile(id, opts, ctx) else { return None };
+        let when = |s: &packsync_core::engine::SnapshotSummary| {
+            s.created
+                .as_deref()
+                .map(|t| t.replace('T', " ").chars().take(16).collect::<String>())
+                .unwrap_or_else(|| "?".into())
+        };
+        let local = match (&c.local, c.local_dirty) {
+            (Some(l), true) => format!("This PC: last saved {}, with changes made since", when(l)),
+            (Some(l), false) => format!("This PC: saved {}", when(l)),
+            (None, _) => "This PC: files that were never synced".to_string(),
+        };
+        let cloud: Vec<String> = c
+            .cloud
+            .iter()
+            .map(|s| format!("Cloud: from {}, saved {}", s.device.as_deref().unwrap_or("another computer"), when(s)))
+            .collect();
+        let name = self.engine().instance(id).map(|i| i.name).unwrap_or_default();
+        Some(HookOutcome::ChooseVersion {
+            question: format!(
+                "{name} was played on this PC and on another computer since they last synced.\n\n{local}\n{}\n\nWhich version do you want to play? The other one is kept in the history and can be restored.",
+                cloud.join("\n")
+            ),
+            cloud_head: (c.cloud.len() == 1).then(|| c.cloud[0].id),
+            messages: vec![],
+        })
     }
 
     /// The game ended normally (Prism's post-exit command, which Prism only runs after exit code 0).

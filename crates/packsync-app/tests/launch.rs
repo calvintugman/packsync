@@ -454,3 +454,35 @@ fn the_pre_launch_hook_asks_when_another_computer_is_playing() {
     a.app.hook_post_exit(inst, &a.ctx());
     assert!(matches!(b.app.hook_pre_launch(inst, &b.ctx()), HookOutcome::Proceed { .. }));
 }
+
+/// Both computers changed the instance since they last synced: pressing Play does not just refuse, it
+/// asks which version to play, like a game launcher's cloud-save prompt; the chosen resolution keeps the
+/// other version in the history and the launch then goes ahead.
+#[test]
+fn the_pre_launch_hook_offers_a_choice_when_both_computers_changed_the_instance() {
+    use packsync_core::engine::Resolution;
+    let w = World::new();
+    let a = w.device("desktop");
+    let (inst, root_a) = a.new_synced_instance("Pack One");
+    let b = w.device("laptop");
+    let restored = b.app.restore_cloud_instance(Default::default(), &b.ctx()).unwrap();
+
+    // the desktop plays and uploads
+    assert!(matches!(a.app.hook_pre_launch(inst, &a.ctx()), HookOutcome::Proceed { .. }));
+    std::fs::write(a.game_file(&root_a, "config/choice.cfg"), b"desktop").unwrap();
+    a.app.hook_post_exit(inst, &a.ctx());
+    a.app.engine().upload_pending(inst, false, &a.ctx()).unwrap();
+    // the laptop changed something too, without syncing
+    std::fs::write(b.game_file(&restored.root, "config/choice.cfg"), b"laptop").unwrap();
+
+    let pre = b.app.hook_pre_launch(inst, &b.ctx());
+    let HookOutcome::ChooseVersion { question, cloud_head, .. } = pre else { panic!("expected a choice, got {pre:?}") };
+    assert!(question.contains("This PC") && question.contains("from desktop"), "{question}");
+    assert!(cloud_head.is_some());
+    // "Keep cloud": the laptop continues with the desktop's version, its own is kept in the history
+    b.app.engine().resolve_conflict(inst, Resolution::KeepCloud { head: cloud_head }, &b.ctx()).unwrap();
+    assert!(matches!(b.app.hook_pre_launch(inst, &b.ctx()), HookOutcome::Proceed { .. }));
+    assert_eq!(std::fs::read(b.game_file(&restored.root, "config/choice.cfg")).unwrap(), b"desktop");
+    let history = b.app.engine().history(inst, false, &b.ctx()).unwrap();
+    assert!(history.len() >= 3, "both versions stay in the history: {history:?}");
+}
