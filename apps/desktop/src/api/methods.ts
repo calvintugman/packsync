@@ -67,6 +67,12 @@ export interface Methods {
   "storage.disconnect": M<{ revoke?: boolean }, StorageStatus>;
   "storage.test": M<void, StorageTest, true>;
   "storage.usage": M<void, StorageUsage>;
+  "storage.hosted_start": M<{ service?: string } | void, StorageStatus, true>;
+  "storage.hosted_join": M<{ code: string; service?: string }, StorageStatus, true>;
+  "storage.hosted_recover": M<{ key: string }, StorageStatus, true>;
+  "storage.hosted_pair_start": M<void, { code: string }>;
+  "storage.hosted_pair_wait": M<void, { joined: boolean }, true>;
+  "storage.hosted_recovery_key": M<void, { key: string }>;
   "launcher.discover": M<void, DiscoveredView[]>;
   "launcher.describe": M<{ launcher?: string; path: string }, DiscoveredInstance>;
   "instances.list": M<{ online?: boolean } | void, InstanceStatus[]>;
@@ -120,6 +126,10 @@ export type Result<K extends MethodName> = Methods[K]["result"];
 export const LONG_METHODS: readonly LongMethodName[] = [
   "storage.google_login",
   "storage.test",
+  "storage.hosted_start",
+  "storage.hosted_join",
+  "storage.hosted_recover",
+  "storage.hosted_pair_wait",
   "instances.preview",
   "instances.enable",
   "instance.changes",
@@ -157,6 +167,12 @@ export const ALL_METHODS: readonly MethodName[] = [
   "storage.disconnect",
   "storage.test",
   "storage.usage",
+  "storage.hosted_start",
+  "storage.hosted_join",
+  "storage.hosted_recover",
+  "storage.hosted_pair_start",
+  "storage.hosted_pair_wait",
+  "storage.hosted_recovery_key",
   "launcher.discover",
   "launcher.describe",
   "instances.list",

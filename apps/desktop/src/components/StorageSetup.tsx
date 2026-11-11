@@ -3,19 +3,20 @@ import type { StorageStatus } from "../api/types";
 import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Choice } from "../ui/controls";
 import { ErrorNote } from "../ui/ErrorNote";
+import { HostedSetup } from "./HostedSetup";
 import { JobBar } from "./JobBar";
 import { PathField } from "./PathField";
 
-type Mode = "google" | "folder";
+type Mode = "cloud" | "google" | "folder";
 type Space = "visible_folder" | "app_data";
 
-/** Choose where the worlds live: the user's own Google Drive (recommended) or a plain folder. */
+/** Choose where the worlds live: the PackSync cloud (recommended), the user's own Google Drive, or a folder. */
 export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus) => void }) {
   const store = useStore();
   const storage = useAppState((s) => s.storage);
   const settings = useAppState((s) => s.settings);
   const info = useAppState((s) => s.info);
-  const [mode, setMode] = useState<Mode>(storage?.kind === "local" ? "folder" : "google");
+  const [mode, setMode] = useState<Mode>(storage?.kind === "local" ? "folder" : storage?.kind === "google" ? "google" : "cloud");
   const [space, setSpace] = useState<Space>(storage?.space === "app_data" ? "app_data" : "visible_folder");
   const [folder, setFolder] = useState(settings?.storage.kind === "local" ? settings.storage.path : "");
   const [clientFile, setClientFile] = useState(settings?.google_client_file ?? "");
@@ -51,21 +52,26 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
     onConnected?.(status);
   });
 
-  const connected = storage?.connected && (mode === "google" ? storage.kind === "google" : storage.kind === "local");
+  const connected = storage?.connected && ((mode === "google" && storage.kind === "google") || (mode === "folder" && storage.kind === "local"));
 
   return (
     <div className="col gap-lg">
       <fieldset className="col" style={{ border: 0, padding: 0, margin: 0 }}>
         <legend className="sr-only">Where should your worlds live?</legend>
-        <Choice name="storage-mode" value="google" selected={mode === "google"} onSelect={() => setMode("google")} title="Google Drive (recommended)">
-          Your worlds are stored in <strong>your own</strong> Drive. PackSync has no server and never sees your account.
+        <Choice name="storage-mode" value="cloud" selected={mode === "cloud"} onSelect={() => setMode("cloud")} title="PackSync cloud (recommended)">
+          Nothing to set up. End-to-end encrypted: only your computers can read your worlds.
+        </Choice>
+        <Choice name="storage-mode" value="google" selected={mode === "google"} onSelect={() => setMode("google")} title="Your own Google Drive (advanced)">
+          Stored in <strong>your own</strong> Drive. Needs a Google OAuth client that you create yourself (about ten minutes).
         </Choice>
         <Choice name="storage-mode" value="folder" selected={mode === "folder"} onSelect={() => setMode("folder")} title="A folder on this computer or network">
           Useful for a NAS, a folder another sync tool mirrors, or for trying PackSync out.
         </Choice>
       </fieldset>
 
-      {mode === "google" ? (
+      {mode === "cloud" ? (
+        <HostedSetup onConnected={onConnected} />
+      ) : mode === "google" ? (
         <div className="col">
           <fieldset className="col" style={{ border: 0, padding: 0, margin: 0 }}>
             <legend className="field-label" style={{ marginBottom: 6 }}>

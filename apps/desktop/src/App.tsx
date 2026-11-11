@@ -60,7 +60,7 @@ function Sidebar({ route }: { route: Route }) {
       <div className="sidebar-foot" aria-label="Connection">
         <div className="row" style={{ gap: 8 }}>
           <StatusDot tone={tone} />
-          <strong className="truncate">{storage?.kind === "google" ? "Google Drive" : storage?.kind === "r2" ? "Cloudflare R2" : storage?.kind === "local" ? "Folder" : "No cloud"}</strong>
+          <strong className="truncate">{storage?.kind === "hosted" ? "PackSync cloud" : storage?.kind === "google" ? "Google Drive" : storage?.kind === "r2" ? "Cloudflare R2" : storage?.kind === "local" ? "Folder" : "No cloud"}</strong>
         </div>
         <div className="muted truncate" title={storage?.detail}>
           {storage?.connected ? (storage.account ?? storage.detail) : storage?.needs_reconnect ? "Sign in again" : "Not connected"}

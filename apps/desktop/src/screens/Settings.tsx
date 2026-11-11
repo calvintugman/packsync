@@ -107,6 +107,12 @@ function CloudSection() {
             PackSync forgets the connection on this computer. <strong>Nothing is deleted</strong> — not your local files and not what is
             stored in the cloud. Snapshots keep being saved here and upload once you reconnect.
           </p>
+          {storage?.kind === "hosted" ? (
+            <p>
+              <strong>Save your recovery key first</strong> (Settings → Storage) unless another computer still uses the PackSync cloud:
+              this computer forgets its key, and without a paired computer or the recovery key your cloud data cannot be read.
+            </p>
+          ) : null}
           {storage?.kind === "google" ? (
             <Checkbox checked={revoke} onChange={setRevoke} hint="Asks Google to cancel the permission you gave PackSync.">
               Also revoke PackSync's access at Google
@@ -365,8 +371,8 @@ export function SettingsScreen() {
           ]}
         />
         <p className="muted">
-          PackSync is not affiliated with Mojang, Microsoft, Prism Launcher or Google. Your files are stored unencrypted in
-          the cloud you choose.
+          PackSync is not affiliated with Mojang, Microsoft, Prism Launcher or Google. In the PackSync cloud your files are
+          encrypted on your computer; in Google Drive, a folder or R2 they are stored unencrypted.
         </p>
       </Section>
     </div>

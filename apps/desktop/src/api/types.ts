@@ -119,7 +119,7 @@ export interface LocalSettings {
 // ------------------------------------------------------------------------------------ storage
 
 export interface StorageStatus {
-  kind: "none" | "local" | "google" | "r2";
+  kind: "none" | "local" | "google" | "r2" | "hosted";
   connected: boolean;
   detail: string;
   account: string | null;
@@ -138,7 +138,8 @@ export type StorageSetting =
   | { kind: "none" }
   | { kind: "local"; path: string }
   | { kind: "google"; space: string; account?: string | null }
-  | { kind: "r2"; account_id: string; bucket: string; prefix: string; access_key_id: string };
+  | { kind: "r2"; account_id: string; bucket: string; prefix: string; access_key_id: string }
+  | { kind: "hosted"; endpoint: string; account: string };
 
 export interface Settings {
   version: number;

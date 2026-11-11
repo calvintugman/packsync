@@ -42,14 +42,14 @@ export function CloudScreen() {
                 {formatBytes(usage.data.quota.used)}
                 {usage.data.quota.total ? ` of ${formatBytes(usage.data.quota.total)}` : ""}
               </div>
-              <div className="label">used in your Google Drive (all files, history included)</div>
+              <div className="label">{storage?.kind === "google" ? "used in your Google Drive" : "used in the cloud"} (all files, history included)</div>
             </div>
           ) : null}
         </div>
       ) : null}
       {!connected ? (
         <Banner tone="info" title="No cloud is connected">
-          Connect Google Drive in Settings to see your instances here.
+          Connect the cloud in Settings to see your instances here.
         </Banner>
       ) : null}
       {list.error ? <ErrorNote error={list.error} /> : null}

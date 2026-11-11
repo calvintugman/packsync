@@ -43,13 +43,13 @@ export function InstancesScreen() {
             </Button>
           }
         >
-          PackSync keeps your worlds in your own Google Drive. Until you connect it, snapshots stay on this computer.
+          PackSync keeps your worlds in the cloud, encrypted. Until you connect, snapshots stay on this computer.
         </Banner>
       ) : null}
       {storage?.needs_reconnect ? (
         <Banner
           tone="danger"
-          title="Google Drive needs you to sign in again"
+          title="The cloud needs you to sign in again"
           actions={
             <Button size="sm" variant="primary" onClick={() => navigate({ name: "settings" })}>
               Open settings

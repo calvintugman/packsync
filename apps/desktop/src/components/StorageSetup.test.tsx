@@ -13,10 +13,13 @@ function fresh() {
 }
 
 describe("StorageSetup", () => {
-  it("offers Google Drive first and is upfront that files are not encrypted", async () => {
+  it("offers the PackSync cloud first; Google Drive is upfront that files are not encrypted", async () => {
+    const u = userEvent.setup();
     const t = fresh();
     await renderWithStore(<StorageSetup />, t);
-    expect(screen.getByRole("radio", { name: /Google Drive/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /PackSync cloud/ })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Start on this computer" })).toBeInTheDocument();
+    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
     expect(screen.getByText(/unencrypted/)).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /A “PackSync” folder in My Drive/ })).toBeChecked();
   });
@@ -26,6 +29,7 @@ describe("StorageSetup", () => {
     const t = fresh();
     t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false, setup_hint: "Create a client: docs/oauth-setup.md" }));
     await renderWithStore(<StorageSetup />, t);
+    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     expect(await screen.findByRole("heading", { name: "PackSync needs a Google OAuth client" })).toBeInTheDocument();
     expect(t.count("storage.google_login")).toBe(0); // no browser, no network
@@ -36,6 +40,7 @@ describe("StorageSetup", () => {
     const t = fresh();
     t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false }));
     await renderWithStore(<StorageSetup />, t);
+    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
     await u.click(screen.getByRole("radio", { name: /Hidden app data/ }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     await waitFor(() => expect(t.count("storage.use_google")).toBe(1));
@@ -50,6 +55,7 @@ describe("StorageSetup", () => {
     t.on("storage.google_login", () => ({ account: { email: "me@example.com", display_name: null, permission_id: null }, status: connected }));
     const onConnected = vi.fn();
     const { store } = await renderWithStore(<StorageSetup onConnected={onConnected} />, t);
+    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     await waitFor(() => expect(onConnected).toHaveBeenCalledWith(connected));
     expect(store.getState().toasts.some((x) => x.message === "Connected as me@example.com.")).toBe(true);
