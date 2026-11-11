@@ -629,16 +629,58 @@ pub fn hash_phase(
     let mut hashed = Vec::with_capacity(results.len());
     let mut vanished = vec![];
     let mut bytes = 0;
+    // files the permissions do not let us read are collected and reported together, with the fix
+    let mut denied: Vec<&str> = vec![];
+    let mut first_error = None;
     for (r, c) in results.into_iter().zip(candidates) {
-        let (h, sz) = r?;
-        bytes += sz;
-        match h {
-            Some(h) => hashed.push(h),
-            None => vanished.push(c.path.clone()),
+        match r {
+            Ok((h, sz)) => {
+                bytes += sz;
+                match h {
+                    Some(h) => hashed.push(h),
+                    None => vanished.push(c.path.clone()),
+                }
+            }
+            Err(Error::Io { source, .. }) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                denied.push(&c.path)
+            }
+            Err(e) => {
+                first_error.get_or_insert(e);
+            }
         }
+    }
+    if !denied.is_empty() {
+        return Err(unreadable_files(root, &denied));
+    }
+    if let Some(e) = first_error {
+        return Err(e);
     }
     ctx.progress(Phase::Snapshot, (total_files, total_files), (total_bytes, total_bytes), "hashing complete");
     Ok(HashPhase { hashed, vanished, bytes_read: bytes })
+}
+
+/// The error for files of an instance that this user may not read: how many, which, and how to fix it.
+pub fn unreadable_files(root: &Path, paths: &[&str]) -> Error {
+    let mut sorted = paths.to_vec();
+    sorted.sort_unstable();
+    let shown: Vec<&str> = sorted.iter().take(5).copied().collect();
+    let more =
+        if sorted.len() > shown.len() { format!(" and {} more", sorted.len() - shown.len()) } else { String::new() };
+    let fix = if cfg!(unix) {
+        format!(
+            "To fix it, give yourself read access (this changes nothing else): chmod -R u+rwX \"{}\"",
+            root.display()
+        )
+    } else {
+        "To fix it, give your user account read access to them (Properties → Security), or copy the instance again."
+            .to_string()
+    };
+    Error::Config(format!(
+        "PackSync cannot read {} file{} of this instance because their permissions do not allow it: {}{more}. {fix}",
+        sorted.len(),
+        if sorted.len() == 1 { "" } else { "s" },
+        shown.join(", ")
+    ))
 }
 
 #[cfg(test)]

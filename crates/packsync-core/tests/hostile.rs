@@ -462,3 +462,31 @@ fn names_that_cannot_exist_on_the_target_platform_are_found_before_anything_is_t
     assert!(r.root.join("config/ok.cfg").exists());
     assert!(!r.report.skipped.is_empty());
 }
+
+/// Found in use: an instance whose files had no permissions at all (mode 000, as some pack installers
+/// leave them) failed with "reading …/.packignore: Permission denied" and nothing else. All such files
+/// are now reported together, with the command that fixes it.
+#[cfg(unix)]
+#[test]
+fn unreadable_instance_files_are_reported_together_with_the_fix() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root, info, en) = a.new_instance("pack", &packsync_core::testkit::fixtures::FixtureSpec::tiny());
+    let locked = [&info.mods[0], &info.configs[0]];
+    for p in locked {
+        fs::write(p, b"changed").unwrap(); // so the next snapshot has to read them
+        fs::set_permissions(p, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    if fs::read(locked[0]).is_ok() {
+        return; // running as root: permissions do not apply
+    }
+    let err = a.engine.snapshot(en.instance, SnapshotOpts::default(), &a.ctx()).unwrap_err();
+    let msg = err.to_string();
+    for p in locked {
+        fs::set_permissions(p, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert!(msg.contains("cannot read 2 files"), "{msg}");
+    assert!(msg.contains("chmod -R u+rwX"), "{msg}");
+    assert!(msg.contains(&root.display().to_string()), "{msg}");
+}
