@@ -1852,7 +1852,7 @@ mod tests {
         assert_eq!(a.id, b.id, "a duplicate request returns the existing job");
         let (c, created_c) = db.job_register(crate::ids::JobId::new(), "sync", None, None).unwrap();
         assert!(created_c && c.id != a.id);
-                assert_eq!(db.jobs_mark_interrupted().unwrap(), 0, "their owner (this process) is alive");
+        assert_eq!(db.jobs_mark_interrupted().unwrap(), 0, "their owner (this process) is alive");
         db.with(|c| {
             c.execute("UPDATE jobs SET owner_pid=4000000", [])?;
             Ok(())

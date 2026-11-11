@@ -1,13 +1,16 @@
 # PackSync
 
 **Continue your Minecraft modpack on any computer.** PackSync keeps a [Prism Launcher](https://prismlauncher.org/)
-instance — mods, configuration and single-player worlds — in sync between your computers through **your own
-Google Drive or Cloudflare R2 bucket**. Stop playing on the desktop, sit down at the laptop, press *Play*, and carry on.
+instance — mods, configuration and single-player worlds — in sync between your computers through the
+**PackSync cloud** (nothing to set up, end-to-end encrypted), or your own Google Drive or Cloudflare R2 bucket.
+Stop playing on the desktop, sit down at the laptop, press *Play*, and carry on.
 
 ![PackSync showing two instances: one ready on the other computers, one saved here but not uploaded yet](docs/images/instances.png)
 
-* **Your cloud, your account.** There is no PackSync server and no PackSync account. The app talks to Google
-  Drive (with a permission you grant in your browser) or to your own Cloudflare R2 bucket directly.
+* **Nothing to set up, and private.** With the PackSync cloud there is no account to make: start on one
+  computer, type a short pairing code on the others. Everything is encrypted on your computer first; the
+  service stores it but cannot read it ([`docs/hosted.md`](docs/hosted.md)). Google Drive and Cloudflare R2
+  remain available if you prefer your own account.
 * **Fast after the first sync.** Only what changed is uploaded: a few chunks of a region file, not the whole
   world; a renamed mod costs kilobytes (the new manifest), not the jar (`docs/performance.md`).
 * **It never merges your worlds.** If two computers changed the same instance, PackSync shows both versions
@@ -29,7 +32,7 @@ Google Drive or Cloudflare R2 bucket**. Stop playing on the desktop, sit down at
 ## Contents
 
 [What it does](#what-it-does) · [Install](#install--build) · [Quick start](#quick-start) ·
-[Connecting Google Drive](#connecting-google-drive) · [Prism integration](#prism-integration) ·
+[The PackSync cloud](#the-packsync-cloud) · [Connecting Google Drive](#connecting-google-drive) · [Prism integration](#prism-integration) ·
 [What is synced](#what-is-synced) · [Guarantees and limits](#guarantees-and-limits) ·
 [Conflicts, crashes and recovery](#conflicts-crashes-and-recovery) · [Status](#status) ·
 [Platforms](#platforms) · [Development](#development) · [Documentation](#documentation) ·
@@ -92,22 +95,23 @@ target/release/packsync --help
 
 ### With the desktop app
 
-1. Start PackSync. The first-run wizard asks where your worlds should live: **Google Drive** (see
-   [below](#connecting-google-drive)) or a plain **folder** (a NAS, a folder another tool mirrors, or just to
-   try it out).
+1. Start PackSync. The first-run wizard asks where your worlds should live: the **PackSync cloud** (press
+   *Start on this computer*; on your other computers press *Join* and type the code the first one shows),
+   **Google Drive** (see [below](#connecting-google-drive)), or a plain **folder**.
 2. Pick an instance. Read the preview, then **Start syncing**.
 3. On the second computer: **Cloud → Bring to this computer…**
 
 ### With the command line
 
 ```sh
-packsync storage use-local /mnt/nas/packsync      # or: packsync storage use-google && packsync auth login
+packsync storage start                            # the PackSync cloud (other computers: storage join <code>)
 packsync instances                                # Prism instances found on this computer
 packsync preview "<instance folder>"              # what would be synced — changes nothing
 packsync enable  "<instance folder>"              # first snapshot + upload
 packsync launch  "My Pack"                        # sync, play, save, upload (or use Prism with hooks)
 
 # on the other computer
+packsync storage join 4821-K7QM-X2PD              # the code `packsync storage pair` shows on the first one
 packsync cloud                                    # instances stored in the cloud
 packsync restore-new "My Pack"                    # bring it here as a new Prism instance
 packsync sync "My Pack"                           # day to day
@@ -117,6 +121,14 @@ packsync doctor                                   # checks; secrets are redacted
 
 Every command accepts `--json` (one stable JSON document) and has documented exit codes
 ([`docs/cli.md`](docs/cli.md)), so it can be scripted.
+
+## The PackSync cloud
+
+No sign-up and nothing to configure; end-to-end encrypted with a key only your computers have; computers
+are added with a short one-time pairing code (a password-authenticated key exchange, so the service never
+learns it); a recovery key covers losing every computer. It runs as a small Cloudflare Worker in front of
+R2, operated by whoever distributes PackSync, with per-account and total space limits. Details, the
+security model, costs and how to deploy it: [`docs/hosted.md`](docs/hosted.md).
 
 ## Connecting Google Drive
 
@@ -252,7 +264,7 @@ What it does **not** do:
 | | |
 |---|---|
 | **Implemented** | Sync engine (scan, chunking, packs, manifests, upload, reconcile, journaled restore, recovery, sessions, conflicts, crash quarantine, retention/cleanup); Google Drive adapter + OAuth; Prism adapter + hooks; command-line tool; desktop app (setup, instances, history/restore, conflicts, crashes, hooks, cloud, settings, cleanup). |
-| **Tested locally** (no credentials) | 423 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
+| **Tested locally** (no credentials) | 433 Rust tests (unit, journeys on two simulated computers, crash/kill at every boundary, network faults, hostile data, concurrency, the Drive adapter and OAuth against a mock server, the Prism adapter, the CLI as a real process), 123 UI unit/component tests, 38 browser tests that drive the real UI against the real engine, accessibility checks (axe, light and dark). **Windows build:** cross-compiled on Linux, and its tests run as Windows programs under Wine (`scripts/windows-check.sh`), including launching through a (fake) Prism, hooks and the `packsync.exe` end-to-end suite. Last run (2026-11-10, before the R2 work): everything passed except the new `session.lock` probe test, which needs real Windows byte-range locks (now skipped under Wine); not re-run since. |
 | **Tested against a real service** | **Google Drive and Google OAuth** (2026-11-10: conformance suite, a 6.8 GB GregTech: New Horizons copy uploaded, restored byte-identical, edits, a conflict, killed uploads resumed; Linux, KDE Wallet as the credential store). **Prism Launcher 11.0.3 on Linux** (sandboxed). The desktop shell was started and driven on Linux (WebKitGTK). |
 | **Not tested against real services** | **a real Windows installation** (only Wine; `scripts/windows-verify.ps1` is the procedure) and **macOS** (never built); two physical computers (a second profile stood in); CI workflows are written but have never run; a GUI Prism noticing a restored instance. |
 | **Not done** | End-to-end encryption; deleting history (v1 releases the *content* of old snapshots but keeps their manifests); signed installers and releases; auto-update; other launchers (the adapter interface is there). |
@@ -354,7 +366,7 @@ examples/               sample settings and rules
 [Performance](docs/performance.md) · [Testing and status](docs/testing.md) ·
 [Platforms](docs/platforms.md) · [Companion mod or Prism fork?](docs/integrations.md) ·
 [Benchmarks on a real modpack](docs/benchmarks.md) · [How it works, in plain language](docs/how-it-works.md) ·
-[Windows checklist](docs/windows-checklist.md) ·
+[Windows checklist](docs/windows-checklist.md) · [The PackSync cloud](docs/hosted.md) ·
 [Dependencies](docs/dependencies.md) · [Rebranding](docs/rebranding.md)
 
 ## Contributing
