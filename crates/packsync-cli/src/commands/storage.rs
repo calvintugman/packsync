@@ -29,6 +29,62 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
             let s = cx.app.storage_status();
             cx.out.emit(&s, |w| print_status(w, &s))
         }
+        StorageCmd::Start { service } => {
+            let s = cx.app.hosted_start(service.as_deref(), &ctx)?;
+            cx.out.emit(&s, |w| {
+                print_status(w, &s)?;
+                writeln!(w, "Your PackSync cloud is ready; everything is encrypted on this computer before upload.")?;
+                writeln!(w, "On your other computers run `packsync storage pair` here, then `packsync storage join <code>` there.")?;
+                writeln!(w, "Keep a recovery key somewhere safe: `packsync storage recovery-key`.")
+            })
+        }
+        StorageCmd::Pair => {
+            let code = cx.app.hosted_pair_start(&ctx)?;
+            cx.out.note(format!(
+                "On the other computer, run:\n\n    packsync storage join {code}\n\n(or choose \"Join from another computer\" in the app and type {code}).\nWaiting up to 10 minutes…"
+            ));
+            if cx.out.json {
+                cx.out.emit(&serde_json::json!({ "code": code, "state": "waiting" }), |_| Ok(()))?;
+            }
+            cx.app.hosted_pair_wait(&ctx)?;
+            cx.out.emit(&serde_json::json!({ "code": code, "state": "joined" }), |w| {
+                writeln!(w, "The other computer joined. It can now restore or sync your instances.")
+            })
+        }
+        StorageCmd::Join { code, service } => {
+            let s = cx.app.hosted_join(&code, service.as_deref(), &ctx)?;
+            cx.out.emit(&s, |w| {
+                print_status(w, &s)?;
+                writeln!(w, "Joined. `packsync cloud` lists the instances in your cloud; `packsync restore-new <name>` brings one here.")
+            })
+        }
+        StorageCmd::Recover => {
+            let key = if std::io::stdin().is_terminal() {
+                rpassword::prompt_password("Recovery key (not shown): ")
+                    .map_err(|e| Error::io("reading the recovery key", e))?
+            } else {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).map_err(|e| Error::io("reading the recovery key", e))?;
+                line
+            };
+            let s = cx.app.hosted_recover(&packsync_core::redact::Secret::new(key.trim().to_string()), &ctx)?;
+            cx.out.emit(&s, |w| {
+                print_status(w, &s)?;
+                writeln!(w, "Recovered: this computer uses your PackSync cloud again.")
+            })
+        }
+        StorageCmd::RecoveryKey => {
+            let key = cx.app.hosted_recovery_key()?;
+            cx.out.emit(&serde_json::json!({ "recovery_key": key.expose() }), |w| {
+                writeln!(w, "{}", key.expose())?;
+                writeln!(w)?;
+                writeln!(
+                    w,
+                    "Keep this in a password manager or on paper. With it, `packsync storage recover` restores"
+                )?;
+                writeln!(w, "access on any computer. Anyone who has it can read and delete your PackSync data.")
+            })
+        }
         StorageCmd::UseLocal { dir } => {
             cx.app.use_local_storage(&dir)?;
             let s = cx.app.storage_status();
@@ -77,10 +133,15 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
             })
         }
         StorageCmd::Disconnect { revoke } => {
-            if !cx
-                .out
-                .confirm("Disconnect the storage? Cloud data is not touched; syncing stops until you connect again.")?
-            {
+            let hosted = matches!(cx.app.settings().storage, StorageSetting::Hosted { .. });
+            let question = if hosted {
+                "Disconnect from the PackSync cloud? This computer forgets its key. Cloud data is not touched, \
+                 but you need another paired computer or the recovery key (`packsync storage recovery-key`) \
+                 to get back in."
+            } else {
+                "Disconnect the storage? Cloud data is not touched; syncing stops until you connect again."
+            };
+            if !cx.out.confirm(question)? {
                 return Err(Error::Cancelled);
             }
             cx.app.disconnect_storage(revoke, &ctx)?;
@@ -98,7 +159,7 @@ pub fn auth(cx: &Cx, c: AuthCmd) -> Result<()> {
                 StorageSetting::None => {
                     cx.app.use_google("visible_folder")?;
                 }
-                StorageSetting::Local { .. } | StorageSetting::R2 { .. } => {
+                StorageSetting::Local { .. } | StorageSetting::R2 { .. } | StorageSetting::Hosted { .. } => {
                     return Err(Error::Config(
                         "Google Drive is not the selected storage; run `packsync storage use-google` first".into(),
                     ));

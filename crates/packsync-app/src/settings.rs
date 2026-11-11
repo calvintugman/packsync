@@ -34,6 +34,14 @@ pub enum StorageSetting {
         prefix: String,
         access_key_id: String,
     },
+    /// The PackSync service: nothing to set up, end-to-end encrypted. The account's token and
+    /// encryption key are kept in the OS credential store under [`StorageSetting::hosted_secret_account`].
+    Hosted {
+        /// The service's address (`https://…`).
+        endpoint: String,
+        /// The account ID (not a secret).
+        account: String,
+    },
 }
 
 fn default_r2_prefix() -> String {
@@ -44,6 +52,11 @@ impl StorageSetting {
     /// Credential-store entry of an R2 secret access key.
     pub fn r2_secret_account(account_id: &str, access_key_id: &str) -> String {
         format!("r2:{account_id}:{access_key_id}")
+    }
+
+    /// Credential-store entry of a hosted account's token and encryption key.
+    pub fn hosted_secret_account(account: &str) -> String {
+        format!("hosted:{account}")
     }
 }
 
@@ -148,6 +161,14 @@ impl Settings {
                 || !prefix.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
             {
                 return Err(Error::Config(format!("{prefix:?} is not a valid prefix (letters, digits, . _ -)")));
+            }
+        }
+        if let StorageSetting::Hosted { endpoint, account } = &self.storage {
+            if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
+                return Err(Error::Config(format!("the service address {endpoint:?} must start with https://")));
+            }
+            if account.is_empty() || !account.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+                return Err(Error::Config(format!("{account:?} is not a PackSync account ID")));
             }
         }
         if let StorageSetting::Google { space, .. } = &self.storage

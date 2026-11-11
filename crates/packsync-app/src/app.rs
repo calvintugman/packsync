@@ -51,6 +51,8 @@ pub struct App {
     prism: RwLock<Arc<PrismLauncher>>,
     prism_fixed: bool,
     storage_wrapper: Option<StorageWrapper>,
+    /// A pairing code shown and waiting for the other computer ([`App::hosted_pair_start`]).
+    pairing: parking_lot::Mutex<Option<packsync_hosted::pairing::PairingOffer>>,
     bus: EventBus,
     jobs: JobRunner,
 }
@@ -115,6 +117,7 @@ impl App {
             prism: RwLock::new(prism),
             prism_fixed,
             storage_wrapper: opts.storage_wrapper,
+            pairing: parking_lot::Mutex::new(None),
             bus,
             jobs,
         });
@@ -312,6 +315,103 @@ impl App {
         Ok(self.storage_status())
     }
 
+    // ------------------------------------------------------------------------ PackSync cloud
+
+    /// The service to use: `explicit`, else the one already configured, else the one built in.
+    fn hosted_endpoint(&self, explicit: Option<&str>) -> Result<String> {
+        if let Some(e) = explicit.map(str::trim).filter(|e| !e.is_empty()) {
+            return Ok(e.trim_end_matches('/').to_string());
+        }
+        if let StorageSetting::Hosted { endpoint, .. } = self.settings().storage {
+            return Ok(endpoint);
+        }
+        packsync_hosted::default_endpoint().ok_or_else(|| {
+            Error::Config(
+                "this build of PackSync has no cloud service address; give one with --service \
+                 (or the PACKSYNC_HOSTED_URL environment variable)"
+                    .into(),
+            )
+        })
+    }
+
+    /// Use `c` from now on: secrets to the credential store, the account to the settings, then one
+    /// listing to prove it works.
+    fn save_hosted(&self, c: &packsync_hosted::Credentials, ctx: &OpCtx) -> Result<StorageStatus> {
+        let setting =
+            StorageSetting::Hosted { endpoint: c.account.endpoint.clone(), account: c.account.account.clone() };
+        let mut probe = self.settings();
+        probe.storage = setting.clone();
+        probe.validate()?;
+        self.creds
+            .set(&StorageSetting::hosted_secret_account(&c.account.account), &c.secret())
+            .map_err(|e| Error::Config(e.to_string()))?;
+        let up = self.update_settings(|s| s.storage = setting)?;
+        if let Some(p) = up.storage_problem {
+            return Err(Error::Config(p));
+        }
+        self.engine.storage()?.list("instances/", ctx)?;
+        Ok(self.storage_status())
+    }
+
+    /// First computer: create an account on the PackSync cloud (with a new encryption key) and use it.
+    pub fn hosted_start(&self, endpoint: Option<&str>, ctx: &OpCtx) -> Result<StorageStatus> {
+        if matches!(self.settings().storage, StorageSetting::Hosted { .. }) {
+            return Err(Error::Config(
+                "this computer already uses the PackSync cloud; to add another computer, run `packsync storage pair` here".into(),
+            ));
+        }
+        let ep = self.hosted_endpoint(endpoint)?;
+        let c = packsync_hosted::create_account(&ep, ctx)?;
+        self.save_hosted(&c, ctx)
+    }
+
+    /// Another computer: join the account of the computer showing `code`.
+    pub fn hosted_join(&self, code: &str, endpoint: Option<&str>, ctx: &OpCtx) -> Result<StorageStatus> {
+        let ep = self.hosted_endpoint(endpoint)?;
+        let c = packsync_hosted::pairing::join(&ep, code, ctx)?;
+        self.save_hosted(&c, ctx)
+    }
+
+    /// Any computer: use the account a recovery key describes.
+    pub fn hosted_recover(&self, key: &packsync_core::redact::Secret, ctx: &OpCtx) -> Result<StorageStatus> {
+        let c = packsync_hosted::Credentials::from_recovery_key(key.expose())?;
+        self.save_hosted(&c, ctx)
+    }
+
+    fn hosted_credentials(&self) -> Result<packsync_hosted::Credentials> {
+        match self.settings().storage {
+            StorageSetting::Hosted { endpoint, account } => {
+                provider::hosted_credentials(&*self.creds, &endpoint, &account)
+            }
+            _ => Err(Error::Config("this computer does not use the PackSync cloud".into())),
+        }
+    }
+
+    /// Show a pairing code for another computer; then call [`App::hosted_pair_wait`].
+    pub fn hosted_pair_start(&self, ctx: &OpCtx) -> Result<String> {
+        let c = self.hosted_credentials()?;
+        let hosted = Arc::new(packsync_hosted::HostedStorage::new(c.account.clone())?);
+        let offer = packsync_hosted::pairing::PairingOffer::start(hosted, &c, ctx)?;
+        let code = offer.code().to_string();
+        *self.pairing.lock() = Some(offer);
+        Ok(code)
+    }
+
+    /// Wait (up to 10 minutes) until another computer joined with the code shown last.
+    pub fn hosted_pair_wait(&self, ctx: &OpCtx) -> Result<()> {
+        let offer = self
+            .pairing
+            .lock()
+            .take()
+            .ok_or_else(|| Error::Config("no pairing code is being shown; make one first".into()))?;
+        offer.wait(ctx).map_err(Error::from)
+    }
+
+    /// The text that restores access without pairing. A secret: show it only when asked.
+    pub fn hosted_recovery_key(&self) -> Result<packsync_core::redact::Secret> {
+        Ok(self.hosted_credentials()?.recovery_key())
+    }
+
     /// Interactive sign-in (opens the system browser). Stores the refresh token in the OS credential
     /// store and remembers the account name in the settings.
     pub fn google_login(&self, opener: &dyn UrlOpener, ctx: &OpCtx) -> Result<AccountInfo> {
@@ -339,8 +439,14 @@ impl App {
             }
             auth.disconnect().map_err(|e| Error::from(e.to_storage_error()))?;
         }
-        if let StorageSetting::R2 { account_id, access_key_id, .. } = self.settings().storage {
-            let _ = self.creds.delete(&StorageSetting::r2_secret_account(&account_id, &access_key_id));
+        match self.settings().storage {
+            StorageSetting::R2 { account_id, access_key_id, .. } => {
+                let _ = self.creds.delete(&StorageSetting::r2_secret_account(&account_id, &access_key_id));
+            }
+            StorageSetting::Hosted { account, .. } => {
+                let _ = self.creds.delete(&StorageSetting::hosted_secret_account(&account));
+            }
+            _ => {}
         }
         self.update_settings(|s| s.storage = StorageSetting::None)?;
         Ok(())

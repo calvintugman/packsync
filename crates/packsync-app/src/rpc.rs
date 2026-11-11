@@ -46,6 +46,12 @@ pub const METHODS: &[MethodInfo] = &[
     m("storage.disconnect", false, "{revoke}: forget the connection (cloud data is not touched)."),
     m("storage.test", true, "Check that the connection works."),
     m("storage.usage", false, "How much of the account's storage is used (one cheap request)."),
+    m("storage.hosted_start", true, "{service?}: create a PackSync cloud account and use it (first computer)."),
+    m("storage.hosted_join", true, "{code, service?}: join the PackSync cloud of the computer showing the code."),
+    m("storage.hosted_recover", true, "{key}: use the PackSync cloud with a recovery key."),
+    m("storage.hosted_pair_start", false, "Make a pairing code for another computer: {code}."),
+    m("storage.hosted_pair_wait", true, "Wait (up to 10 minutes) until another computer joined with the code."),
+    m("storage.hosted_recovery_key", false, "The recovery key (a secret: show it only when asked): {key}."),
     m("launcher.discover", false, "Prism instances found on this computer."),
     m("launcher.describe", false, "{launcher, path}: validate a manually selected folder."),
     m("instances.list", false, "{online?}: status of every synced instance."),
@@ -220,6 +226,39 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             app.disconnect_storage(a.revoke, ctx)?;
             ser(&app.storage_status())
         }
+        "storage.hosted_start" => {
+            #[derive(Deserialize)]
+            struct A {
+                #[serde(default)]
+                service: Option<String>,
+            }
+            let a: A = p(&params)?;
+            ser(&app.hosted_start(a.service.as_deref(), ctx)?)
+        }
+        "storage.hosted_join" => {
+            #[derive(Deserialize)]
+            struct A {
+                code: String,
+                #[serde(default)]
+                service: Option<String>,
+            }
+            let a: A = p(&params)?;
+            ser(&app.hosted_join(&a.code, a.service.as_deref(), ctx)?)
+        }
+        "storage.hosted_recover" => {
+            #[derive(Deserialize)]
+            struct A {
+                key: String,
+            }
+            let a: A = p(&params)?;
+            ser(&app.hosted_recover(&packsync_core::redact::Secret::new(a.key.trim().to_string()), ctx)?)
+        }
+        "storage.hosted_pair_start" => Ok(json!({ "code": app.hosted_pair_start(ctx)? })),
+        "storage.hosted_pair_wait" => {
+            app.hosted_pair_wait(ctx)?;
+            Ok(json!({ "joined": true }))
+        }
+        "storage.hosted_recovery_key" => Ok(json!({ "key": app.hosted_recovery_key()?.expose() })),
         "storage.test" => app.test_storage(ctx),
         "storage.usage" => {
             let st = e.storage()?;

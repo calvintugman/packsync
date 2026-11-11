@@ -21,7 +21,7 @@ use crate::settings::{Settings, StorageSetting};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StorageStatus {
-    /// `none`, `local`, `google` or `r2`.
+    /// `none`, `local`, `google`, `r2` or `hosted`.
     pub kind: String,
     pub connected: bool,
     /// One line for the UI: the folder, or the account and where its files live.
@@ -60,6 +60,8 @@ pub fn client_error_to_error(e: ClientConfigError) -> Error {
 static DRIVE_STATS: std::sync::Mutex<Option<packsync_drive::StatsHandle>> = std::sync::Mutex::new(None);
 /// The same for an R2 provider.
 static S3_STATS: std::sync::Mutex<Option<Arc<packsync_s3::S3Stats>>> = std::sync::Mutex::new(None);
+/// The same for the PackSync service.
+static HOSTED_STATS: std::sync::Mutex<Option<Arc<packsync_hosted::HostedStats>>> = std::sync::Mutex::new(None);
 
 /// What this process has sent to and received from Google Drive so far: HTTP requests by kind, body
 /// bytes in both directions, retries. `None` when no Google provider was built (local folder, no storage).
@@ -70,6 +72,10 @@ pub fn drive_request_stats() -> Option<packsync_drive::RequestStats> {
 /// Cumulative HTTP requests and body bytes of this process's cloud provider (zeros for a local folder).
 pub fn transfer_counts() -> packsync_core::progress::TransferCounts {
     if let Some(s) = S3_STATS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let (requests, bytes_up, bytes_down, _) = s.snapshot();
+        return packsync_core::progress::TransferCounts { requests, bytes_up, bytes_down };
+    }
+    if let Some(s) = HOSTED_STATS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let (requests, bytes_up, bytes_down, _) = s.snapshot();
         return packsync_core::progress::TransferCounts { requests, bytes_up, bytes_down };
     }
@@ -108,6 +114,12 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
             *DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(drive.stats_handle().clone());
             Ok(Provider { storage: Some(Arc::new(drive)), auth: Some(auth) })
         }
+        StorageSetting::Hosted { endpoint, account } => {
+            let creds = hosted_credentials(&*creds, endpoint, account)?;
+            let (storage, hosted) = packsync_hosted::open_storage(&creds).map_err(Error::from)?;
+            *HOSTED_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(hosted.stats());
+            Ok(Provider { storage: Some(storage), auth: None })
+        }
         StorageSetting::R2 { account_id, bucket, prefix, access_key_id } => {
             let secret = creds
                 .get(&StorageSetting::r2_secret_account(account_id, access_key_id))
@@ -130,6 +142,25 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
     }
 }
 
+/// A hosted account's credentials: the settings name it, the credential store holds its secrets.
+pub fn hosted_credentials(
+    store: &dyn CredentialStore,
+    endpoint: &str,
+    account: &str,
+) -> Result<packsync_hosted::Credentials> {
+    let secret = store
+        .get(&StorageSetting::hosted_secret_account(account))
+        .map_err(|e| Error::Config(e.to_string()))?
+        .ok_or_else(|| {
+            Error::Config(
+                "this computer's key for the PackSync cloud is missing from the OS credential store; \
+                 pair it again, or use the recovery key"
+                    .into(),
+            )
+        })?;
+    packsync_hosted::Credentials::from_secret(endpoint, account, &secret).map_err(Error::from)
+}
+
 pub fn default_credentials() -> Arc<dyn CredentialStore> {
     Arc::new(KeyringCredentialStore::new())
 }
@@ -140,7 +171,9 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
             kind: "none".into(),
             detail: "Nothing is connected yet.".into(),
             setup_hint: Some(
-                "Connect Google Drive, or choose a local folder to use as the cloud (for testing).".into(),
+                "Start with the PackSync cloud (`packsync storage start`), or join from another computer \
+                 (`packsync storage join <code>`)."
+                    .into(),
             ),
             ..Default::default()
         },
@@ -154,6 +187,17 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
                 ..Default::default()
             }
         }
+        StorageSetting::Hosted { endpoint, account } => StorageStatus {
+            kind: "hosted".into(),
+            connected: true,
+            account: Some(account.clone()),
+            detail: format!(
+                "PackSync cloud, end-to-end encrypted ({}, account {}…)",
+                endpoint.split("://").nth(1).unwrap_or(endpoint),
+                &account[..account.len().min(6)]
+            ),
+            ..Default::default()
+        },
         StorageSetting::R2 { account_id, bucket, prefix, .. } => StorageStatus {
             kind: "r2".into(),
             // whether the key works is what `packsync storage test` finds out

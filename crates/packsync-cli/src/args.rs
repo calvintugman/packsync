@@ -377,6 +377,28 @@ pub struct LaunchArgs {
 pub enum StorageCmd {
     /// Show the current connection.
     Status,
+    /// Use the PackSync cloud: creates an account for you (nothing to sign up for). Everything is
+    /// encrypted on this computer first. Run this on your first computer only.
+    Start {
+        /// The service's address (default: the one built into this program).
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Show a code to bring another computer into this computer's PackSync cloud, and wait for it.
+    Pair,
+    /// Join the PackSync cloud of another computer with the code it shows (`packsync storage pair`).
+    Join {
+        /// The code, like 4821-K7QM-X2PD.
+        code: String,
+        /// The service's address (default: the one built into this program).
+        #[arg(long)]
+        service: Option<String>,
+    },
+    /// Use the PackSync cloud with a recovery key (when no paired computer is at hand). Asks for it.
+    Recover,
+    /// Print the recovery key: it restores access on a new computer if all others are lost. Anyone
+    /// who has it can read your data; keep it like a password.
+    RecoveryKey,
     /// Use a local folder as the "cloud" (testing, or a folder another tool mirrors).
     UseLocal { dir: PathBuf },
     /// Use Google Drive (then run `packsync auth login`).
