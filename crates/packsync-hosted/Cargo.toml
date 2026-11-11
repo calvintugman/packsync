@@ -1,0 +1,40 @@
+[package]
+name = "packsync-hosted"
+description = "PackSync hosted storage: end-to-end encryption, the hosted service client and pairing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# In-process server speaking the hosted service's API (tests, local demos).
+mock = ["dep:tiny_http"]
+
+[dependencies]
+packsync-core.workspace = true
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+base64.workspace = true
+blake3.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+chacha20poly1305.workspace = true
+spake2.workspace = true
+getrandom.workspace = true
+md-5.workspace = true
+tiny_http = { workspace = true, optional = true }
+
+[[example]]
+name = "mock-hosted-server"
+required-features = ["mock"]
+
+[dev-dependencies]
+packsync-core = { workspace = true, features = ["testkit"] }
+packsync-hosted = { path = ".", features = ["mock"] }
+tempfile.workspace = true
