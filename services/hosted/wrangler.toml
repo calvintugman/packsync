@@ -1,0 +1,26 @@
+# PackSync hosted storage. See docs/hosted.md for deploying it to your Cloudflare account.
+name = "packsync"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+# only the main address serves the API (no per-version preview addresses)
+preview_urls = false
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "packsync-hosted"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "packsync-hosted"
+# replaced by `wrangler d1 create packsync-hosted` output when deploying (see docs/hosted.md)
+database_id = "432232b2-d537-4696-a68c-af0286074698"
+
+[vars]
+# space each account may use (bytes): 20 GiB
+ACCOUNT_QUOTA_BYTES = "21474836480"
+# space all accounts together may use (bytes): 200 GiB. Uploads beyond it are refused.
+TOTAL_QUOTA_BYTES = "214748364800"
+# new accounts per network address per day
+REGISTRATIONS_PER_DAY = "5"
+# largest single upload (bytes); Workers accept request bodies up to 100 MB
+MAX_OBJECT_BYTES = "90000000"

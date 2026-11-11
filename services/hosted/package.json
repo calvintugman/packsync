@@ -1,0 +1,18 @@
+{
+  "name": "packsync-hosted",
+  "private": true,
+  "version": "0.1.0",
+  "description": "PackSync hosted storage: a Cloudflare Worker in front of R2 (accounts, quotas, pairing).",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "deploy": "wrangler deploy",
+    "db:init:local": "wrangler d1 execute packsync-hosted --local --file=schema.sql",
+    "db:init": "wrangler d1 execute packsync-hosted --remote --file=schema.sql",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261024.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
+  }
+}
