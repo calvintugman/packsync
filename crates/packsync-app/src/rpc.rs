@@ -227,12 +227,13 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             ser(&app.storage_status())
         }
         "storage.hosted_start" => {
-            #[derive(Deserialize)]
+            #[derive(Deserialize, Default)]
             struct A {
                 #[serde(default)]
                 service: Option<String>,
             }
-            let a: A = p(&params)?;
+            // the desktop app sends no parameters (null)
+            let a: A = if params.is_null() { A::default() } else { p(&params)? };
             ser(&app.hosted_start(a.service.as_deref(), ctx)?)
         }
         "storage.hosted_join" => {

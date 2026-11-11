@@ -38,4 +38,5 @@ tempfile.workspace = true
 filetime.workspace = true
 packsync-core = { workspace = true, features = ["testkit", "failpoints"] }
 packsync-drive = { workspace = true, features = ["mock"] }
+packsync-hosted = { workspace = true, features = ["mock"] }
 packsync-prism = { workspace = true, features = ["testkit"] }

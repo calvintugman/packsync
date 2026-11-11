@@ -259,3 +259,34 @@ fn jobs_started_through_the_bridge_report_progress_on_the_event_stream() {
     assert_eq!(fin["state"], "succeeded", "{fin}");
     assert!(saw_progress_or_phase, "progress events were streamed");
 }
+
+/// The PackSync cloud through the JSON API, with the parameters the desktop app sends (none, i.e.
+/// `null`, for the buttons without input). Found in use: "Start on this computer" failed with
+/// "invalid type: null".
+#[test]
+fn the_packsync_cloud_through_json_as_the_desktop_sends_it() {
+    let service = packsync_hosted::mock::MockService::start();
+    let w = World::new();
+    let a = w.device("desktop");
+    let b = w.device("laptop");
+
+    // the button sends null: never a request error (without a built-in address it is a config problem)
+    if let Err(e) = rpc::call(&a.app, "storage.hosted_start", Value::Null, &OpCtx::detached()) {
+        assert_ne!(e.code().as_str(), "invalid", "null parameters must be accepted: {e}");
+    }
+    let started = job(&a.app, "storage.hosted_start", json!({ "service": service.url() }));
+    assert_eq!(started["kind"], "hosted");
+    assert_eq!(started["connected"], true);
+
+    let code = call(&a.app, "storage.hosted_pair_start", Value::Null)["code"].as_str().unwrap().to_string();
+    let wait = rpc::start_job(&a.app, "storage.hosted_pair_wait", Value::Null).unwrap();
+    let joined = job(&b.app, "storage.hosted_join", json!({ "code": code, "service": service.url() }));
+    assert_eq!(joined["kind"], "hosted");
+    let j = a.app.jobs().wait(wait, Duration::from_secs(60)).unwrap();
+    assert_eq!(j.state, JobState::Succeeded, "{:?}", j.error);
+
+    let key = call(&a.app, "storage.hosted_recovery_key", Value::Null)["key"].as_str().unwrap().to_string();
+    assert!(key.starts_with("packsync1-"));
+    let c = w.device("third");
+    assert_eq!(job(&c.app, "storage.hosted_recover", json!({ "key": key }))["kind"], "hosted");
+}
