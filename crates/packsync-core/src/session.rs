@@ -259,6 +259,7 @@ mod tests {
             sync_enabled: true,
             base_snapshot: None,
             pending_rules: None,
+            rule_decisions: None,
             marker: "m".into(),
             root_dev: None,
             provider_id: None,

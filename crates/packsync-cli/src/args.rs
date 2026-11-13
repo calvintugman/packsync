@@ -53,6 +53,9 @@ pub enum Command {
     Disable(InstanceArg),
     /// Show local changes that are not in a snapshot yet.
     Changes(InstanceArg),
+    /// List (or decide about) folders and files of an instance PackSync does not recognise, such as a
+    /// new mod's data. Decisions apply from the next sync, on every computer.
+    Unknown(UnknownArgs),
     /// Save the current state of an instance as a local snapshot.
     Snapshot(SnapshotArgs),
     /// Upload saved snapshots to the cloud.
@@ -163,6 +166,27 @@ pub struct EnableArgs {
     /// Create the first snapshot but do not upload it yet.
     #[arg(long)]
     pub no_upload: bool,
+    /// Also sync this folder or file PackSync does not recognise (a path from the preview).
+    #[arg(long, value_name = "PATH")]
+    pub include: Vec<String>,
+    /// Do not sync this unrecognised folder or file (a path from the preview).
+    #[arg(long, value_name = "PATH")]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct UnknownArgs {
+    /// Instance: its ID (or unique prefix), its name, or the path of its folder.
+    pub instance: String,
+    /// Sync this folder or file from now on (a path from the list).
+    #[arg(long, value_name = "PATH")]
+    pub include: Vec<String>,
+    /// Do not sync it, and stop asking.
+    #[arg(long, value_name = "PATH")]
+    pub exclude: Vec<String>,
+    /// Take PackSync's proposal for everything listed.
+    #[arg(long)]
+    pub accept: bool,
 }
 
 #[derive(Args, Debug)]
@@ -396,6 +420,18 @@ pub enum StorageCmd {
     },
     /// Use the PackSync cloud with a recovery key (when no paired computer is at hand). Asks for it.
     Recover,
+    /// Protect your PackSync cloud with a passkey (opens the browser). If every computer is lost, the
+    /// passkey alone gets you back in.
+    PasskeyAdd,
+    /// Get back into your PackSync cloud with a passkey (opens the browser).
+    PasskeyRecover {
+        /// The service's address (default: the one built into this program).
+        #[arg(long)]
+        service: Option<String>,
+        /// Print the address instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// Print the recovery key: it restores access on a new computer if all others are lost. Anyone
     /// who has it can read your data; keep it like a password.
     RecoveryKey,

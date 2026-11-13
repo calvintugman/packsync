@@ -10,7 +10,7 @@
 //! * its refresh token is stored in the OS credential store under its own service name
 //!   (`packsync-selftest`), never in a file, and `logout` removes it.
 //!
-//! See `docs/live-validation.md` for the full procedure, including the two-computer check that decides
+//! See `docs/testing.md` for the full procedure, including the two-computer check that decides
 //! whether the default `drive.file` scope works across devices.
 
 use std::path::PathBuf;
@@ -95,7 +95,7 @@ fn main() {
             "This tool signs in to Google and creates files in a folder called '{ROOT}' in your Drive, runs a few \
              minutes of upload/download tests, and deletes what it created.\n\
              It is meant for developers validating PackSync against the real service.\n\n\
-             Re-run with --i-understand-this-uses-my-drive to proceed. See docs/live-validation.md."
+             Re-run with --i-understand-this-uses-my-drive to proceed. See docs/testing.md."
         );
         std::process::exit(2);
     }

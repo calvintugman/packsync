@@ -10,6 +10,8 @@
 //!    every snapshot manifest, so all devices (and app versions) of an instance agree.
 //! 3. `unmatched` policy for paths no rule mentions (default: exclude, and report them).
 
+pub mod suggest;
+
 use std::collections::BTreeSet;
 
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};

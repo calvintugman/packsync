@@ -486,3 +486,55 @@ fn the_pre_launch_hook_offers_a_choice_when_both_computers_changed_the_instance(
     let history = b.app.engine().history(inst, false, &b.ctx()).unwrap();
     assert!(history.len() >= 3, "both versions stay in the history: {history:?}");
 }
+
+/// Found in use: Prism rewrites `mmc-pack.json` on its own (here it added `"cachedVolatile": true`
+/// while the other computer was being played). The next launch then reported "two versions need your
+/// decision" although nothing of the person's had changed. Changes Prism makes only to its cached
+/// fields are not edits: the computer catches up as usual.
+#[test]
+fn prism_rewriting_its_cached_component_fields_is_not_a_conflict() {
+    let w = World::new();
+    let a = w.device("desktop");
+    let (inst, root) = a.new_synced_instance("Pack One");
+    a.play(playing("+desktop"));
+    a.app.launch(inst, launch_opts(), &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    b.app.restore_cloud_instance(Default::default(), &b.ctx()).unwrap();
+    b.play(playing("+laptop"));
+    assert!(b.app.launch(inst, launch_opts(), &b.ctx()).unwrap().end.unwrap().uploaded);
+
+    // meanwhile, on the idle desktop, Prism refreshes its caches in the component list
+    let pack = root.join("mmc-pack.json");
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&pack).unwrap()).unwrap();
+    v["components"][0]["cachedVolatile"] = serde_json::json!(true);
+    v["components"][0]["cachedName"] = serde_json::json!("Something Prism looked up");
+    std::fs::write(&pack, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+
+    a.play(FakeGame::default());
+    let out = a.app.launch(inst, launch_opts(), &a.ctx()).unwrap();
+    assert!(matches!(out.pre_sync, Some(ReconcileReport::FastForwarded { .. })), "{:?}", out.pre_sync);
+    assert!(std::fs::read(stats_of_path(&a, &root)).unwrap().windows(7).any(|w| w == b"+laptop"), "caught up");
+
+    // the same through Prism's Play button (the pre-launch hook): the laptop plays again, the desktop's
+    // Prism refreshes its caches again, and pressing Play on the desktop just catches up
+    b.play(playing("+laptop2"));
+    assert!(b.app.launch(inst, launch_opts(), &b.ctx()).unwrap().end.unwrap().uploaded);
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&pack).unwrap()).unwrap();
+    v["components"][1]["cachedRequires"] = serde_json::json!([{ "uid": "org.lwjgl3", "suggests": "3.3.1" }]);
+    std::fs::write(&pack, serde_json::to_vec(&v).unwrap()).unwrap();
+    let pre = a.app.hook_pre_launch(inst, &a.ctx());
+    assert!(matches!(pre, HookOutcome::Proceed { .. }), "{pre:?}");
+    assert!(std::fs::read(stats_of_path(&a, &root)).unwrap().windows(8).any(|w| w == b"+laptop2"), "caught up");
+    a.app.hook_post_exit(inst, &a.ctx());
+
+    // a real change to the component list (another version) is still a change of this computer
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&pack).unwrap()).unwrap();
+    v["components"][0]["version"] = serde_json::json!("9.9.9");
+    std::fs::write(&pack, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    let pending = a.app.engine().pending_changes(inst, &a.ctx()).unwrap();
+    assert!(pending.dirty && pending.modified == vec!["mmc-pack.json".to_string()], "{pending:?}");
+}
+
+fn stats_of_path(d: &Device, root: &std::path::Path) -> std::path::PathBuf {
+    d.game_file(root, STATS)
+}

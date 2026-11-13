@@ -1,7 +1,7 @@
 //! Scanning: walking an instance, applying the rules, deciding what must be (re)hashed, and
 //! hashing/chunking changed content into the staging sink.
 //!
-//! ## Correctness policy for the persistent file index (documented in `docs/consistency.md`)
+//! ## Correctness policy for the persistent file index (documented in `docs/architecture.md`)
 //!
 //! The index is an *optimisation*, never authority. A file's cached hash is reused only when ALL of
 //! these hold (see [`classify`]):
@@ -22,7 +22,7 @@
 //!
 //! There is deliberately **no filesystem watcher**: a snapshot is taken at defined moments (the game has
 //! exited, "Sync now", enabling sync), and the cached metadata makes a scan with nothing changed cost
-//! milliseconds (`docs/performance.md`). Events could only ever *mark paths dirty*; they would never be the
+//! milliseconds (`docs/benchmarks.md`). Events could only ever *mark paths dirty*; they would never be the
 //! source of truth (the cases above would still need full hashing), so they are left out of v1.
 
 use std::collections::{BTreeMap, HashMap};
@@ -186,6 +186,11 @@ pub struct ExcludedSummary {
     pub pruned_dirs: Vec<(String, String, String)>,
     /// Unrecognised content by top-level directory: (files, bytes).
     pub unmatched_by_dir: BTreeMap<String, (u64, u64)>,
+    /// The same, keyed by the path from the instance root of the top-level folder (ending in `/`) or file
+    /// the unrecognised content is in: `.minecraft/visualprospecting/`, `.minecraft/BotaniaVars.dat`,
+    /// `.analysis/`. What [`crate::rules::suggest`] classifies and decisions turn into rules for.
+    #[serde(default)]
+    pub unmatched_groups: BTreeMap<String, (u64, u64)>,
 }
 
 impl ExcludedSummary {
@@ -212,6 +217,19 @@ impl ExcludedSummary {
             let e = self.unmatched_by_dir.entry(top).or_default();
             e.0 += 1;
             e.1 += size;
+            // the group, from the instance root: the top-level folder or file inside the game folder, or
+            // beside it (the instance folder itself)
+            let (prefix, rest) = match rel.strip_prefix(&format!("{game_root}/")) {
+                Some(r) if !game_root.is_empty() => (format!("{game_root}/"), r),
+                _ => (String::new(), rel),
+            };
+            let group = match rest.split_once('/') {
+                Some((top, _)) => format!("{prefix}{top}/"),
+                None => format!("{prefix}{rest}"),
+            };
+            let g = self.unmatched_groups.entry(group).or_default();
+            g.0 += 1;
+            g.1 += size;
         }
     }
 }

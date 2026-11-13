@@ -1,6 +1,6 @@
 //! PackSync core: the provider- and UI-independent sync engine.
 //!
-//! See `docs/architecture.md` for the module map and `docs/consistency.md` for the invariants.
+//! See `docs/architecture.md` for the module map and the invariants.
 
 pub mod brand;
 pub mod chunk;

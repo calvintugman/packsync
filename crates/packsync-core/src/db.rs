@@ -1,7 +1,7 @@
 //! Local persistent state (SQLite, WAL, versioned migrations).
 //!
 //! The database is **never authoritative for file content**: the file index is an optimisation that
-//! the scan policy distrusts (see `docs/consistency.md`), remote-object caches are re-validated
+//! the scan policy distrusts (see `docs/architecture.md`), remote-object caches are re-validated
 //! against listings before they are relied on, and the cloud is the source of truth for history.
 //! What the DB *does* own: which instances are registered, the local snapshot lifecycle
 //! (`local_complete → uploading → published → visible`), play sessions, idempotent job requests and
@@ -178,6 +178,13 @@ CREATE TABLE transfer_state (
     r#"
 ALTER TABLE jobs ADD COLUMN owner_pid INTEGER;
 ALTER TABLE jobs ADD COLUMN owner_start_ms INTEGER;
+"#,
+    // v3: the person's answers about content no rule covers, kept apart from the rules chosen at enable
+    // time (`pending_rules`, which only matters until the first snapshot). Older versions never cleared
+    // `pending_rules` after that first snapshot: clear it now, the snapshot holds those rules.
+    r#"
+ALTER TABLE instances ADD COLUMN rule_decisions TEXT;
+UPDATE instances SET pending_rules = NULL WHERE base_snapshot IS NOT NULL;
 "#,
 ];
 
@@ -429,7 +436,7 @@ impl Db {
         f(&mut row);
         {
             c.execute(
-                "UPDATE instances SET name=?2, root=?3, launcher=?4, launcher_ref=?5, game_root=?6, sync_enabled=?7, base_snapshot=?8, pending_rules=?9, marker=?10, root_dev=?11, provider_id=?12, state=?13, state_detail=?14, last_scan_ms=?15, last_full_verify_ms=?16, last_synced_ms=?17, needs_full_scan=?18 WHERE id=?1",
+                "UPDATE instances SET name=?2, root=?3, launcher=?4, launcher_ref=?5, game_root=?6, sync_enabled=?7, base_snapshot=?8, pending_rules=?9, marker=?10, root_dev=?11, provider_id=?12, state=?13, state_detail=?14, last_scan_ms=?15, last_full_verify_ms=?16, last_synced_ms=?17, needs_full_scan=?18, rule_decisions=?19 WHERE id=?1",
                 params![
                     row.id.to_string(),
                     row.name,
@@ -449,6 +456,7 @@ impl Db {
                     row.last_full_verify_ms,
                     row.last_synced_ms,
                     row.needs_full_scan,
+                    row.rule_decisions,
                 ],
             )?;
         }
@@ -1296,7 +1304,10 @@ pub struct InstanceRow {
     pub game_root: String,
     pub sync_enabled: bool,
     pub base_snapshot: Option<SnapshotId>,
+    /// The rules chosen when syncing was turned on; only until the first snapshot stores them.
     pub pending_rules: Option<String>,
+    /// Answers about content no rule covers (JSON `[RuleDecision]`) not yet stored in a snapshot.
+    pub rule_decisions: Option<String>,
     pub marker: String,
     pub root_dev: Option<String>,
     pub provider_id: Option<String>,
@@ -1309,7 +1320,7 @@ pub struct InstanceRow {
     pub needs_full_scan: bool,
 }
 
-const INSTANCE_COLS: &str = "id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan";
+const INSTANCE_COLS: &str = "id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan,rule_decisions";
 
 fn instance_from_row(r: &rusqlite::Row) -> rusqlite::Result<InstanceRow> {
     let bad = |i: usize| rusqlite::Error::InvalidColumnType(i, "id".into(), rusqlite::types::Type::Text);
@@ -1333,6 +1344,7 @@ fn instance_from_row(r: &rusqlite::Row) -> rusqlite::Result<InstanceRow> {
         last_full_verify_ms: r.get(16)?,
         last_synced_ms: r.get(17)?,
         needs_full_scan: r.get(18)?,
+        rule_decisions: r.get(19)?,
     })
 }
 
@@ -1647,8 +1659,8 @@ pub struct EventRow {
 
 fn insert_instance(c: &Connection, r: &InstanceRow) -> Result<()> {
     c.execute(
-        "INSERT INTO instances(id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
+        "INSERT INTO instances(id,name,root,launcher,launcher_ref,game_root,sync_enabled,base_snapshot,pending_rules,marker,root_dev,provider_id,state,state_detail,created_ms,last_scan_ms,last_full_verify_ms,last_synced_ms,needs_full_scan,rule_decisions)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
         params![
             r.id.to_string(),
             r.name,
@@ -1669,6 +1681,7 @@ fn insert_instance(c: &Connection, r: &InstanceRow) -> Result<()> {
             r.last_full_verify_ms,
             r.last_synced_ms,
             r.needs_full_scan,
+            r.rule_decisions,
         ],
     )?;
     Ok(())
@@ -1689,6 +1702,7 @@ mod tests {
             sync_enabled: true,
             base_snapshot: None,
             pending_rules: None,
+            rule_decisions: None,
             marker: "m".into(),
             root_dev: None,
             provider_id: None,

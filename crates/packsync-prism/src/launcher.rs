@@ -238,9 +238,35 @@ fn unique_folder(dir: &Path, preferred: &str) -> String {
     name
 }
 
+/// `mmc-pack.json` without what Prism derives and refreshes itself: every field whose name starts with
+/// `cached` (`cachedName`, `cachedVersion`, `cachedRequires`, `cachedVolatile`, …), and formatting.
+fn components_without_caches(bytes: &[u8]) -> Option<serde_json::Value> {
+    fn strip(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.retain(|k, _| !k.starts_with("cached"));
+                m.values_mut().for_each(strip);
+            }
+            serde_json::Value::Array(a) => a.iter_mut().for_each(strip),
+            _ => {}
+        }
+    }
+    let mut v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    strip(&mut v);
+    Some(v)
+}
+
 impl Launcher for PrismLauncher {
     fn kind(&self) -> &'static str {
         KIND
+    }
+
+    fn self_maintained_change(&self, path: &str, base: &[u8], local: &[u8]) -> bool {
+        path == crate::discovery::PACK_JSON
+            && matches!(
+                (components_without_caches(base), components_without_caches(local)),
+                (Some(a), Some(b)) if a == b
+            )
     }
 
     fn discover(&self) -> Result<Vec<DiscoveredInstance>> {

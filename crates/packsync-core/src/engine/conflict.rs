@@ -301,6 +301,7 @@ impl Engine {
             sync_enabled: true,
             base_snapshot: Some(sid),
             pending_rules: None,
+            rule_decisions: None,
             marker,
             root_dev: None,
             provider_id: self.storage_id(),

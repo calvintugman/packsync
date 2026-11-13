@@ -23,6 +23,9 @@ pub struct EnableRequest {
     /// User rules appended to the built-in defaults (TOML, `version = 1`). May be empty.
     #[serde(default)]
     pub rules_overrides: String,
+    /// The person's answers for content no rule covers (from the preview's suggestions).
+    #[serde(default)]
+    pub decisions: Vec<crate::rules::suggest::RuleDecision>,
     pub launcher_ref: Option<LauncherRef>,
 }
 
@@ -69,6 +72,9 @@ pub struct PreviewReport {
     pub rules_text: String,
     /// A sample of what is synced, per category (path, size).
     pub samples: Vec<(String, String, u64)>,
+    /// Content no rule covers, with what PackSync proposes for each part (see [`crate::rules::suggest`]).
+    #[serde(default)]
+    pub suggestions: Vec<crate::rules::suggest::Suggestion>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -153,6 +159,9 @@ pub enum ReconcileReport {
         to: SnapshotId,
         files_written: u64,
         files_deleted: u64,
+        /// What changed, in the person's terms (mods updated, pack versions, …).
+        #[serde(default)]
+        changes: crate::manifest::ChangeSummary,
     },
     Conflict(ConflictReport),
     /// The cloud could not be reached. The local copy can be played; its base is recorded.
@@ -248,6 +257,10 @@ pub struct InstanceStatus {
     pub total_bytes: u64,
     pub playing_elsewhere: Vec<String>,
     pub provider_id: Option<String>,
+    /// Content no rule covers that the person has not decided about yet (found by the last save; new
+    /// mods' data folders appear here). Only the ones worth asking about.
+    #[serde(default)]
+    pub unknown: Vec<crate::rules::suggest::Suggestion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

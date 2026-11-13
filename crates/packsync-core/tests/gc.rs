@@ -566,3 +566,26 @@ fn packs_whose_index_was_lost_are_kept_when_a_kept_snapshot_needs_them() {
     let rep = b.engine.gc_run(&plan.id, &GcParams::default(), &b.ctx()).unwrap();
     assert_eq!(rep.deleted_packs, 0);
 }
+
+/// Found by review: on storage whose listings carry no tags (R2/S3, the PackSync cloud) cleanup took
+/// every object for someone else's and deleted nothing, while still marking old versions unrestorable —
+/// a full hosted account could never make room. Such storage is PackSync's alone, so its objects count
+/// as PackSync's.
+#[test]
+fn cleanup_works_on_storage_without_tags() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, _info, en) = a.new_instance("pack", &spec());
+    a.upload(en.instance);
+    age_everything(&w, 100);
+    let junk = b"left behind by an abandoned upload".to_vec();
+    let orphan = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, false);
+    let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
+    filetime::set_file_mtime(w.remote_dir.join(&orphan), filetime::FileTime::from_system_time(t)).unwrap();
+
+    let plan = a.engine.gc_plan(&GcParams::default(), &a.ctx()).unwrap();
+    assert!(plan.delete.iter().any(|d| d.key == orphan), "{plan:#?}");
+    let rep = a.engine.gc_run(&plan.id, &GcParams::default(), &a.ctx()).unwrap();
+    assert!(rep.deleted_packs >= 1, "{rep:?}");
+    assert!(!exists(&w, &orphan));
+}

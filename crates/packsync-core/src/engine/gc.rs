@@ -38,8 +38,10 @@ impl Engine {
         Some(((now_ms - t).max(0)) / 3_600_000)
     }
 
-    fn is_ours(info: &ObjectInfo) -> bool {
-        info.tags.get("ps").map(|v| v == "1").unwrap_or(false)
+    /// Did PackSync write this object? Its tag says so — or the storage is PackSync's alone (an R2
+    /// prefix, the PackSync cloud), where listings carry no tags.
+    fn is_ours(&self, info: &ObjectInfo) -> bool {
+        info.tags.get("ps").is_some_and(|v| v == "1") || self.storage().is_ok_and(|s| s.capabilities().owned_namespace)
     }
 
     fn mark(&self, remote: &Remote, m: &Manifest, live: &mut Live, ctx: &OpCtx) -> Result<()> {
@@ -157,7 +159,7 @@ impl Engine {
             let mut blobs = self.db.pack_blobs(*id)?;
             let mut unindexed = false;
             if blobs.is_empty()
-                && Self::is_ours(info)
+                && self.is_ours(info)
                 && Self::age_hours(info, now).is_some_and(|a| a * 3_600_000 >= grace_ms)
             {
                 // No index describes this pack: an abandoned upload — or a pack whose index object was lost.
@@ -192,7 +194,7 @@ impl Engine {
                 }
                 continue;
             }
-            if !Self::is_ours(info) {
+            if !self.is_ours(info) {
                 kept_unknown.push(format!("{} (not created by PackSync: left alone)", info.key));
                 continue;
             }
@@ -235,7 +237,7 @@ impl Engine {
         let mut eligible: Vec<(Hash, ObjectInfo, IndexDoc)> = vec![];
         for (id, info) in infos {
             ctx.check()?;
-            if !Self::is_ours(&info) {
+            if !self.is_ours(&info) {
                 kept_unknown.push(format!("{} (not created by PackSync: left alone)", info.key));
                 continue;
             }
@@ -388,7 +390,7 @@ impl Engine {
             ctx.progress(Phase::Cleanup, (i as u64, total), (0, 0), format!("removing {}", o.key));
             // the object must still be the one the plan looked at
             match self.storage()?.stat(&o.key, ctx).map_err(Error::from)? {
-                Some(info) if info.size == o.size && Self::is_ours(&info) => {}
+                Some(info) if info.size == o.size && self.is_ours(&info) => {}
                 Some(_) => {
                     rep.notes.push(format!("{} changed since the plan; left alone", o.key));
                     continue;

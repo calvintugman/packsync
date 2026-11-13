@@ -1,6 +1,6 @@
 //! Streaming chunkers. A file is split into content-addressed *blobs*; unchanged blobs are never
 //! uploaded again. Two mature strategies are offered and the defaults were chosen by the
-//! benchmarks in `docs/performance.md`:
+//! benchmarks in `docs/benchmarks.md`:
 //!
 //! * **Fixed blocks** — predictable, and ideal for Minecraft region files whose chunks live in
 //!   4 KiB sectors that are rewritten in place (an edit dirties the blocks covering the touched
@@ -29,7 +29,7 @@ pub struct ChunkingConfig {
 
 impl Default for ChunkingConfig {
     fn default() -> Self {
-        // Chosen by the benchmark (see docs/performance.md); override in rules with `strategy`.
+        // Chosen by the benchmark (see docs/benchmarks.md); override in rules with `strategy`.
         Self { region_block: 16 * 1024, cdc: (16 * 1024, 64 * 1024, 256 * 1024), cdc_threshold: 4 * 1024 * 1024 }
     }
 }

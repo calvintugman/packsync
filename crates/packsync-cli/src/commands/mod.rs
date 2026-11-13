@@ -53,6 +53,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Command::Enable(a) => instances::enable(&cx, a)?,
         Command::Disable(a) => instances::disable(&cx, a)?,
         Command::Changes(a) => sync::changes(&cx, a)?,
+        Command::Unknown(a) => instances::unknown(&cx, a)?,
         Command::Snapshot(a) => sync::snapshot(&cx, a)?,
         Command::Upload(a) => return sync::upload(&cx, a),
         Command::Sync(a) => return sync::sync_now(&cx, a),

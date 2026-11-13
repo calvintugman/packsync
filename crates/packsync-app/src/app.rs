@@ -407,6 +407,30 @@ impl App {
         offer.wait(ctx).map_err(Error::from)
     }
 
+    /// Protect the account with a passkey (opens the browser): if every computer is lost, the passkey
+    /// alone gets back in.
+    pub fn hosted_add_passkey(&self, opener: &dyn UrlOpener, ctx: &OpCtx) -> Result<()> {
+        let c = self.hosted_credentials()?;
+        let hosted = packsync_hosted::HostedStorage::new(c.account.clone())?;
+        let label = self.engine.device().1;
+        let open = |url: &str| opener.open(url).map_err(std::io::Error::other);
+        packsync_hosted::passkey::add_passkey(&hosted, &c, &label, &open, ctx)?;
+        Ok(())
+    }
+
+    /// Any computer: get back into the PackSync cloud with a passkey (opens the browser).
+    pub fn hosted_recover_passkey(
+        &self,
+        endpoint: Option<&str>,
+        opener: &dyn UrlOpener,
+        ctx: &OpCtx,
+    ) -> Result<StorageStatus> {
+        let ep = self.hosted_endpoint(endpoint)?;
+        let open = |url: &str| opener.open(url).map_err(std::io::Error::other);
+        let c = packsync_hosted::passkey::recover_with_passkey(&ep, &open, ctx)?;
+        self.save_hosted(&c, ctx)
+    }
+
     /// The text that restores access without pairing. A secret: show it only when asked.
     pub fn hosted_recovery_key(&self) -> Result<packsync_core::redact::Secret> {
         Ok(self.hosted_credentials()?.recovery_key())
@@ -489,6 +513,18 @@ impl App {
         rules_overrides: String,
         ctx: &OpCtx,
     ) -> Result<EnableOutcome> {
+        self.enable_sync_with(launcher, root, rules_overrides, vec![], ctx)
+    }
+
+    /// [`App::enable_sync`] with the person's answers about content no rule covers (from the preview).
+    pub fn enable_sync_with(
+        &self,
+        launcher: &str,
+        root: &Path,
+        rules_overrides: String,
+        decisions: Vec<packsync_core::rules::suggest::RuleDecision>,
+        ctx: &OpCtx,
+    ) -> Result<EnableOutcome> {
         let d = self.engine.launcher(launcher).describe(root)?;
         let out = self.engine.enable_sync(
             EnableRequest {
@@ -496,6 +532,7 @@ impl App {
                 launcher: launcher.to_string(),
                 name: Some(d.name),
                 rules_overrides,
+                decisions,
                 launcher_ref: Some(d.launcher_ref),
             },
             ctx,

@@ -26,7 +26,10 @@ pub struct TestWorld {
     pub atomic_cas: bool,
 }
 
-/// Wraps a storage and reports [`crate::storage::Capabilities::conditional_write`] = true.
+/// Wraps a storage so it behaves like Cloudflare R2 or the PackSync cloud: atomic compare-and-swap
+/// ([`crate::storage::Capabilities::conditional_write`]), a namespace that is PackSync's alone
+/// ([`crate::storage::Capabilities::owned_namespace`]), and no object tags anywhere (S3 listings carry
+/// none, the PackSync cloud stores none).
 pub struct AtomicCas(pub Arc<dyn Storage>);
 
 impl Storage for AtomicCas {
@@ -34,13 +37,13 @@ impl Storage for AtomicCas {
         self.0.provider_id()
     }
     fn capabilities(&self) -> crate::storage::Capabilities {
-        crate::storage::Capabilities { conditional_write: true, ..self.0.capabilities() }
+        crate::storage::Capabilities { conditional_write: true, owned_namespace: true, ..self.0.capabilities() }
     }
     fn list(&self, prefix: &str, ctx: &OpCtx) -> crate::storage::StorageResult<Vec<crate::storage::ObjectInfo>> {
-        self.0.list(prefix, ctx)
+        Ok(self.0.list(prefix, ctx)?.into_iter().map(untagged).collect())
     }
     fn stat(&self, key: &str, ctx: &OpCtx) -> crate::storage::StorageResult<Option<crate::storage::ObjectInfo>> {
-        self.0.stat(key, ctx)
+        Ok(self.0.stat(key, ctx)?.map(untagged))
     }
     fn get(
         &self,
@@ -65,6 +68,11 @@ impl Storage for AtomicCas {
     fn quota(&self, ctx: &OpCtx) -> crate::storage::StorageResult<Option<crate::storage::Quota>> {
         self.0.quota(ctx)
     }
+}
+
+fn untagged(mut i: crate::storage::ObjectInfo) -> crate::storage::ObjectInfo {
+    i.tags.clear();
+    i
 }
 
 impl TestWorld {
@@ -176,6 +184,7 @@ impl TestDevice {
                     launcher: "generic".into(),
                     name: None,
                     rules_overrides: String::new(),
+                    decisions: vec![],
                     launcher_ref: None,
                 },
                 &self.ctx(),

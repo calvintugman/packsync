@@ -313,13 +313,24 @@ impl Engine {
         Ok((policies, local))
     }
 
+    /// The rules the next save uses: the last snapshot's, followed by decisions made since (or, before
+    /// the first snapshot, the rules chosen when syncing was turned on).
     pub(crate) fn rules_for(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<(RuleSet, String)> {
-        let text = match inst.base_snapshot {
-            Some(b) => self.manifest(inst.id, b, ctx)?.rules.text,
-            None => inst.pending_rules.clone().ok_or_else(|| Error::Config("the instance has no rules yet".into()))?,
+        let text = match (inst.base_snapshot, &inst.pending_rules) {
+            (Some(b), _) => self.manifest(inst.id, b, ctx)?.rules.text,
+            (None, Some(p)) => p.clone(),
+            (None, None) => return Err(Error::Config("the instance has no rules yet".into())),
         };
+        let text = crate::rules::suggest::apply_decisions(&text, &rule_decisions(inst))?;
         let rs = RuleSet::compile(&text, &inst.game_root)?;
         Ok((rs, text))
+    }
+
+    /// The rules the last snapshot carried, without decisions made since: what the other computers follow.
+    pub(crate) fn snapshot_rules(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<Option<RuleSet>> {
+        inst.base_snapshot
+            .map(|b| RuleSet::compile(&self.manifest(inst.id, b, ctx)?.rules.text, &inst.game_root))
+            .transpose()
     }
 
     pub(crate) fn guard_provider(&self, inst: &InstanceRow) -> Result<()> {
@@ -332,4 +343,9 @@ impl Engine {
         }
         Ok(())
     }
+}
+
+/// The person's answers about unknown content not yet stored in a snapshot.
+pub(crate) fn rule_decisions(inst: &InstanceRow) -> Vec<crate::rules::suggest::RuleDecision> {
+    inst.rule_decisions.as_deref().and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default()
 }

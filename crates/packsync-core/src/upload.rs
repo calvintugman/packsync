@@ -1,4 +1,4 @@
-//! Upload and publish (state machine in `docs/state-machine.md`, protocol in `docs/consistency.md`).
+//! Upload and publish (see `docs/architecture.md`).
 //!
 //! Order of operations for one snapshot — every step idempotent, so a crash, restart or retry at
 //! any point is safe and *never* exposes an incomplete snapshot:

@@ -1,4 +1,4 @@
-//! Snapshot manifests (remote format v1, `docs/remote-format.md`).
+//! Snapshot manifests (remote format v1, `docs/architecture.md`).
 //!
 //! A snapshot is an immutable, self-describing record of an instance at one moment: every synced
 //! path with its content hashes, plus identity (instance, device), ancestry (`parents`), the
@@ -492,6 +492,98 @@ pub fn summarize(items: &[DiffItem]) -> DiffSummary {
     s
 }
 
+/// What a change between two versions of an instance means to the person: mods added, removed or
+/// updated (a jar replaced by a newer one of the same mod), the pack's versions, configs and worlds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangeSummary {
+    pub mods_added: Vec<String>,
+    pub mods_removed: Vec<String>,
+    pub mods_updated: Vec<String>,
+    pub config_files: u64,
+    pub world_files: u64,
+    pub other_files: u64,
+    /// `Minecraft 1.20.1 · Forge 47.4.0` → `… 47.4.16`, when the pack's versions changed.
+    pub pack_versions: Option<(String, String)>,
+}
+
+/// A mod's name without its version and file type: `jei-1.20.1-15.2.0.jar` → `jei`.
+fn mod_stem(file: &str) -> String {
+    let lower = file.to_ascii_lowercase();
+    let base = lower.trim_end_matches(".disabled");
+    let base = base.rsplit_once('.').map(|(b, _)| b).unwrap_or(base);
+    let mut out = String::new();
+    let chars: Vec<char> = base.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        let next_digit = chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            || (matches!(chars.get(i + 1), Some('v' | 'm'))
+                && chars.get(i + 2).is_some_and(|n| n.is_ascii_digit() || *n == 'c'));
+        if matches!(c, '-' | '_' | '+' | ' ') && next_digit {
+            break;
+        }
+        out.push(*c);
+    }
+    out.trim_end_matches(['-', '_', ' ']).to_string()
+}
+
+fn pack_line(p: &crate::launcher::PackIdentity) -> String {
+    let mut s = p.minecraft_version.as_deref().map(|v| format!("Minecraft {v}")).unwrap_or_default();
+    if let Some(l) = &p.loader {
+        let mut kind = l.kind.clone();
+        if let Some(f) = kind.get_mut(0..1) {
+            f.make_ascii_uppercase();
+        }
+        s = format!("{s} · {kind} {}", l.version).trim_start_matches(" · ").to_string();
+    }
+    s
+}
+
+/// Describe the change from `before` to `after` of an instance whose game folder is `game_root`.
+pub fn change_summary(before: &Manifest, after: &Manifest, game_root: &str) -> ChangeSummary {
+    let g = if game_root.is_empty() { String::new() } else { format!("{game_root}/") };
+    let mods = format!("{g}mods/");
+    let mut s = ChangeSummary::default();
+    let mut added: BTreeMap<String, String> = BTreeMap::new();
+    let mut removed: BTreeMap<String, String> = BTreeMap::new();
+    let (old, new) = (entry_map(before), entry_map(after));
+    for d in diff_entries(&before.entries, &after.entries) {
+        let p = d.path.as_str();
+        if !(old.get(p).is_some_and(|e| e.is_file()) || new.get(p).is_some_and(|e| e.is_file())) {
+            continue;
+        }
+        match d.path.strip_prefix(&mods) {
+            Some(file) if !file.contains('/') => {
+                let name = file.to_string();
+                match d.kind {
+                    DiffKind::Added => {
+                        added.insert(mod_stem(&name), name);
+                    }
+                    DiffKind::Removed => {
+                        removed.insert(mod_stem(&name), name);
+                    }
+                    DiffKind::Modified => s.mods_updated.push(name),
+                }
+            }
+            _ if d.path.starts_with(&format!("{g}config/")) || d.path.starts_with(&format!("{g}defaultconfigs/")) => {
+                s.config_files += 1
+            }
+            _ if d.path.starts_with(&format!("{g}saves/")) => s.world_files += 1,
+            _ => s.other_files += 1,
+        }
+    }
+    for (stem, file) in added {
+        match removed.remove(&stem) {
+            Some(_) => s.mods_updated.push(file),
+            None => s.mods_added.push(file),
+        }
+    }
+    s.mods_removed = removed.into_values().collect();
+    s.mods_updated.sort();
+    if before.pack != after.pack {
+        s.pack_versions = Some((pack_line(&before.pack), pack_line(&after.pack)));
+    }
+    s
+}
+
 /// Map of path → entry (for quick lookups where order does not matter).
 pub fn entry_map(m: &Manifest) -> BTreeMap<&str, &Entry> {
     m.entries.iter().map(|e| (e.p.as_str(), e)).collect()
@@ -534,6 +626,22 @@ pub(crate) mod testutil {
         ];
         m.finalize().unwrap();
         m
+    }
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    #[test]
+    fn mod_names_lose_their_versions() {
+        assert_eq!(mod_stem("jei-1.20.1-forge-15.2.0.27.jar"), "jei");
+        assert_eq!(mod_stem("appliedenergistics2-forge-15.0.11.jar"), "appliedenergistics2-forge");
+        assert_eq!(mod_stem("GregTech-5.09.45.jar"), "gregtech");
+        assert_eq!(mod_stem("Botania r1.10-363.jar"), "botania r1.10");
+        assert_eq!(mod_stem("journeymap-1.20.1-5.9.18-forge.jar.disabled"), "journeymap");
+        assert_eq!(mod_stem("sodium-fabric-mc1.20.1-0.5.3.jar"), "sodium-fabric");
+        assert_eq!(mod_stem("create_v0.5.1.jar"), "create");
     }
 }
 

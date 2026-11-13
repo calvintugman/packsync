@@ -12,7 +12,7 @@
 //!
 //! The flow is implemented directly with `sha2` + `base64` rather than the `oauth2` crate: v5 of
 //! that crate pins `ureq` 2, `base64` < 0.23 and `sha2` 0.10, and its parse errors carry raw
-//! response bodies (which may contain tokens). See `docs/dev/drive-adapter.md`.
+//! response bodies (which may contain tokens). See `docs/testing.md`.
 
 mod flow;
 

@@ -213,6 +213,64 @@ impl Engine {
 
     /// Exact set of local changes relative to the base snapshot (hashes only what the scan policy
     /// cannot vouch for).
+    /// [`Engine::pending_changes`] without changes the launcher makes on its own (see
+    /// [`crate::launcher::Launcher::self_maintained_change`]): what decides whether this computer has
+    /// edits of its own when the cloud moved on. Only a few small, whole-blob files are compared; when
+    /// anything cannot be checked, the changes count as they are.
+    fn own_changes(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<PendingChanges> {
+        let mut pending = self.pending_changes(inst.id, ctx)?;
+        // files a recent answer ("sync this mod's folder") newly includes are not edits: they were there
+        // all along, and the next save adds them on top of whatever version this computer catches up to
+        if inst.rule_decisions.is_some()
+            && !pending.added.is_empty()
+            && let Some(old) = self.snapshot_rules(inst, ctx)?
+        {
+            pending.added.retain(|p| old.decide(p).include);
+            pending.dirty = !(pending.added.is_empty() && pending.removed.is_empty() && pending.modified.is_empty());
+        }
+        if !pending.dirty
+            || !pending.added.is_empty()
+            || !pending.removed.is_empty()
+            || !pending.issues.is_empty()
+            || pending.modified.is_empty()
+            || pending.modified.len() > 4
+        {
+            return Ok(pending);
+        }
+        let Some(base) = inst.base_snapshot else { return Ok(pending) };
+        let launcher = self.launcher(&inst.launcher);
+        let check = || -> Result<bool> {
+            let manifest = self.manifest(inst.id, base, ctx)?;
+            let remote = self.remote()?;
+            for path in &pending.modified {
+                let Some(e) = manifest.entries.iter().find(|e| e.p == *path && e.is_file()) else { return Ok(false) };
+                let (Some(h), None, None) = (e.h, e.r, &e.mx) else { return Ok(false) };
+                if e.s > 1024 * 1024 {
+                    return Ok(false);
+                }
+                let local = std::fs::read(crate::paths::join_safe(&inst.root, path)?)
+                    .map_err(|err| Error::io(format!("reading {path}"), err))?;
+                let base_bytes = remote.read_blob(h, ctx)?;
+                if !launcher.self_maintained_change(path, &base_bytes, &local) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        match check() {
+            Ok(true) => {
+                tracing::info!(target: "packsync_core", files = ?pending.modified, "only launcher bookkeeping changed locally");
+                Ok(PendingChanges { dirty: false, modified: vec![], ..pending })
+            }
+            Ok(false) => Ok(pending),
+            Err(e) if e.is_cancelled() => Err(e),
+            Err(e) => {
+                tracing::info!(target: "packsync_core", "could not compare launcher-maintained files: {e}");
+                Ok(pending)
+            }
+        }
+    }
+
     pub fn pending_changes(&self, id: InstanceId, ctx: &OpCtx) -> Result<PendingChanges> {
         let inst = self.instance(id)?;
         self.check_marker(&inst)?;
@@ -361,6 +419,21 @@ impl Engine {
             new_instance_id: None,
         };
         let outcome = snapshot::create(&self.db, &self.cfg.state_dir, &req, &self.cfg.snapshot, ctx)?;
+        let walk = match &outcome {
+            SnapshotOutcome::Unchanged { walk, .. } | SnapshotOutcome::Created { walk, .. } => walk,
+        };
+        self.record_unknown(inst, &walk.excluded.unmatched_groups)?;
+        if matches!(outcome, SnapshotOutcome::Created { .. })
+            && (inst.pending_rules.is_some() || inst.rule_decisions.is_some())
+        {
+            // the snapshot now carries the rules, decisions included; answers given meanwhile stay
+            self.db.instance_update(inst.id, |r| {
+                r.pending_rules = None;
+                if r.rule_decisions == inst.rule_decisions {
+                    r.rule_decisions = None;
+                }
+            })?;
+        }
         Ok(match outcome {
             SnapshotOutcome::Unchanged { base, stats, walk } => {
                 SnapshotReport { result: SnapshotResult::Unchanged { base }, stats, issues: walk.issues }
@@ -515,7 +588,7 @@ impl Engine {
             }
         } else {
             ctx.mark("reconcile: look for local changes");
-            self.pending_changes(id, ctx)?
+            self.own_changes(&inst, ctx)?
         };
         ctx.mark("reconcile: decide");
         let mut guard = 0;
@@ -629,7 +702,7 @@ impl Engine {
         let _lock = self.lock(inst.id, "fast-forward")?;
         self.ensure_idle(inst)?;
         // Under the lock, prove again that nothing changed locally (a session may have ended meanwhile).
-        let pending = self.pending_changes(inst.id, ctx)?;
+        let pending = self.own_changes(inst, ctx)?;
         if pending.dirty {
             return self.report_conflict(
                 inst,
@@ -666,16 +739,30 @@ impl Engine {
         )?;
         self.db.instance_update(inst.id, |r| r.last_synced_ms = Some(crate::db::now_ms()))?;
         ctx.note(Phase::Reconcile, Level::Info, format!("updated to snapshot {} from the cloud", to.short()));
+        let changes = match fresh.base_snapshot.map(|b| self.manifest(inst.id, b, ctx)) {
+            Some(Ok(before)) => crate::manifest::change_summary(&before, &target, &fresh.game_root),
+            _ => Default::default(),
+        };
         Ok(ReconcileReport::FastForwarded {
             from: inst.base_snapshot,
             to,
             files_written: rep.written,
             files_deleted: rep.deleted,
+            changes,
         })
     }
 
     /// Snapshot (when idle and changed) → reconcile → upload. The "Sync now" button.
     pub fn sync_now(&self, id: InstanceId, ctx: &OpCtx) -> Result<(Option<SnapshotReport>, ReconcileReport)> {
+        let inst = self.instance(id)?;
+        if inst.rule_decisions.is_some() && inst.state == InstanceState::Ok {
+            // new answers about unknown content: catch up first, so they are saved on top of the newest
+            // version instead of beside it (which would look like two computers' changes)
+            let r = self.reconcile_inner(id, ReconcileOpts::default(), false, ctx)?;
+            if matches!(r, ReconcileReport::Conflict(_) | ReconcileReport::Offline { .. }) {
+                return Ok((None, r));
+            }
+        }
         let inst = self.instance(id)?;
         let mut snap = None;
         let mut just_saved = false;

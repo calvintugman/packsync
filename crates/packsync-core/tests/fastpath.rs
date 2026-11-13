@@ -277,3 +277,39 @@ fn catching_up_survives_a_cleanup_that_merged_the_named_index() {
     let (_, rec) = b.engine.sync_now(en.instance, &b.ctx()).unwrap();
     assert!(matches!(rec, ReconcileReport::FastForwarded { .. }), "{rec:?}");
 }
+
+/// Found by review: catching up reads only the index the cloud's HEAD names. When the new version
+/// reuses data first uploaded with another instance (the same mod jar in two packs) after this computer
+/// last looked, that index does not list it, and catching up failed on every attempt with "not listed in
+/// any pack index".
+#[test]
+fn catching_up_finds_data_first_uploaded_with_another_instance() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_rx, info_x, x) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(x.instance);
+    a.engine.sync_now(x.instance, &a.ctx()).unwrap();
+    let mut spec_y = FixtureSpec::tiny();
+    spec_y.seed += 1000;
+    let (_ry, info_y, y) = a.new_instance("other-pack", &spec_y);
+    a.upload(y.instance);
+    a.engine.sync_now(y.instance, &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    let rb = restore_on(&b, x.instance);
+    b.engine.sync_now(x.instance, &b.ctx()).unwrap();
+
+    // a jar arrives in instance Y first (its data is uploaded with Y)…
+    let shared: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
+    fs::write(info_y.mods[0].with_file_name("shared-lib.jar"), &shared).unwrap();
+    a.engine.sync_now(y.instance, &a.ctx()).unwrap();
+    // …then the same jar in X, with something new so X's version has an index of its own
+    let target = info_x.mods[0].with_file_name("shared-lib.jar");
+    fs::write(&target, &shared).unwrap();
+    fs::write(&info_x.configs[0], b"brand_new = 1\n").unwrap();
+    a.engine.sync_now(x.instance, &a.ctx()).unwrap();
+
+    let (_, rec) = b.engine.sync_now(x.instance, &b.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::FastForwarded { .. }), "{rec:?}");
+    let rel = target.strip_prefix(&info_x.root).unwrap();
+    assert_eq!(fs::read(rb.root.join(rel)).unwrap(), shared);
+}

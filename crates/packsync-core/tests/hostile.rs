@@ -385,6 +385,7 @@ fn credentials_never_enter_a_snapshot_even_when_the_whole_folder_is_selected() {
                 launcher: "generic".into(),
                 name: None,
                 rules_overrides: rules.into(),
+                decisions: vec![],
                 launcher_ref: None,
             },
             &a.ctx(),

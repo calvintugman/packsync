@@ -73,6 +73,23 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
                 writeln!(w, "Recovered: this computer uses your PackSync cloud again.")
             })
         }
+        StorageCmd::PasskeyAdd => {
+            cx.out.note("Opening your browser: create a passkey for PackSync (fingerprint, face, PIN or your phone).");
+            cx.app.hosted_add_passkey(&SystemBrowser { print_fallback: true }, &ctx)?;
+            cx.out.emit(&serde_json::json!({ "added": true }), |w| {
+                writeln!(w, "Passkey added. If you ever lose every computer: `packsync storage passkey-recover`.")
+            })
+        }
+        StorageCmd::PasskeyRecover { service, no_browser } => {
+            let opener: Box<dyn UrlOpener> =
+                if no_browser { Box::new(PrintUrl) } else { Box::new(SystemBrowser { print_fallback: true }) };
+            cx.out.note("Opening your browser: use your PackSync passkey.");
+            let s = cx.app.hosted_recover_passkey(service.as_deref(), &*opener, &ctx)?;
+            cx.out.emit(&s, |w| {
+                print_status(w, &s)?;
+                writeln!(w, "You're back in. `packsync cloud` lists your instances.")
+            })
+        }
         StorageCmd::RecoveryKey => {
             let key = cx.app.hosted_recovery_key()?;
             cx.out.emit(&serde_json::json!({ "recovery_key": key.expose() }), |w| {

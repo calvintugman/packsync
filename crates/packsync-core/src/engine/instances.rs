@@ -17,6 +17,9 @@ pub(crate) fn marker_path(root: &Path) -> PathBuf {
     root.join(LOCAL_MARKER_DIR).join("marker")
 }
 
+/// Database key prefix: unknown content found by the last save that is worth asking about.
+const UNKNOWN: &str = "unknown_content:";
+
 impl Engine {
     pub fn instances(&self) -> Result<Vec<InstanceRow>> {
         self.db.instances()
@@ -77,9 +80,10 @@ impl Engine {
                 .map(|(category, (files, bytes))| IncludedGroup { category, files, bytes })
                 .collect(),
             empty_dirs: w.empty_dirs.len() as u64,
-            excluded: w.excluded,
             issues: w.issues,
             estimated_upload_bytes: estimated,
+            suggestions: rules::suggest::suggest(&w.excluded.unmatched_groups, &desc.game_root),
+            excluded: w.excluded,
             rules_text: text,
             samples,
         })
@@ -96,6 +100,7 @@ impl Engine {
             sync_enabled: false,
             base_snapshot: None,
             pending_rules: None,
+            rule_decisions: None,
             marker: String::new(),
             root_dev: None,
             provider_id: None,
@@ -122,7 +127,10 @@ impl Engine {
         }
         let launcher = self.launcher(&req.launcher);
         let desc = launcher.describe(&root)?;
-        let text = rules::effective_rules_text(launcher.rules_fragment(), &req.rules_overrides)?;
+        let text = rules::suggest::apply_decisions(
+            &rules::effective_rules_text(launcher.rules_fragment(), &req.rules_overrides)?,
+            &req.decisions,
+        )?;
         let rs = RuleSet::compile(&text, &desc.game_root)?;
         let id = InstanceId::new();
         let mut row = self.placeholder_row(&root, &desc);
@@ -280,7 +288,51 @@ impl Engine {
             total_bytes: manifest.as_ref().map(|m| m.stats.bytes).unwrap_or(0),
             playing_elsewhere,
             provider_id: inst.provider_id.clone(),
+            unknown: self.unknown_content(id)?,
         })
+    }
+
+    /// Content of `id` no rule covers and nobody has decided about, as found by the last save.
+    pub fn unknown_content(&self, id: InstanceId) -> Result<Vec<rules::suggest::Suggestion>> {
+        Ok(self.db.meta_get(&format!("{UNKNOWN}{id}"))?.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default())
+    }
+
+    /// Record what the last scan found that no rule covers (see [`Engine::unknown_content`]). Groups
+    /// PackSync is sure are caches or tool folders are not worth asking about and are left out.
+    pub(crate) fn record_unknown(
+        &self,
+        inst: &InstanceRow,
+        groups: &std::collections::BTreeMap<String, (u64, u64)>,
+    ) -> Result<()> {
+        let ask: Vec<_> =
+            rules::suggest::suggest(groups, &inst.game_root).into_iter().filter(|s| s.include || !s.sure).collect();
+        self.db.meta_set(&format!("{UNKNOWN}{}", inst.id), &serde_json::to_string(&ask)?)
+    }
+
+    /// Apply the person's answers about unknown content: they become rules of the instance, used by
+    /// the next save (which stores them in the snapshot, so every computer follows them).
+    pub fn decide_unknown(&self, id: InstanceId, decisions: &[rules::suggest::RuleDecision]) -> Result<()> {
+        if decisions.is_empty() {
+            return Ok(());
+        }
+        let _lock = self.lock(id, "decide")?;
+        let inst = self.instance(id)?;
+        // later answers about the same path replace earlier ones
+        let mut all = super::rule_decisions(&inst);
+        for d in decisions {
+            all.retain(|e| e.path != d.path);
+            all.push(d.clone());
+        }
+        let json = serde_json::to_string(&all)?;
+        // must compile together with the instance's rules
+        let mut probe = inst.clone();
+        probe.rule_decisions = Some(json.clone());
+        self.rules_for(&probe, &OpCtx::detached())?;
+        self.db.instance_update(id, |r| r.rule_decisions = Some(json.clone()))?;
+        let decided: std::collections::HashSet<&str> = decisions.iter().map(|d| d.path.as_str()).collect();
+        let left: Vec<_> =
+            self.unknown_content(id)?.into_iter().filter(|s| !decided.contains(s.path.as_str())).collect();
+        self.db.meta_set(&format!("{UNKNOWN}{id}"), &serde_json::to_string(&left)?)
     }
 
     pub fn history(&self, id: InstanceId, online: bool, ctx: &OpCtx) -> Result<Vec<HistoryEntry>> {

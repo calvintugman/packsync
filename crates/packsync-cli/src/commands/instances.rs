@@ -129,8 +129,9 @@ fn print_preview(w: &mut dyn Write, r: &packsync_core::engine::PreviewReport) ->
             writeln!(w, "  {dir}/  — {reason}")?;
         }
     }
-    for (dir, (files, size)) in &r.excluded.unmatched_by_dir {
-        writeln!(w, "  not recognised: {dir}/ ({files} files, {})", bytes(*size))?;
+    if !r.suggestions.is_empty() {
+        writeln!(w, "Not recognised (mod data?) — PackSync's proposal; change it with --include / --exclude:")?;
+        print_suggestions(w, &r.suggestions)?;
     }
     if let Some(u) = r.estimated_upload_bytes {
         writeln!(w, "Estimated first upload: {}", bytes(u))?;
@@ -157,26 +158,65 @@ pub fn preview(cx: &Cx, a: PreviewArgs) -> Result<()> {
     cx.out.emit(&r, |w| print_preview(w, &r))
 }
 
+fn print_suggestions(w: &mut dyn Write, list: &[packsync_core::rules::suggest::Suggestion]) -> std::io::Result<()> {
+    for s in list {
+        writeln!(
+            w,
+            "  [{}] {:<44} {:>6} files {:>10}  — {}{}",
+            if s.include { "sync" } else { "skip" },
+            s.path,
+            s.files,
+            bytes(s.bytes),
+            s.reason,
+            if s.sure { "" } else { " (unsure)" }
+        )?;
+    }
+    Ok(())
+}
+
+/// PackSync's proposals, with the person's `--include` / `--exclude` on top.
+fn decisions(
+    proposals: &[packsync_core::rules::suggest::Suggestion],
+    include: &[String],
+    exclude: &[String],
+) -> Vec<packsync_core::rules::suggest::RuleDecision> {
+    use packsync_core::rules::suggest::RuleDecision;
+    let norm = |p: &String| p.replace('\\', "/");
+    let mut out: Vec<RuleDecision> =
+        proposals.iter().map(|s| RuleDecision { path: s.path.clone(), include: s.include }).collect();
+    for (paths, inc) in [(include, true), (exclude, false)] {
+        for p in paths.iter().map(norm) {
+            let found = out.iter_mut().find(|d| d.path == p || d.path.trim_end_matches('/') == p.trim_end_matches('/'));
+            match found {
+                Some(d) => d.include = inc,
+                None => out.push(RuleDecision { path: p, include: inc }),
+            }
+        }
+    }
+    out
+}
+
 pub fn enable(cx: &Cx, a: EnableArgs) -> Result<()> {
     let ctx = cx.out.ctx();
     let rules = read_rules(&a.rules_file)?;
     let d = cx.app.describe(&a.launcher, &a.path)?;
+    let r = cx.app.engine().preview(
+        &PreviewRequest {
+            root: d.root.clone(),
+            launcher: a.launcher.clone(),
+            rules_overrides: rules.clone(),
+            estimate_upload: false,
+        },
+        &ctx,
+    )?;
     if !cx.out.json && !cx.out.quiet {
-        let r = cx.app.engine().preview(
-            &PreviewRequest {
-                root: d.root.clone(),
-                launcher: a.launcher.clone(),
-                rules_overrides: rules.clone(),
-                estimate_upload: false,
-            },
-            &ctx,
-        )?;
         print_preview(&mut std::io::stderr(), &r).map_err(|e| Error::io("printing the preview", e))?;
     }
     if !cx.out.confirm(&format!("Start syncing {}?", d.name))? {
         return Err(Error::Cancelled);
     }
-    let en = cx.app.enable_sync(&a.launcher, &d.root, rules, &ctx)?;
+    let chosen = decisions(&r.suggestions, &a.include, &a.exclude);
+    let en = cx.app.enable_sync_with(&a.launcher, &d.root, rules, chosen, &ctx)?;
     let mut uploaded = None;
     if !a.no_upload && cx.app.engine().has_storage() {
         match cx.app.engine().upload_pending(en.instance, false, &ctx) {
@@ -244,4 +284,28 @@ pub fn rules(cx: &Cx, c: RulesCmd) -> Result<()> {
             })
         }
     }
+}
+
+pub fn unknown(cx: &Cx, a: crate::args::UnknownArgs) -> Result<()> {
+    let id = crate::resolve::instance(&cx.app, &a.instance)?;
+    let list = cx.app.engine().unknown_content(id)?;
+    if a.include.is_empty() && a.exclude.is_empty() && !a.accept {
+        return cx.out.emit(&list, |w| {
+            if list.is_empty() {
+                return writeln!(w, "Nothing to decide: everything in this instance is covered by its rules.");
+            }
+            writeln!(w, "Not recognised (found by the last save) — PackSync's proposal:")?;
+            print_suggestions(w, &list)?;
+            writeln!(w, "Decide with --include PATH / --exclude PATH, or --accept to take every proposal.")
+        });
+    }
+    let base = if a.accept { list.clone() } else { vec![] };
+    let chosen = decisions(&base, &a.include, &a.exclude);
+    cx.app.engine().decide_unknown(id, &chosen)?;
+    cx.out.emit(&chosen, |w| {
+        for d in &chosen {
+            writeln!(w, "  {} {}", if d.include { "sync" } else { "skip" }, d.path)?;
+        }
+        writeln!(w, "Saved. The next sync applies it, on every computer.")
+    })
 }

@@ -57,6 +57,10 @@ struct Args {
     /// Start with the shared cloud already connected on the desktop (skips the setup wizard).
     #[arg(long)]
     connected: bool,
+    /// With `--connected`: the shared cloud is the (stand-in) PackSync cloud, both computers paired,
+    /// instead of a shared folder — what a person sees after setup.
+    #[arg(long)]
+    hosted: bool,
 }
 
 struct Device {
@@ -122,6 +126,14 @@ fn str_arg<'a>(v: &'a Value, key: &str) -> Result<&'a str, String> {
 }
 
 impl World {
+    /// The laptop uses the shared cloud folder, unless it is already connected (the PackSync cloud).
+    fn connect_laptop(&self) -> Result<(), String> {
+        if matches!(self.laptop.app.settings().storage, packsync_app::StorageSetting::None) {
+            self.laptop.app.use_local_storage(&self.cloud).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     fn device(&self, which: &str) -> Result<&Device, String> {
         match which {
             "desktop" => Ok(&self.desktop),
@@ -218,12 +230,12 @@ impl World {
                 Ok(json!({ "mode": mode }))
             }
             "laptop_connect" => {
-                self.laptop.app.use_local_storage(&self.cloud).map_err(|e| e.to_string())?;
+                self.connect_laptop()?;
                 Ok(json!({}))
             }
             // bring an instance from the cloud to the laptop: {instance (name)}
             "laptop_restore" => {
-                self.laptop.app.use_local_storage(&self.cloud).map_err(|e| e.to_string())?;
+                self.connect_laptop()?;
                 let name = str_arg(cmd, "instance")?;
                 let cloud = self.laptop.app.engine().cloud_instances(&ctx).map_err(|e| e.to_string())?;
                 let c = cloud.iter().find(|c| c.name == name).ok_or_else(|| format!("{name:?} is not in the cloud"))?;
@@ -236,7 +248,7 @@ impl World {
             }
             // a brand-new instance on the laptop, synced and uploaded: {instance (name)}
             "laptop_new_instance" => {
-                self.laptop.app.use_local_storage(&self.cloud).map_err(|e| e.to_string())?;
+                self.connect_laptop()?;
                 let name = str_arg(cmd, "instance")?;
                 let root = make_instance(&self.laptop.data_dir, name, &spec(3));
                 let out =
@@ -276,12 +288,24 @@ pub fn main() {
     let cloud = dir.join("cloud");
     std::fs::create_dir_all(&cloud).expect("create the cloud folder");
 
+    // the PackSync cloud of this world: an in-process stand-in of the hosted service, used by the setup
+    // wizard (the default choice there). Set before any thread starts and before the apps open.
+    let hosted = Box::leak(Box::new(packsync_hosted::mock::MockService::start()));
+    // SAFETY: still single-threaded here (the mock's workers only serve HTTP and never read the
+    // environment), and nothing else reads it concurrently.
+    unsafe { std::env::set_var("PACKSYNC_HOSTED_URL", hosted.url()) };
+
     let faults = FaultPlan::new(7);
     let desktop = device(&dir.join("desktop"), "Desktop", args.cli.as_deref(), Some(faults.clone()));
     let laptop = device(&dir.join("laptop"), "Laptop", args.cli.as_deref(), None);
     make_instance(&desktop.data_dir, "Skyblock Pack", &spec(4));
     make_instance(&desktop.data_dir, "Vanilla Plus", &spec(2));
-    if args.connected {
+    if args.connected && args.hosted {
+        let ctx = OpCtx::detached();
+        desktop.app.hosted_start(None, &ctx).expect("start the PackSync cloud on the desktop");
+        let key = desktop.app.hosted_recovery_key().expect("the account's key");
+        laptop.app.hosted_recover(&key, &ctx).expect("the laptop joins the same account");
+    } else if args.connected {
         desktop.app.use_local_storage(&cloud).expect("connect the desktop to the cloud");
     }
     let world = Arc::new(World { cloud: cloud.clone(), desktop, laptop, faults });

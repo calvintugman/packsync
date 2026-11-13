@@ -143,6 +143,7 @@ fn enabling_the_same_folder_twice_at_once_registers_it_once() {
                                 launcher: "generic".into(),
                                 name: None,
                                 rules_overrides: String::new(),
+                                decisions: vec![],
                                 launcher_ref: None,
                             },
                             &a.ctx(),

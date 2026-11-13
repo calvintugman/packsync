@@ -1,4 +1,4 @@
-//! Markdown for `docs/performance.md`.
+//! Markdown for `docs/benchmarks.md`.
 
 use serde_json::Value;
 

@@ -46,11 +46,22 @@ pub const METHODS: &[MethodInfo] = &[
     m("storage.disconnect", false, "{revoke}: forget the connection (cloud data is not touched)."),
     m("storage.test", true, "Check that the connection works."),
     m("storage.usage", false, "How much of the account's storage is used (one cheap request)."),
+    m(
+        "instance.decide_unknown",
+        false,
+        "{instance, decisions:[{path, include}]}: answers about content no rule covers; the next save applies them.",
+    ),
     m("storage.hosted_start", true, "{service?}: create a PackSync cloud account and use it (first computer)."),
     m("storage.hosted_join", true, "{code, service?}: join the PackSync cloud of the computer showing the code."),
     m("storage.hosted_recover", true, "{key}: use the PackSync cloud with a recovery key."),
     m("storage.hosted_pair_start", false, "Make a pairing code for another computer: {code}."),
     m("storage.hosted_pair_wait", true, "Wait (up to 10 minutes) until another computer joined with the code."),
+    m("storage.passkey_add", true, "Protect the PackSync cloud with a passkey (opens the browser)."),
+    m(
+        "storage.passkey_recover",
+        true,
+        "{service?}: get back into the PackSync cloud with a passkey (opens the browser).",
+    ),
     m("storage.hosted_recovery_key", false, "The recovery key (a secret: show it only when asked): {key}."),
     m("launcher.discover", false, "Prism instances found on this computer."),
     m("launcher.describe", false, "{launcher, path}: validate a manually selected folder."),
@@ -259,6 +270,20 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             app.hosted_pair_wait(ctx)?;
             Ok(json!({ "joined": true }))
         }
+        "storage.passkey_add" => {
+            app.hosted_add_passkey(&packsync_drive::oauth::SystemBrowser { print_fallback: false }, ctx)?;
+            Ok(json!({ "added": true }))
+        }
+        "storage.passkey_recover" => {
+            #[derive(Deserialize, Default)]
+            struct A {
+                #[serde(default)]
+                service: Option<String>,
+            }
+            let a: A = if params.is_null() { A::default() } else { p(&params)? };
+            let opener = packsync_drive::oauth::SystemBrowser { print_fallback: false };
+            ser(&app.hosted_recover_passkey(a.service.as_deref(), &opener, ctx)?)
+        }
         "storage.hosted_recovery_key" => Ok(json!({ "key": app.hosted_recovery_key()?.expose() })),
         "storage.test" => app.test_storage(ctx),
         "storage.usage" => {
@@ -304,6 +329,8 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
                 launcher: String,
                 #[serde(default)]
                 rules_overrides: String,
+                #[serde(default)]
+                decisions: Vec<packsync_core::rules::suggest::RuleDecision>,
                 #[serde(default = "yes")]
                 upload: bool,
             }
@@ -314,7 +341,7 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
                 true
             }
             let a: A = p(&params)?;
-            let outcome = app.enable_sync(&a.launcher, &a.path, a.rules_overrides, ctx)?;
+            let outcome = app.enable_sync_with(&a.launcher, &a.path, a.rules_overrides, a.decisions, ctx)?;
             let mut upload = Value::Null;
             let mut upload_error = Value::Null;
             if a.upload && e.has_storage() {
@@ -330,6 +357,17 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             e.disable_sync(a.instance)?;
             app.bus().emit(crate::events::AppEvent::InstanceChanged { instance: a.instance });
             Ok(json!({ "instance": a.instance, "sync_enabled": false }))
+        }
+        "instance.decide_unknown" => {
+            #[derive(Deserialize)]
+            struct A {
+                instance: InstanceId,
+                decisions: Vec<packsync_core::rules::suggest::RuleDecision>,
+            }
+            let a: A = p(&params)?;
+            e.decide_unknown(a.instance, &a.decisions)?;
+            app.bus().emit(crate::events::AppEvent::InstanceChanged { instance: a.instance });
+            Ok(json!({ "decided": a.decisions.len() }))
         }
         "instance.changes" => {
             let a: Inst = p(&params)?;

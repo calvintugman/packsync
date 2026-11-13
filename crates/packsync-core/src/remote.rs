@@ -202,7 +202,7 @@ pub struct HeadRecord {
     pub recent: Vec<RecentCommit>,
 }
 
-/// Advisory "someone is playing" marker. Never relied on for exclusion (see `docs/consistency.md`).
+/// Advisory "someone is playing" marker. Never relied on for exclusion (see `docs/architecture.md`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaseRecord {
     pub format: String,
@@ -639,11 +639,24 @@ impl Remote {
             }
         }
         if !missing.is_empty() {
-            return Err(Error::Corrupt(format!(
-                "{} blob(s) are not listed in any pack index (first: {}); the snapshot is incomplete",
-                missing.len(),
-                missing[0].short()
-            )));
+            // The data may have been uploaded with another instance, a crash save or an index that a
+            // cleanup merged — none of which this computer has read. Read every index once before
+            // calling the snapshot incomplete.
+            self.sync_index_cache(ctx)?;
+            let mut still = vec![];
+            for h in missing {
+                match self.db.blob_lookup(h)? {
+                    Some((pack, e)) => by_pack.entry(pack).or_default().push(e),
+                    None => still.push(h),
+                }
+            }
+            if !still.is_empty() {
+                return Err(Error::Corrupt(format!(
+                    "{} blob(s) are not listed in any pack index (first: {}); the snapshot is incomplete",
+                    still.len(),
+                    still[0].short()
+                )));
+            }
         }
         let packs_sizes = self.db.packs_known()?;
         let jobs: Vec<(Hash, Vec<BlobEntry>)> = by_pack.into_iter().collect();

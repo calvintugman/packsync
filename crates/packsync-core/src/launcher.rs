@@ -206,6 +206,13 @@ pub trait Launcher: Send + Sync {
     /// `-Djava.library.path=<root>/natives`). Used in addition to generic cwd/cmdline matching.
     fn game_process_patterns(&self, root: &Path) -> Vec<String>;
 
+    /// Is the difference between `base` and `local` of the instance file `path` only bookkeeping the
+    /// launcher does on its own (Prism refreshing the cached fields of `mmc-pack.json`)? Such a change is
+    /// not an edit of the person's: it does not stop this computer from catching up with the cloud.
+    fn self_maintained_change(&self, _path: &str, _base: &[u8], _local: &[u8]) -> bool {
+        false
+    }
+
     // --- opt-in hooks -------------------------------------------------------------------
     fn hook_state(&self, root: &Path) -> Result<HookState>;
     /// Compute (but do not write) what installing the hooks would change.

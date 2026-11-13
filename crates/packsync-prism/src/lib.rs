@@ -1,4 +1,4 @@
-//! Prism Launcher adapter for PackSync. See `docs/hooks.md` and `docs/dev/prism-verification.md`.
+//! Prism Launcher adapter for PackSync. See `docs/hooks.md` and `docs/testing.md`.
 //!
 //! * [`PrismLauncher`] implements [`packsync_core::launcher::Launcher`]: discovery, validation of
 //!   a manually selected folder, restore registration (atomic rename into the instances folder),

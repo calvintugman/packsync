@@ -10,7 +10,7 @@
 //! * `mock` (feature `mock`) is an in-memory Drive/OAuth server with fault injection for tests and
 //!   benchmarks.
 //!
-//! Design and verified facts: `docs/dev/drive-adapter.md` and `docs/dev/google-drive-verification.md`.
+//! Design and verified facts: `docs/testing.md`.
 //!
 //! ```no_run
 //! use std::sync::Arc;

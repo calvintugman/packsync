@@ -7,7 +7,7 @@
 //! caches (`meta/`, `libraries/`, `assets/`, `java/`) are copied from an existing Prism data directory
 //! (reflink when the file system supports it); `accounts.json`, `*.cfg` and instances are never read.
 //!
-//! What it establishes about Prism's behaviour is listed in `docs/dev/prism-verification.md`.
+//! What it establishes about Prism's behaviour is listed in `docs/testing.md`.
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
