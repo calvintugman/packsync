@@ -66,6 +66,25 @@ export interface InstanceStatus {
   total_bytes: number;
   playing_elsewhere: string[];
   provider_id: string | null;
+  /** Content no rule covers that nobody has decided about yet (new mods' data folders, …). */
+  unknown: Suggestion[];
+}
+
+/** What PackSync proposes for content no rule covers. */
+export interface Suggestion {
+  /** From the instance folder; folders end in "/". */
+  path: string;
+  files: number;
+  bytes: number;
+  include: boolean;
+  /** false: PackSync is guessing; the person should decide. */
+  sure: boolean;
+  reason: string;
+}
+
+export interface RuleDecision {
+  path: string;
+  include: boolean;
 }
 
 export interface SnapshotSummary {
@@ -235,6 +254,7 @@ export interface ExcludedSummary {
   groups: Record<string, ExcludedGroup>;
   pruned_dirs: [string, string, string][];
   unmatched_by_dir: Record<string, [number, number]>;
+  unmatched_groups: Record<string, [number, number]>;
 }
 
 export interface PreviewReport {
@@ -251,6 +271,7 @@ export interface PreviewReport {
   estimated_upload_bytes: number | null;
   rules_text: string;
   samples: [string, string, number][];
+  suggestions: Suggestion[];
 }
 
 export interface SnapshotStats {
@@ -329,7 +350,7 @@ export type ReconcileReport =
   | { outcome: "cloud_empty" }
   | { outcome: "local_ahead"; snapshots: SnapshotId[]; uploaded: boolean; upload_error: string | null }
   | { outcome: "cloud_ahead"; head: SnapshotId }
-  | { outcome: "fast_forwarded"; from: SnapshotId | null; to: SnapshotId; files_written: number; files_deleted: number }
+  | { outcome: "fast_forwarded"; from: SnapshotId | null; to: SnapshotId; files_written: number; files_deleted: number; changes?: ChangeSummary }
   | ({ outcome: "conflict" } & ConflictDetails)
   | { outcome: "offline"; base: SnapshotId | null; reason: string };
 
@@ -606,4 +627,16 @@ export interface MethodInfo {
   name: string;
   long: boolean;
   doc: string;
+}
+
+/** What a catch-up changed, in the person's terms. */
+export interface ChangeSummary {
+  mods_added: string[];
+  mods_removed: string[];
+  mods_updated: string[];
+  config_files: number;
+  world_files: number;
+  other_files: number;
+  /** [before, after], e.g. ["Minecraft 1.20.1 · Forge 47.4.0", "Minecraft 1.20.1 · Forge 47.4.16"] */
+  pack_versions: [string, string] | null;
 }

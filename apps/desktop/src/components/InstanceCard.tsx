@@ -7,6 +7,7 @@ import { canPlay, phaseInfo } from "../lib/phases";
 import { href, navigate } from "../lib/router";
 import { ConflictDialog } from "../dialogs/ConflictDialog";
 import { CrashDialog } from "../dialogs/CrashDialog";
+import { UnknownDialog } from "../dialogs/UnknownDialog";
 import { useAction, useStore } from "../state/context";
 import { Banner, Button, Pill } from "../ui/controls";
 import { ErrorNote } from "../ui/ErrorNote";
@@ -74,8 +75,21 @@ export function useUploadNow(inst: { id: string; name: string }) {
   });
 }
 
+/** A coloured tile with the pack's initials; the colour is stable per name. */
+export function PackTile({ name }: { name: string }) {
+  const words = name.replace(/[^\p{L}\p{N} ]/gu, " ").trim().split(/\s+/).filter(Boolean);
+  const initials = (words.length > 1 ? words[0]![0]! + words[1]![0]! : (words[0] ?? "?").slice(0, 2)).toUpperCase();
+  let hue = 0;
+  for (const ch of name) hue = (hue * 31 + ch.codePointAt(0)!) % 360;
+  return (
+    <span className="pack-tile" aria-hidden="true" style={{ "--hue": hue } as React.CSSProperties}>
+      {initials}
+    </span>
+  );
+}
+
 export function InstanceCard({ inst }: { inst: InstanceStatus }) {
-  const [dialog, setDialog] = useState<"conflict" | "crash" | null>(null);
+  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | null>(null);
   const jobs = useRunningJobs(inst.id);
   const sync = useSyncNow(inst, () => setDialog("conflict"));
   const play = usePlay(inst);
@@ -87,7 +101,8 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
 
   return (
     <article className={`card instance-card ${attention ? "attention" : ""}`} aria-label={inst.name} data-phase={inst.phase}>
-      <div className="row" style={{ alignItems: "flex-start" }}>
+      <div className="row" style={{ alignItems: "flex-start", gap: 14 }}>
+        <PackTile name={inst.name} />
         <div className="grow">
           <a className="instance-title" href={href({ name: "instance", id: inst.id, tab: null })}>
             {inst.name}
@@ -115,6 +130,20 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
       </p>
 
       <Stepper phase={inst.phase} />
+      {inst.unknown.length > 0 ? (
+        <Banner
+          tone="info"
+          title="New mod data found"
+          actions={
+            <Button size="sm" variant="primary" onClick={() => setDialog("unknown")}>
+              Review
+            </Button>
+          }
+        >
+          {plural(inst.unknown.length, "folder")} PackSync doesn't recognise yet, like <code>{inst.unknown[0]!.path}</code>.
+          Choose what to sync to your other computers.
+        </Banner>
+      ) : null}
       {inst.pending_snapshots > 0 ? (
         <p className="meta" data-testid="pending">
           {plural(inst.pending_snapshots, "snapshot")} ({formatBytes(inst.pending_pack_bytes)}) waiting to upload.
@@ -181,6 +210,7 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
 
       {dialog === "conflict" ? <ConflictDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "crash" ? <CrashDialog instance={inst} onClose={() => setDialog(null)} /> : null}
+      {dialog === "unknown" ? <UnknownDialog inst={inst} onClose={() => setDialog(null)} /> : null}
     </article>
   );
 }

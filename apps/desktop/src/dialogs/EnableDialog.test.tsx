@@ -15,11 +15,12 @@ const preview: PreviewReport = {
   included_bytes: 1000,
   included_by_category: [],
   empty_dirs: 0,
-  excluded: { groups: {}, pruned_dirs: [], unmatched_by_dir: {} },
+  excluded: { groups: {}, pruned_dirs: [], unmatched_by_dir: {}, unmatched_groups: {} },
   issues: [],
   estimated_upload_bytes: null,
   rules_text: "",
   samples: [],
+  suggestions: [],
 };
 const plan = (blockers: string[] = []): HookPlan => ({ root: "/i", changes: [], preserved_commands: [], blockers });
 

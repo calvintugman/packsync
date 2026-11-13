@@ -3,6 +3,9 @@ import type { Page } from "@playwright/test";
 import { makeConflict, NAME } from "./scenarios";
 import { card, enableViaApi, expect, openApp, test } from "./world";
 
+// check the settled screen: entry animations fade elements in, and mid-fade text is measured as faint
+test.use({ reducedMotion: "reduce" });
+
 test.use({ connected: true });
 
 async function expectAccessible(page: Page, what: string) {

@@ -6,6 +6,7 @@ import { formatBytes, formatRelative, packLine, plural, worldsLine } from "../li
 import { href } from "../lib/router";
 import { useAppState, useStore } from "../state/context";
 import { Banner, Button, EmptyState, Pill } from "../ui/controls";
+import { PackTile } from "../components/InstanceCard";
 import { ErrorNote } from "../ui/ErrorNote";
 
 export function CloudScreen() {
@@ -60,8 +61,9 @@ export function CloudScreen() {
       ) : null}
       <div className="col gap-lg">
         {items.map((c) => (
-          <article key={c.id} className="card col" aria-label={c.name}>
-            <div className="row" style={{ alignItems: "flex-start" }}>
+          <article key={c.id} className="card col instance-card" aria-label={c.name}>
+            <div className="row" style={{ alignItems: "flex-start", gap: 14 }}>
+              <PackTile name={c.name} />
               <div className="grow">
                 <strong style={{ fontSize: 16 }}>{c.name}</strong>
                 <div className="meta">

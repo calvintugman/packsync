@@ -13,13 +13,22 @@ function fresh() {
 }
 
 describe("StorageSetup", () => {
-  it("offers the PackSync cloud first; Google Drive is upfront that files are not encrypted", async () => {
+  it("goes back from Google Drive to the PackSync cloud", async () => {
+    const u = userEvent.setup();
+    await renderWithStore(<StorageSetup />, fresh());
+    await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
+    await u.click(screen.getByRole("button", { name: "Use the PackSync cloud instead" }));
+    expect(screen.getByRole("button", { name: "Start on this computer" })).toBeInTheDocument();
+  });
+
+  it("offers the PackSync cloud first and Google Drive only on request, upfront that it is not encrypted", async () => {
     const u = userEvent.setup();
     const t = fresh();
     await renderWithStore(<StorageSetup />, t);
-    expect(screen.getByRole("radio", { name: /PackSync cloud/ })).toBeChecked();
     expect(screen.getByRole("button", { name: "Start on this computer" })).toBeInTheDocument();
-    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
+    expect(screen.queryByRole("button", { name: "Sign in with Google" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/folder on this computer/i)).not.toBeInTheDocument();
+    await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
     expect(screen.getByText(/unencrypted/)).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /A “PackSync” folder in My Drive/ })).toBeChecked();
   });
@@ -29,7 +38,7 @@ describe("StorageSetup", () => {
     const t = fresh();
     t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false, setup_hint: "Create a client: docs/oauth-setup.md" }));
     await renderWithStore(<StorageSetup />, t);
-    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
+    await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     expect(await screen.findByRole("heading", { name: "PackSync needs a Google OAuth client" })).toBeInTheDocument();
     expect(t.count("storage.google_login")).toBe(0); // no browser, no network
@@ -40,7 +49,7 @@ describe("StorageSetup", () => {
     const t = fresh();
     t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false }));
     await renderWithStore(<StorageSetup />, t);
-    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
+    await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
     await u.click(screen.getByRole("radio", { name: /Hidden app data/ }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     await waitFor(() => expect(t.count("storage.use_google")).toBe(1));
@@ -55,37 +64,9 @@ describe("StorageSetup", () => {
     t.on("storage.google_login", () => ({ account: { email: "me@example.com", display_name: null, permission_id: null }, status: connected }));
     const onConnected = vi.fn();
     const { store } = await renderWithStore(<StorageSetup onConnected={onConnected} />, t);
-    await u.click(screen.getByRole("radio", { name: /Google Drive/ }));
+    await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));
     await waitFor(() => expect(onConnected).toHaveBeenCalledWith(connected));
     expect(store.getState().toasts.some((x) => x.message === "Connected as me@example.com.")).toBe(true);
-  });
-
-  it("uses a folder as the cloud", async () => {
-    const u = userEvent.setup();
-    const t = fresh();
-    t.on("storage.use_local", () => storage());
-    const onConnected = vi.fn();
-    await renderWithStore(<StorageSetup onConnected={onConnected} />, t);
-    await u.click(screen.getByRole("radio", { name: /A folder on this computer/ }));
-    const button = screen.getByRole("button", { name: "Use this folder" });
-    expect(button).toBeDisabled();
-    await u.type(screen.getByLabelText("Folder", { exact: true }), "/mnt/nas/packsync");
-    await u.click(button);
-    await waitFor(() => expect(onConnected).toHaveBeenCalled());
-    expect(t.calls.find((c) => c.method === "storage.use_local")?.params).toEqual({ path: "/mnt/nas/packsync" });
-  });
-
-  it("shows the engine's error when the folder cannot be used", async () => {
-    const u = userEvent.setup();
-    const t = fresh();
-    t.on("storage.use_local", () => {
-      throw Object.assign(new Error("x"), { code: "io", message: "cannot create /nope: permission denied", advice: null, exit_code: 1 });
-    });
-    await renderWithStore(<StorageSetup />, t);
-    await u.click(screen.getByRole("radio", { name: /A folder on this computer/ }));
-    await u.type(screen.getByLabelText("Folder", { exact: true }), "/nope");
-    await u.click(screen.getByRole("button", { name: "Use this folder" }));
-    expect(await screen.findByText(/permission denied/)).toBeInTheDocument();
   });
 });

@@ -42,7 +42,7 @@ describe("App", () => {
   it("starts with the setup when nothing is connected and nothing is synced", async () => {
     const t = baseTransport({ instances: [], storage: storage({ kind: "none", connected: false, detail: "Not connected" }) });
     mount(t);
-    expect(await screen.findByRole("heading", { name: "Continue your modpack on any computer" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Your modpacks, on every computer" })).toBeInTheDocument();
     expect(window.location.hash).toBe("#/setup");
   });
 

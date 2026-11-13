@@ -147,6 +147,26 @@ describe("AppStore: events", () => {
     store.stop();
   });
 
+  it("re-reads an instance when its running job moves to another phase (a long upload is not shown as ready)", async () => {
+    let list = [instance()];
+    const t = baseTransport();
+    t.on("instances.list", () => list);
+    const { store } = await started(t);
+    const id = list[0]!.id;
+    const progress = (phase: string) =>
+      t.emit({
+        type: "progress", job: "job-9", instance: id, phase, kind: { type: "progress" },
+        message: phase, bytes_done: 0, bytes_total: 0, items_done: 0, items_total: 0,
+      } as never);
+    progress("snapshot");
+    list = [withPhase("upload_pending")];
+    progress("snapshot"); // same phase: nothing to re-read
+    expect(store.getState().instances[0]?.phase).not.toBe("upload_pending");
+    progress("upload");
+    await vi.waitFor(() => expect(store.getState().instances[0]?.phase).toBe("upload_pending"));
+    store.stop();
+  });
+
   it("bumps an instance's revision only when its status really changed", async () => {
     let list = [instance()];
     const t = baseTransport();

@@ -32,7 +32,6 @@ export function PreviewView({ report }: { report: PreviewReport }) {
     .map(([id, g]) => ({ id, ...g }))
     .filter((g) => g.files > 0)
     .sort((a, b) => b.bytes - a.bytes);
-  const unmatched = Object.entries(report.excluded.unmatched_by_dir).sort((a, b) => b[1][1] - a[1][1]);
   return (
     <div className="col" style={{ gap: 16 }}>
       <div>
@@ -97,7 +96,7 @@ export function PreviewView({ report }: { report: PreviewReport }) {
 
       <div>
         <h3 style={{ marginBottom: 6 }}>Not synced</h3>
-        {excluded.length === 0 && unmatched.length === 0 && report.excluded.pruned_dirs.length === 0 ? (
+        {excluded.length === 0 && report.excluded.pruned_dirs.length === 0 ? (
           <p className="muted">Nothing is excluded.</p>
         ) : (
           <table className="table">
@@ -135,16 +134,6 @@ export function PreviewView({ report }: { report: PreviewReport }) {
             </tbody>
           </table>
         )}
-        {unmatched.length > 0 ? (
-          <Banner tone="info" title="Folders no rule recognises">
-            These are not synced. Add a rule if you want them: {" "}
-            {unmatched
-              .slice(0, 6)
-              .map(([dir, [files, bytes]]) => `${baseName(dir) || dir} (${plural(files, "file")}, ${formatBytes(bytes)})`)
-              .join("; ")}
-            .
-          </Banner>
-        ) : null}
       </div>
 
       <details>

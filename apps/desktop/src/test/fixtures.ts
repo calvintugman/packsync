@@ -33,6 +33,7 @@ export function instance(over: Partial<InstanceStatus> = {}): InstanceStatus {
     total_bytes: 1_048_000,
     playing_elsewhere: [],
     provider_id: "local:/cloud",
+    unknown: [],
     ...over,
   };
 }

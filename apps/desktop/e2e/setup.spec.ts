@@ -1,13 +1,11 @@
 import { card, expect, expectCardPhase, openApp, test } from "./world";
 
-test("first run: connect a folder as the cloud, preview an instance and start syncing", async ({ page, world }) => {
+test("first run: start the PackSync cloud, preview an instance and start syncing", async ({ page, world }) => {
   await openApp(page, world);
 
   // nothing is connected and nothing synced: the app starts with the setup
-  await expect(page.getByRole("heading", { name: "Continue your modpack on any computer" })).toBeVisible();
-  await page.getByRole("radio", { name: /A folder on this computer or network/ }).check();
-  await page.getByLabel("Folder", { exact: true }).fill(world.cloud);
-  await page.getByRole("button", { name: "Use this folder" }).click();
+  await expect(page.getByRole("heading", { name: "Your modpacks, on every computer" })).toBeVisible();
+  await page.getByRole("button", { name: "Start on this computer" }).click();
 
   // step 2: Prism instances were found
   await expect(page.getByRole("heading", { name: "Choose what to sync" })).toBeVisible();
@@ -37,9 +35,7 @@ test("first run: connect a folder as the cloud, preview an instance and start sy
 
 test("the other Prism instance is offered under 'Not syncing yet' and can be added later", async ({ page, world }) => {
   await openApp(page, world);
-  await page.getByRole("radio", { name: /A folder on this computer or network/ }).check();
-  await page.getByLabel("Folder", { exact: true }).fill(world.cloud);
-  await page.getByRole("button", { name: "Use this folder" }).click();
+  await page.getByRole("button", { name: "Start on this computer" }).click();
   await page.getByRole("button", { name: "Finish" }).click();
 
   await expect(page.getByText("No instances are synced yet")).toBeVisible();
@@ -52,7 +48,7 @@ test("the other Prism instance is offered under 'Not syncing yet' and can be add
 
 test("Google Drive: without an OAuth client the app explains what is needed instead of failing", async ({ page, world }) => {
   await openApp(page, world);
-  await expect(page.getByRole("radio", { name: /Google Drive/ })).toBeChecked();
+  await page.getByRole("button", { name: "Use my own Google Drive instead" }).click();
   await expect(page.getByText(/unencrypted/)).toBeVisible();
   await page.getByRole("button", { name: "Sign in with Google" }).click();
   await expect(page.getByRole("heading", { name: "PackSync needs a Google OAuth client" })).toBeVisible();

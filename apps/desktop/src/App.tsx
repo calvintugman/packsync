@@ -63,7 +63,13 @@ function Sidebar({ route }: { route: Route }) {
           <strong className="truncate">{storage?.kind === "hosted" ? "PackSync cloud" : storage?.kind === "google" ? "Google Drive" : storage?.kind === "r2" ? "Cloudflare R2" : storage?.kind === "local" ? "Folder" : "No cloud"}</strong>
         </div>
         <div className="muted truncate" title={storage?.detail}>
-          {storage?.connected ? (storage.account ?? storage.detail) : storage?.needs_reconnect ? "Sign in again" : "Not connected"}
+          {storage?.connected
+            ? storage.kind === "hosted"
+              ? "End-to-end encrypted"
+              : (storage.account ?? storage.detail)
+            : storage?.needs_reconnect
+              ? "Sign in again"
+              : "Not connected"}
         </div>
         <div className="faint truncate" style={{ marginTop: 6 }}>
           <Icon name="computer" size={13} /> {info?.device.name ?? "This computer"}

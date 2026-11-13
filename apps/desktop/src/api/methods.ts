@@ -1,4 +1,5 @@
 import type {
+  RuleDecision,
   AccountInfo,
   AppInfo,
   CloudInstance,
@@ -67,19 +68,22 @@ export interface Methods {
   "storage.disconnect": M<{ revoke?: boolean }, StorageStatus>;
   "storage.test": M<void, StorageTest, true>;
   "storage.usage": M<void, StorageUsage>;
+  "instance.decide_unknown": M<{ instance: InstanceId; decisions: RuleDecision[] }, { decided: number }>;
   "storage.hosted_start": M<{ service?: string } | void, StorageStatus, true>;
   "storage.hosted_join": M<{ code: string; service?: string }, StorageStatus, true>;
   "storage.hosted_recover": M<{ key: string }, StorageStatus, true>;
   "storage.hosted_pair_start": M<void, { code: string }>;
   "storage.hosted_pair_wait": M<void, { joined: boolean }, true>;
   "storage.hosted_recovery_key": M<void, { key: string }>;
+  "storage.passkey_add": M<void, { added: boolean }, true>;
+  "storage.passkey_recover": M<{ service?: string } | void, StorageStatus, true>;
   "launcher.discover": M<void, DiscoveredView[]>;
   "launcher.describe": M<{ launcher?: string; path: string }, DiscoveredInstance>;
   "instances.list": M<{ online?: boolean } | void, InstanceStatus[]>;
   "instance.status": M<Inst & { online?: boolean }, InstanceStatus>;
   "instances.preview": M<PreviewRequest, PreviewReport, true>;
   "instances.enable": M<
-    { path: string; launcher?: string; rules_overrides?: string; upload?: boolean },
+    { path: string; launcher?: string; rules_overrides?: string; decisions?: RuleDecision[]; upload?: boolean },
     EnableResult,
     true
   >;
@@ -130,6 +134,8 @@ export const LONG_METHODS: readonly LongMethodName[] = [
   "storage.hosted_join",
   "storage.hosted_recover",
   "storage.hosted_pair_wait",
+  "storage.passkey_add",
+  "storage.passkey_recover",
   "instances.preview",
   "instances.enable",
   "instance.changes",
@@ -167,12 +173,15 @@ export const ALL_METHODS: readonly MethodName[] = [
   "storage.disconnect",
   "storage.test",
   "storage.usage",
+  "instance.decide_unknown",
   "storage.hosted_start",
   "storage.hosted_join",
   "storage.hosted_recover",
   "storage.hosted_pair_start",
   "storage.hosted_pair_wait",
   "storage.hosted_recovery_key",
+  "storage.passkey_add",
+  "storage.passkey_recover",
   "launcher.discover",
   "launcher.describe",
   "instances.list",

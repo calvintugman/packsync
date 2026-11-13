@@ -19,7 +19,7 @@ test("start syncing, play on the laptop, then continue on the desktop", async ({
   // Back on the desktop: "Sync now" brings the progress over.
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Instances" }).click();
   await card(page, "Skyblock Pack").getByRole("button", { name: "Sync now" }).click();
-  await expect(toast(page, /Applied newer progress from the cloud/)).toBeVisible();
+  await expect(toast(page, /Updated from the cloud: worlds/)).toBeVisible();
   expect(world.readInstanceFile("Skyblock Pack", STATS)).toBe('{"day": 42}');
 
   // The history shows who saved what.

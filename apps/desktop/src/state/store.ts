@@ -238,7 +238,14 @@ export class AppStore {
     switch (ev.type) {
       case "progress": {
         const { type: _t, ...p } = ev;
+        const before = p.job ? this.state.progress[p.job]?.phase : undefined;
         if (p.job) this.set((s) => ({ progress: { ...s.progress, [p.job as string]: p } }));
+        // a job moving on (saved → uploading → published) changes what the instance shows: re-read it now
+        // instead of when the job ends, so a long upload is not shown as "ready" meanwhile
+        if (p.instance && before !== undefined && before !== p.phase) {
+          this.bump(p.instance);
+          this.scheduleRefresh();
+        }
         break;
       }
       case "job": {

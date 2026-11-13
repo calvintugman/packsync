@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LaunchOutcome, ReconcileReport, SyncResult } from "../api/types";
-import { describeLaunch, describeReconcile, describeSync, describeUpload } from "./describe";
+import { describeLaunch, describeReconcile, describeSync, describeUpload, describeCatchUp } from "./describe";
 
 const head = "aa".repeat(32);
 
@@ -59,5 +59,32 @@ describe("describeUpload and describeLaunch", () => {
     expect(describeLaunch({ ...base, end }).text).toBe("Session saved and uploaded.");
     expect(describeLaunch({ ...base, end: { ...end, uploaded: false, upload_error: "offline" } }).tone).toBe("warn");
     expect(describeLaunch({ ...base, game_started: false }).tone).toBe("warn");
+  });
+});
+
+describe("describeCatchUp", () => {
+  const none = { mods_added: [], mods_removed: [], mods_updated: [], config_files: 0, world_files: 0, other_files: 0, pack_versions: null };
+  it("says what a modpack update brought, in the person's terms", () => {
+    expect(
+      describeCatchUp({
+        files_written: 40,
+        files_deleted: 2,
+        changes: {
+          ...none,
+          mods_updated: ["jei-1.20.1-15.2.0.jar", "create-0.5.2.jar", "ae2-15.1.jar", "botania-450.jar"],
+          mods_added: ["sodium-0.5.jar"],
+          mods_removed: ["old.jar"],
+          config_files: 12,
+          world_files: 30,
+          pack_versions: ["Minecraft 1.20.1 · Forge 47.4.0", "Minecraft 1.20.1 · Forge 47.4.16"],
+        },
+      }),
+    ).toBe(
+      "Updated from the cloud: Minecraft 1.20.1 · Forge 47.4.0 → Minecraft 1.20.1 · Forge 47.4.16; 4 mods updated (jei-1.20.1-15.2.0, create-0.5.2, ae2-15.1, …), 1 added (sodium-0.5), 1 removed; worlds and 12 configs.",
+    );
+  });
+  it("keeps it short for a play session, and falls back without details", () => {
+    expect(describeCatchUp({ files_written: 30, files_deleted: 0, changes: { ...none, world_files: 30 } })).toBe("Updated from the cloud: worlds.");
+    expect(describeCatchUp({ files_written: 3, files_deleted: 0 })).toBe("Applied newer progress from the cloud (3 files updated).");
   });
 });

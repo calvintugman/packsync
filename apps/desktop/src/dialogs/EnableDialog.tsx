@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import type { InstanceId, PreviewReport } from "../api/types";
 import { JobBar } from "../components/JobBar";
 import { PreviewView } from "../components/PreviewView";
+import { asDecisions, proposals, UnknownChoices } from "../components/UnknownChoices";
+import type { Choices } from "../components/UnknownChoices";
 import { describeError } from "../api/errors";
 import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Checkbox, TextArea } from "../ui/controls";
@@ -25,15 +27,17 @@ export function EnableDialog({
   const [showRules, setShowRules] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [withHooks, setWithHooks] = useState(true);
+  const [choices, setChoices] = useState<Choices>({});
 
   const load = useAction(async (overrides: string) => {
     const r = await store.runJob("instances.preview", { root, launcher: "prism", rules_overrides: overrides }, { onStart: setJobId });
     setPreview(r);
+    setChoices((c) => ({ ...proposals(r.suggestions), ...c }));
   });
   const enable = useAction(async () => {
     const res = await store.runJob(
       "instances.enable",
-      { path: root, launcher: "prism", rules_overrides: rules, upload: Boolean(storage?.connected) },
+      { path: root, launcher: "prism", rules_overrides: rules, decisions: asDecisions(choices), upload: Boolean(storage?.connected) },
       { onStart: setJobId },
     );
     if (res.upload_error) {
@@ -98,6 +102,7 @@ export function EnableDialog({
       {load.error ? <ErrorNote error={load.error} /> : null}
       {enable.error ? <ErrorNote error={enable.error} /> : null}
       {preview ? <PreviewView report={preview} /> : null}
+      {preview ? <UnknownChoices suggestions={preview.suggestions} value={choices} onChange={setChoices} /> : null}
       {preview ? (
         <Checkbox
           checked={withHooks}

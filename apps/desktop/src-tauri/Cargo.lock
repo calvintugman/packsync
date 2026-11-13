@@ -3119,6 +3119,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "spake2",
+ "tiny_http",
  "tracing",
  "ureq",
 ]

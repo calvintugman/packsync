@@ -81,9 +81,9 @@ export class World {
   }
 }
 
-async function startWorld(connected: boolean): Promise<World> {
+async function startWorld(connected: boolean, hosted = false): Promise<World> {
   const dir = mkdtempSync(join(tmpdir(), "packsync-e2e-"));
-  const args = ["--dir", dir, "--ui-dir", DIST, "--cli", CLI_BIN, ...(connected ? ["--connected"] : [])];
+  const args = ["--dir", dir, "--ui-dir", DIST, "--cli", CLI_BIN, ...(connected ? ["--connected"] : []), ...(hosted ? ["--hosted"] : [])];
   const child = spawn(E2E_BIN, args, {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, PACKSYNC_LAUNCH_POLL_MS: "100" },
@@ -114,12 +114,15 @@ interface Fixtures {
   world: World;
   /** Start with the desktop already connected to the shared cloud folder. */
   connected: boolean;
+  /** With `connected`: both computers use the (stand-in) PackSync cloud instead of a shared folder. */
+  hosted: boolean;
 }
 
 export const test = base.extend<Fixtures>({
   connected: [false, { option: true }],
-  world: async ({ connected }, use) => {
-    const w = await startWorld(connected);
+  hosted: [false, { option: true }],
+  world: async ({ connected, hosted }, use) => {
+    const w = await startWorld(connected, hosted);
     try {
       await use(w);
     } finally {
@@ -133,7 +136,7 @@ export { expect };
 /** Open the app the way a person would: the printed address, token included. */
 export async function openApp(page: Page, world: World, hash = ""): Promise<void> {
   await page.goto(world.url);
-  await expect(page.getByRole("navigation", { name: "Main" }).or(page.getByRole("heading", { name: /Continue your modpack/ }))).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Main" }).or(page.getByRole("heading", { name: /Your modpacks, on every computer/ }))).toBeVisible();
   if (hash) await page.evaluate((h) => (window.location.hash = h), hash);
 }
 

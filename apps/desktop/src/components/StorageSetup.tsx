@@ -7,18 +7,20 @@ import { HostedSetup } from "./HostedSetup";
 import { JobBar } from "./JobBar";
 import { PathField } from "./PathField";
 
-type Mode = "cloud" | "google" | "folder";
+type Mode = "cloud" | "google";
 type Space = "visible_folder" | "app_data";
 
-/** Choose where the worlds live: the PackSync cloud (recommended), the user's own Google Drive, or a folder. */
+/**
+ * Choose where the worlds live: the PackSync cloud (nothing to set up), or — for people who prefer their
+ * own account — Google Drive. A folder, R2 and the rest remain in the command-line tool.
+ */
 export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus) => void }) {
   const store = useStore();
   const storage = useAppState((s) => s.storage);
   const settings = useAppState((s) => s.settings);
   const info = useAppState((s) => s.info);
-  const [mode, setMode] = useState<Mode>(storage?.kind === "local" ? "folder" : storage?.kind === "google" ? "google" : "cloud");
+  const [mode, setMode] = useState<Mode>(storage?.kind === "google" ? "google" : "cloud");
   const [space, setSpace] = useState<Space>(storage?.space === "app_data" ? "app_data" : "visible_folder");
-  const [folder, setFolder] = useState(settings?.storage.kind === "local" ? settings.storage.path : "");
   const [clientFile, setClientFile] = useState(settings?.google_client_file ?? "");
   const [needsClient, setNeedsClient] = useState(false);
   const [google, setGoogle] = useState<StorageStatus | null>(null);
@@ -44,34 +46,25 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
     if (r.storage_problem) throw new Error(r.storage_problem);
     await signIn.run();
   });
-  const useFolder = useAction(async () => {
-    const status = await store.call("storage.use_local", { path: folder.trim() });
-    await store.refreshSettings();
-    await store.refreshStorage();
-    store.toast("success", "Using that folder as the cloud.");
-    onConnected?.(status);
-  });
 
-  const connected = storage?.connected && ((mode === "google" && storage.kind === "google") || (mode === "folder" && storage.kind === "local"));
+  const connected = storage?.connected && mode === "google" && storage.kind === "google";
 
   return (
     <div className="col gap-lg">
-      <fieldset className="col" style={{ border: 0, padding: 0, margin: 0 }}>
-        <legend className="sr-only">Where should your worlds live?</legend>
-        <Choice name="storage-mode" value="cloud" selected={mode === "cloud"} onSelect={() => setMode("cloud")} title="PackSync cloud (recommended)">
-          Nothing to set up. End-to-end encrypted: only your computers can read your worlds.
-        </Choice>
-        <Choice name="storage-mode" value="google" selected={mode === "google"} onSelect={() => setMode("google")} title="Your own Google Drive (advanced)">
-          Stored in <strong>your own</strong> Drive. Needs a Google OAuth client that you create yourself (about ten minutes).
-        </Choice>
-        <Choice name="storage-mode" value="folder" selected={mode === "folder"} onSelect={() => setMode("folder")} title="A folder on this computer or network">
-          Useful for a NAS, a folder another sync tool mirrors, or for trying PackSync out.
-        </Choice>
-      </fieldset>
 
       {mode === "cloud" ? (
-        <HostedSetup onConnected={onConnected} />
-      ) : mode === "google" ? (
+        <div className="col gap-lg">
+          <HostedSetup onConnected={onConnected} />
+          {storage?.kind !== "hosted" ? (
+            <p className="faint">
+              Prefer your own account?{" "}
+              <button type="button" className="link-btn" onClick={() => setMode("google")}>
+                Use my own Google Drive instead
+              </button>
+            </p>
+          ) : null}
+        </div>
+      ) : (
         <div className="col">
           <fieldset className="col" style={{ border: 0, padding: 0, margin: 0 }}>
             <legend className="field-label" style={{ marginBottom: 6 }}>
@@ -127,16 +120,11 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
             <Button variant="primary" icon="cloud" busy={signIn.busy} onClick={() => void signIn.run()}>
               {storage?.kind === "google" && storage.connected ? "Sign in again" : "Sign in with Google"}
             </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="col">
-          <PathField label="Folder" value={folder} onChange={setFolder} placeholder="/mnt/nas/packsync" hint="It is created if it does not exist. Use a folder only you can write to." browseTitle="Choose the storage folder" />
-          {useFolder.error ? <ErrorNote error={useFolder.error} /> : null}
-          <div className="row">
-            <Button variant="primary" busy={useFolder.busy} disabled={!folder.trim()} onClick={() => void useFolder.run()}>
-              Use this folder
-            </Button>
+            {storage?.kind !== "google" ? (
+              <button type="button" className="link-btn" onClick={() => setMode("cloud")}>
+                Use the PackSync cloud instead
+              </button>
+            ) : null}
           </div>
         </div>
       )}

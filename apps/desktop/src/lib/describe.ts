@@ -1,4 +1,4 @@
-import type { LaunchOutcome, ReconcileReport, SyncResult, UploadSummary } from "../api/types";
+import type { ChangeSummary, LaunchOutcome, ReconcileReport, SyncResult, UploadSummary } from "../api/types";
 import { formatBytes, plural } from "./format";
 
 export type Outcome = { tone: "ok" | "info" | "warn" | "danger"; text: string };
@@ -21,12 +21,7 @@ export function describeReconcile(r: ReconcileReport): Outcome {
     case "cloud_ahead":
       return { tone: "info", text: "The cloud has newer progress from another computer." };
     case "fast_forwarded":
-      return {
-        tone: "ok",
-        text: `Applied newer progress from the cloud (${plural(r.files_written, "file")} updated${
-          r.files_deleted ? `, ${plural(r.files_deleted, "file")} removed` : ""
-        }).`,
-      };
+      return { tone: "ok", text: describeCatchUp(r) };
     case "conflict":
       return { tone: "danger", text: "This computer and the cloud both changed. Choose which version to keep." };
     case "offline":
@@ -67,4 +62,30 @@ export function describeLaunch(o: LaunchOutcome): Outcome {
     };
   }
   return { tone: "ok", text: "Session saved." };
+}
+
+/** "Updated from the cloud: Forge 47.4.0 → 47.4.16, 3 mods updated (jei, …), 1 added; worlds and 12 configs." */
+export function describeCatchUp(r: { files_written: number; files_deleted: number; changes?: ChangeSummary }): string {
+  const c = r.changes;
+  const fallback = `Applied newer progress from the cloud (${plural(r.files_written, "file")} updated${
+    r.files_deleted ? `, ${plural(r.files_deleted, "file")} removed` : ""
+  }).`;
+  if (!c) return fallback;
+  const parts: string[] = [];
+  if (c.pack_versions) parts.push(`${c.pack_versions[0]} → ${c.pack_versions[1]}`);
+  const named = (list: string[]) => {
+    const names = list.slice(0, 3).map((f) => f.replace(/\.jar(\.disabled)?$/i, ""));
+    return names.join(", ") + (list.length > 3 ? ", …" : "");
+  };
+  const mods: string[] = [];
+  if (c.mods_updated.length) mods.push(`${plural(c.mods_updated.length, "mod")} updated (${named(c.mods_updated)})`);
+  if (c.mods_added.length) mods.push(`${c.mods_added.length} added (${named(c.mods_added)})`);
+  if (c.mods_removed.length) mods.push(`${c.mods_removed.length} removed`);
+  if (mods.length) parts.push(mods.join(", "));
+  const rest: string[] = [];
+  if (c.world_files) rest.push("worlds");
+  if (c.config_files) rest.push(plural(c.config_files, "config"));
+  if (c.other_files) rest.push(plural(c.other_files, "other file"));
+  if (rest.length) parts.push(rest.join(" and "));
+  return parts.length ? `Updated from the cloud: ${parts.join("; ")}.` : fallback;
 }

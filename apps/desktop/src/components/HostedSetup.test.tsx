@@ -69,6 +69,8 @@ describe("HostedSetup", () => {
     release({ joined: true });
     expect(await screen.findByText(/The other computer joined/)).toBeInTheDocument();
     expect(screen.queryByText("4821-K7QM-X2PD")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add a passkey" })).toBeInTheDocument();
+    await u.click(screen.getByRole("button", { name: "Use a recovery key instead" }));
     await u.click(screen.getByRole("button", { name: "Show the recovery key" }));
     expect(await screen.findByDisplayValue("packsync1-SECRET")).toBeInTheDocument();
   });
