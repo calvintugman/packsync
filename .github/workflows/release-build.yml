@@ -49,7 +49,7 @@ jobs:
         run: |
           npm ci
           npm run tauri build -- --config src-tauri/tauri.bundle.conf.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packsync-${{ matrix.os }}-installers-unsigned
           path: apps/desktop/src-tauri/target/release/bundle/
