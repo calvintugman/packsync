@@ -19,3 +19,12 @@ CREATE TABLE IF NOT EXISTS pairings (
   created_ms INTEGER NOT NULL,
   a TEXT, b TEXT, c TEXT, d TEXT
 );
+-- Passkey recovery: the account's credentials and encryption key, sealed with a key only the passkey can
+-- produce (WebAuthn PRF). The service cannot open it; it only hands it to whoever names the passkey.
+CREATE TABLE IF NOT EXISTS passkeys (
+  credential_id TEXT PRIMARY KEY,
+  account TEXT NOT NULL,
+  blob TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_ms INTEGER NOT NULL
+);

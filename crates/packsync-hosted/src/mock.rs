@@ -39,6 +39,8 @@ struct State {
     objects: BTreeMap<String, Object>,
     pairings: HashMap<String, Pairing>,
     next_nameplate: u32,
+    /// credential ID → (account, sealed blob)
+    passkeys: HashMap<String, (String, String)>,
 }
 
 pub struct MockService {
@@ -363,6 +365,29 @@ fn handle(
                         a.used = a.used.saturating_sub(o.data.len() as u64);
                     }
                     json(200, serde_json::json!({ "ok": true }))
+                }
+                _ => err(405, "method", "method not allowed"),
+            }
+        }
+        (_, p) if p.starts_with("/v1/passkeys/") => {
+            let cid = p["/v1/passkeys/".len()..].to_string();
+            match method {
+                "GET" => match st.passkeys.get(&cid) {
+                    Some((_, blob)) => json(200, serde_json::json!({ "blob": blob })),
+                    None => err(404, "not_found", "this passkey is not registered with PackSync"),
+                },
+                "PUT" => {
+                    let id = match authenticate(&st, headers) {
+                        Ok(id) => id,
+                        Err(a) => return a,
+                    };
+                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                    let Some(blob) = v["blob"].as_str() else { return err(400, "bad_blob", "not a sealed blob") };
+                    if st.passkeys.get(&cid).is_some_and(|(a, _)| *a != id) {
+                        return err(409, "taken", "another account's passkey");
+                    }
+                    st.passkeys.insert(cid, (id, blob.to_string()));
+                    json(201, serde_json::json!({ "ok": true }))
                 }
                 _ => err(405, "method", "method not allowed"),
             }

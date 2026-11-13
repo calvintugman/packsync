@@ -1863,6 +1863,7 @@ dependencies = [
  "clap",
  "packsync-app",
  "packsync-core",
+ "packsync-hosted",
  "packsync-prism",
  "parking_lot",
  "serde",

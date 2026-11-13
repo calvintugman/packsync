@@ -23,6 +23,13 @@
 //   PUT    /v1/pairings/<n>/<slot>            slots a, c: the account owner; b, d: the joining app
 //   GET    /v1/pairings/<n>/<slot>            200 body | 202 not written yet | 404 gone
 //   DELETE /v1/pairings/<n>
+//   GET    /passkey                           the passkey page the app opens in the browser
+//   GET    /v1/passkeys                       the account's passkeys [{credential_id, label, created_ms}]
+//   PUT    /v1/passkeys/<id>                  {blob, label}: store the sealed recovery blob of a passkey
+//   GET    /v1/passkeys/<id>                  {blob} — no sign-in: useless without the passkey itself
+//   DELETE /v1/passkeys/<id>
+
+import { PASSKEY_PAGE } from "./passkey-page";
 
 export interface Env {
   BUCKET: R2Bucket;
@@ -159,6 +166,7 @@ async function deleteAccount(acct: Account, env: Env): Promise<Response> {
   await env.DB.batch([
     env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(acct.id),
     env.DB.prepare("DELETE FROM pairings WHERE account = ?1").bind(acct.id),
+    env.DB.prepare("DELETE FROM passkeys WHERE account = ?1").bind(acct.id),
   ]);
   return json({ ok: true });
 }
@@ -369,6 +377,47 @@ async function deletePairing(acct: Account, env: Env, nameplate: string): Promis
   return json({ ok: true });
 }
 
+// ------------------------------------------------------------------------------------- passkeys
+
+const PASSKEY_BLOB_MAX = 4096;
+
+async function passkey(req: Request, env: Env, id: string): Promise<Response> {
+  if (!/^[A-Za-z0-9_-]{16,1400}$/.test(id)) fail(400, "bad_id", "not a passkey ID");
+  if (req.method === "GET") {
+    const row = await env.DB.prepare("SELECT blob FROM passkeys WHERE credential_id = ?1").bind(id).first<{ blob: string }>();
+    if (!row) fail(404, "not_found", "this passkey is not registered with PackSync");
+    return json({ blob: row.blob });
+  }
+  const acct = await authenticate(req, env);
+  if (req.method === "DELETE") {
+    await env.DB.prepare("DELETE FROM passkeys WHERE credential_id = ?1 AND account = ?2").bind(id, acct.id).run();
+    return json({ ok: true });
+  }
+  if (req.method !== "PUT") fail(405, "method", "use GET, PUT or DELETE");
+  const body = (await req.json().catch(() => null)) as { blob?: unknown; label?: unknown } | null;
+  const blob = typeof body?.blob === "string" ? body.blob : "";
+  const label = typeof body?.label === "string" ? body.label.slice(0, 80) : "";
+  if (!/^[A-Za-z0-9_-]{40,}$/.test(blob) || blob.length > PASSKEY_BLOB_MAX) fail(400, "bad_blob", "not a sealed blob");
+  const owner = await env.DB.prepare("SELECT account FROM passkeys WHERE credential_id = ?1").bind(id).first<{ account: string }>();
+  if (owner && owner.account !== acct.id) fail(409, "taken", "this passkey belongs to another account");
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM passkeys WHERE account = ?1").bind(acct.id).first<{ n: number }>();
+  if (!owner && (count?.n ?? 0) >= 10) fail(409, "too_many", "an account can have up to 10 passkeys");
+  await env.DB.prepare(
+    `INSERT INTO passkeys (credential_id, account, blob, label, created_ms) VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT (credential_id) DO UPDATE SET blob = ?3, label = ?4`,
+  )
+    .bind(id, acct.id, blob, label, Date.now())
+    .run();
+  return json({ ok: true }, 201);
+}
+
+async function listPasskeys(acct: Account, env: Env): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT credential_id, label, created_ms FROM passkeys WHERE account = ?1 ORDER BY created_ms")
+    .bind(acct.id)
+    .all();
+  return json(rows.results);
+}
+
 // -------------------------------------------------------------------------------------- routing
 
 async function route(req: Request, env: Env): Promise<Response> {
@@ -379,6 +428,23 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (path === "/" || path === "/v1") {
     return json({ service: "packsync", api: 1 });
   }
+  if (path === "/passkey" && m === "GET") {
+    return new Response(PASSKEY_PAGE, {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        // the page talks only to this computer (the app's loopback address); nothing else may load into it
+        "content-security-policy":
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'none'",
+        "referrer-policy": "no-referrer",
+        "cache-control": "no-store",
+      },
+    });
+  }
+  if (path === "/v1/passkeys" && m === "GET") {
+    return listPasskeys(await authenticate(req, env), env);
+  }
+  const pk = /^\/v1\/passkeys\/([^/]+)$/.exec(path);
+  if (pk) return passkey(req, env, pk[1]);
   if (path === "/v1/accounts") {
     if (m === "POST") return createAccount(req, env);
     if (m === "DELETE") return deleteAccount(await authenticate(req, env), env);

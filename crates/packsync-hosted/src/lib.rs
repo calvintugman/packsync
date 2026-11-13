@@ -14,6 +14,7 @@ pub mod crypto;
 #[cfg(feature = "mock")]
 pub mod mock;
 pub mod pairing;
+pub mod passkey;
 
 use std::sync::Arc;
 

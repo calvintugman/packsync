@@ -142,7 +142,98 @@ fn against_the_real_service_when_running() {
     assert_conformance(&HostedStorage::new(c.account.clone()).unwrap(), opts());
     let (st, hosted) = open_storage(&c).unwrap();
     assert_conformance(&*st, opts());
+    // a passkey's sealed key is stored and handed back by the real service
+    let fresh = create_account(&url, &OpCtx::detached()).unwrap();
+    let (_, h2) = open_storage(&fresh).unwrap();
+    packsync_hosted::passkey::add_passkey(
+        &h2,
+        &fresh,
+        "test",
+        &fake_browser("cred-REALSERVICE00000", [9; 32]),
+        &OpCtx::detached(),
+    )
+    .unwrap();
+    let back = packsync_hosted::passkey::recover_with_passkey(
+        &url,
+        &fake_browser("cred-REALSERVICE00000", [9; 32]),
+        &OpCtx::detached(),
+    )
+    .unwrap();
+    assert_eq!(back.key.as_bytes(), fresh.key.as_bytes());
+    h2.delete_account(&OpCtx::detached()).unwrap();
     hosted.delete_account(&OpCtx::detached()).unwrap();
     pair(&url);
     wrong_code(&url);
+}
+
+/// Plays the passkey page's part: like the browser after the person used their passkey, it posts the
+/// passkey's ID and PRF secret to the one-off address on this computer named in the page's URL.
+fn fake_browser(credential_id: &'static str, secret: [u8; 32]) -> impl Fn(&str) -> std::io::Result<()> {
+    move |url: &str| {
+        use base64::Engine as _;
+        let q = url.split_once('?').unwrap().1;
+        let get = |k: &str| {
+            q.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| {
+                let mut out = String::new();
+                let b = v.as_bytes();
+                let mut i = 0;
+                while i < b.len() {
+                    if b[i] == b'%' {
+                        out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap() as char);
+                        i += 3;
+                    } else {
+                        out.push(b[i] as char);
+                        i += 1;
+                    }
+                }
+                out
+            })
+        };
+        let (cb, state) = (get("cb").unwrap(), get("state").unwrap());
+        let prf = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let body = serde_json::json!({ "state": state, "credential_id": credential_id, "prf": prf }).to_string();
+            let _ = ureq::post(&cb).header("content-type", "application/json").send(body.as_str());
+        });
+        Ok(())
+    }
+}
+
+#[test]
+fn a_passkey_gets_you_back_in_when_every_computer_is_gone() {
+    let m = MockService::start();
+    let ctx = OpCtx::detached();
+    let owner = create_account(m.url(), &ctx).unwrap();
+    let (st, hosted) = open_storage(&owner).unwrap();
+    st.put("instances/x/HEAD.json", PutSource::Bytes(b"{\"v\":2}"), &PutOptions::if_version(None), &ctx).unwrap();
+    packsync_hosted::passkey::add_passkey(
+        &hosted,
+        &owner,
+        "desktop",
+        &fake_browser("cred-AAAAAAAAAAAAAAAA", [42; 32]),
+        &ctx,
+    )
+    .unwrap();
+
+    // a new computer, nothing paired: the passkey alone brings the account and its key back
+    let back =
+        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-AAAAAAAAAAAAAAAA", [42; 32]), &ctx)
+            .unwrap();
+    assert_eq!(back.account.account, owner.account.account);
+    assert_eq!(back.key.as_bytes(), owner.key.as_bytes());
+    let (st2, _) = open_storage(&back).unwrap();
+    assert_eq!(st2.get_bytes("instances/x/HEAD.json", 100, &ctx).unwrap(), b"{\"v\":2}");
+
+    // another passkey (or a forged answer) opens nothing
+    let e =
+        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-AAAAAAAAAAAAAAAA", [1; 32]), &ctx)
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("does not open"), "{e}");
+    let e =
+        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-unknown-0000000", [42; 32]), &ctx)
+            .unwrap_err()
+            .to_string();
+    assert!(e.contains("not registered"), "{e}");
 }
