@@ -354,6 +354,39 @@ impl Engine {
 
     /// Carry out the plan with id `plan_id`. The plan is recomputed from the live cloud first; if it
     /// no longer matches the one that was previewed, nothing happens.
+    /// Before anything is deleted, record the cleanup in every instance's HEAD (compare-and-swap). Other
+    /// computers then forget any cached knowledge of deleted packs, and a fast publication that started
+    /// from the old HEAD does not store its manifest (see `HeadPointer::cleanup`).
+    fn announce_cleanup(&self, ctx: &OpCtx) -> Result<()> {
+        let Some(remote) = self.head_pointer_remote() else { return Ok(()) };
+        let stamp = (crate::db::now_ms().max(0) as u64).max(self.cleanup_seen()? + 1);
+        for inst in remote.list_instances(ctx)? {
+            let mut recorded = false;
+            for _ in 0..5 {
+                let Some((mut p, v)) = remote.get_head_pointer(inst, ctx)? else {
+                    recorded = true;
+                    break;
+                };
+                if p.cleanup >= stamp {
+                    recorded = true;
+                    break;
+                }
+                p.cleanup = stamp;
+                if remote.swap_head_pointer(&p, Some(v), ctx)?.is_some() {
+                    recorded = true;
+                    break;
+                }
+            }
+            if !recorded {
+                return Err(Error::Conflict(format!(
+                    "another computer kept updating instance {inst} during the cleanup; nothing was deleted, try again"
+                )));
+            }
+        }
+        crate::failpoint!("gc.after_announce")?;
+        self.set_cleanup_seen(stamp)
+    }
+
     pub fn gc_run(&self, plan_id: &str, params: &GcParams, ctx: &OpCtx) -> Result<GcReport> {
         let remote = self.remote()?;
         let prepared = self.gc_prepare(params, ctx)?;
@@ -382,6 +415,9 @@ impl Engine {
             rep.consolidated_into = Some(index_key(new_id));
         }
         crate::failpoint!("gc.after_merged_index")?;
+        if !prepared.plan.delete.is_empty() {
+            self.announce_cleanup(ctx)?;
+        }
         // 3. deletions: indexes first, then packs (an index pointing at a missing pack is harmless, the reverse is not)
         crate::failpoint!("gc.before_deletes")?;
         let total = prepared.plan.delete.len() as u64;

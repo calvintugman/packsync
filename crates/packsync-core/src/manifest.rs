@@ -1,4 +1,4 @@
-//! Snapshot manifests (remote format v1, `docs/architecture.md`).
+//! Snapshot manifests (remote format v1).
 //!
 //! A snapshot is an immutable, self-describing record of an instance at one moment: every synced
 //! path with its content hashes, plus identity (instance, device), ancestry (`parents`), the
@@ -75,9 +75,11 @@ impl Entry {
     pub fn is_file(&self) -> bool {
         self.t == EntryType::File
     }
-    /// Content identity used for change detection (everything except timestamps).
+    /// Content identity used for change detection. Timestamps and the executable bit are left out: Windows
+    /// cannot see the bit, and NTFS or exFAT drives mounted on Linux show every file as executable, so
+    /// counting it would make computers re-save and re-download each other's files forever.
     pub fn same_content(&self, o: &Entry) -> bool {
-        self.t == o.t && self.s == o.s && self.h == o.h && self.x == o.x && self.mx == o.mx
+        self.t == o.t && self.s == o.s && self.h == o.h && self.mx == o.mx
     }
 }
 

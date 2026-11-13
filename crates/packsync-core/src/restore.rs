@@ -293,10 +293,7 @@ pub fn plan(
     let mut write_ops = vec![];
     for e in entries.iter().filter(|e| e.is_file()) {
         let same = local.files.get(&e.p).is_some_and(|lf| {
-            lf.content.hash == e.h.unwrap_or(Hash::ZERO)
-                && lf.content.size == e.s
-                && lf.mixed == e.mx
-                && lf.stat.executable == e.x
+            lf.content.hash == e.h.unwrap_or(Hash::ZERO) && lf.content.size == e.s && lf.mixed == e.mx
         });
         if same {
             unchanged += 1;

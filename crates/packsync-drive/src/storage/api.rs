@@ -82,7 +82,7 @@ impl Api {
             // A long pause is the engine's decision, not ours.
             return Err(err.clone());
         }
-        let delay = self.retry.delay(failed, retry_after);
+        let delay = self.retry.delay_for(err, failed, retry_after);
         self.stats().retry();
         let msg = redact(&format!(
             "{what}: {err}; retrying in {:.1}s (attempt {}/{})",
@@ -122,7 +122,7 @@ impl Api {
             }
             match op(attempt) {
                 Ok(v) => return Ok(v),
-                Err(e) if e.is_retryable() && attempt + 1 < self.retry.max_attempts => {
+                Err(e) if self.retry.may_retry(&e, attempt) => {
                     self.backoff(ctx, phase, what, attempt, &e)?;
                     attempt += 1;
                 }

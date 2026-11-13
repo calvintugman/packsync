@@ -226,13 +226,18 @@ impl App {
     ) -> Result<(Option<ReconcileReport>, bool)> {
         let policy = self.settings().hook_offline_policy;
         // the fast path: one read says the cloud is where this computer left it
-        if let Ok(true) = self.engine().cloud_unchanged(id, ctx)
-            && let Some(head) = self.engine().instance(id)?.base_snapshot
-        {
-            return Ok((Some(ReconcileReport::UpToDate { head }), false));
-        }
-        let opts = ReconcileOpts { apply_fast_forward: true, upload_local: false };
-        match self.engine().reconcile(id, opts, ctx) {
+        let first = match self.engine().cloud_unchanged(id, ctx) {
+            Ok(true) if let Some(head) = self.engine().instance(id)?.base_snapshot => {
+                return Ok((Some(ReconcileReport::UpToDate { head }), false));
+            }
+            // that read already found the cloud unreachable: asking again only delays the game
+            Err(e) if is_connectivity_error(&e) => Err(e),
+            _ => {
+                let opts = ReconcileOpts { apply_fast_forward: true, upload_local: false };
+                self.engine().reconcile(id, opts, ctx)
+            }
+        };
+        match first {
             Ok(ReconcileReport::Conflict(c)) => Err(Error::Conflict(format!(
                 "this instance has diverged ({:?}): {} version(s) in the cloud and a different one on this computer. Choose which to continue before playing",
                 c.kind,

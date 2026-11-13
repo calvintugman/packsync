@@ -204,6 +204,7 @@ impl MockS3 {
             max_attempts: 4,
             base: std::time::Duration::from_millis(1),
             max_delay: std::time::Duration::from_millis(5),
+            offline_attempts: 4,
         };
         c
     }

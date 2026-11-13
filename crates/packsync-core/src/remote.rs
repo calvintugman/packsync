@@ -111,6 +111,15 @@ pub struct HeadPointer {
     /// conflict. A version that resolves it (a descendant of all of them) clears the list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forks: Vec<SnapshotId>,
+    /// When (ms) a cleanup last deleted cloud data. A cleanup sets it in every HEAD before deleting
+    /// anything, so a computer whose cache may still list a deleted pack notices, forgets its cache and
+    /// takes the full path, which looks every dependency up.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cleanup: u64,
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }
 
 /// One commit as seen in a listing (before its manifest has been read).
@@ -202,7 +211,7 @@ pub struct HeadRecord {
     pub recent: Vec<RecentCommit>,
 }
 
-/// Advisory "someone is playing" marker. Never relied on for exclusion (see `docs/architecture.md`).
+/// Advisory "someone is playing" marker. Never relied on for exclusion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LeaseRecord {
     pub format: String,

@@ -635,3 +635,59 @@ fn common_restore_req(
         skip_incompatible: false,
     }
 }
+
+/// Windows cannot see the executable bit and NTFS/exFAT drives mounted on Linux show every file as
+/// executable. A bit-only difference must therefore never be a change: no new snapshot, nothing pending,
+/// and no conflict when the other computer moves on.
+#[cfg(unix)]
+#[test]
+fn the_executable_bit_alone_is_never_a_change_or_a_conflict() {
+    use std::os::unix::fs::PermissionsExt;
+    let chmod_all = |root: &std::path::Path, mode: u32| {
+        for e in walkdir::WalkDir::new(root).into_iter().flatten().filter(|e| e.file_type().is_file()) {
+            fs::set_permissions(e.path(), fs::Permissions::from_mode(mode)).unwrap();
+        }
+    };
+    let w = TestWorld::new();
+    let a = w.device("desktop");
+    let (root_a, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+
+    // every file turns executable (the instance now lives on an NTFS drive)
+    chmod_all(&root_a, 0o777);
+    assert!(!a.engine.pending_changes(en.instance, &a.ctx()).unwrap().dirty);
+    let (snap, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(snap.unwrap().result, SnapshotResult::Unchanged { .. }));
+    assert!(matches!(rec, ReconcileReport::UpToDate { .. }), "{rec:?}");
+
+    // the laptop restores, its files are plain; the desktop then really edits one file
+    let b = w.device("laptop");
+    let restored = b
+        .engine
+        .restore_new(
+            RestoreNewRequest {
+                instance: en.instance,
+                snapshot: None,
+                parent_dir: b.instances_dir(),
+                folder_name: "pack".into(),
+                launcher: "generic".into(),
+                launcher_ref: None,
+                local: Default::default(),
+                skip_incompatible: false,
+            },
+            &b.ctx(),
+        )
+        .unwrap();
+    chmod_all(&restored.root, 0o644);
+    fs::write(&info.configs[0], b"changed = true\n").unwrap();
+    let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::LocalAhead { uploaded: true, .. }), "{rec:?}");
+
+    // the laptop just catches up: its different bits are not local edits
+    assert!(!b.engine.pending_changes(en.instance, &b.ctx()).unwrap().dirty);
+    let (snap, rec) = b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    assert!(matches!(snap.unwrap().result, SnapshotResult::Unchanged { .. }));
+    assert!(matches!(rec, ReconcileReport::FastForwarded { .. }), "{rec:?}");
+    let rel = info.configs[0].strip_prefix(&root_a).unwrap();
+    assert_eq!(fs::read(restored.root.join(rel)).unwrap(), b"changed = true\n");
+}

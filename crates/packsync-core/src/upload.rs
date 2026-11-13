@@ -1,4 +1,4 @@
-//! Upload and publish (see `docs/architecture.md`).
+//! Upload and publish.
 //!
 //! Order of operations for one snapshot — every step idempotent, so a crash, restart or retry at
 //! any point is safe and *never* exposes an incomplete snapshot:
@@ -145,7 +145,15 @@ impl Uploader<'_> {
     /// (side by side), then the manifest. The caller then moves the HEAD pointer by compare-and-swap; if
     /// that fails, someone else published meanwhile and the caller takes the full path, which sees both
     /// versions. Returns `None` when this snapshot cannot take the fast path (the caller uses `publish`).
-    pub fn publish_fast(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Option<UploadReport>> {
+    /// `no_cleanup` runs alongside the upload; the manifest is stored only if it reports no cleanup since this
+    /// computer last looked (a cleanup may have deleted data this snapshot relies on).
+    pub fn publish_fast(
+        &self,
+        inst: InstanceId,
+        id: SnapshotId,
+        no_cleanup: &(dyn Fn(&OpCtx) -> Result<bool> + Sync),
+        ctx: &OpCtx,
+    ) -> Result<Option<UploadReport>> {
         let db = self.db;
         let Some(row) = db.snapshot_get(inst, id)? else { return Ok(None) };
         if !matches!(row.state, SnapshotState::LocalComplete) {
@@ -178,13 +186,20 @@ impl Uploader<'_> {
         };
         ctx.mark(format!("fast publish: {} new packs and their index", meta.packs.len()));
         let none = HashMap::new();
-        let (packs_res, index_res) = std::thread::scope(|s| {
+        let (packs_res, index_res, unmoved) = std::thread::scope(|s| {
             let index = (!meta.packs.is_empty())
                 .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), ctx)));
+            let unmoved = s.spawn(|| no_cleanup(ctx));
             let packs = self.upload_packs(id, &meta.packs, &none, &mut report, ctx);
-            (packs, index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+            let index = index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
+            (packs, index, unmoved.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
         });
         let verified = packs_res?;
+        if !unmoved? {
+            // the full path publishes it, looking every dependency up
+            db.snapshot_set_state(inst, id, SnapshotState::LocalComplete)?;
+            return Ok(None);
+        }
         crate::failpoint!("upload.after_packs")?;
         if let Some(index_id) = index_res.transpose()? {
             self.remote.note_uploaded_index(index_id)?;
@@ -416,7 +431,7 @@ impl Uploader<'_> {
     ///
     /// Each lookup is an independent, strongly consistent request. One after another, the few hundred
     /// packs a large instance depends on took about 20 seconds on Google Drive — longer than a small
-    /// upload itself (`docs/benchmarks.md`). With `concurrency` 1 the lookups stay strictly sequential.
+    /// upload itself. With `concurrency` 1 the lookups stay strictly sequential.
     fn stat_packs(&self, ids: &[Hash], ctx: &OpCtx) -> Result<Vec<Option<crate::storage::ObjectInfo>>> {
         const LOOKUPS_IN_FLIGHT: usize = 16;
         let workers = if self.concurrency <= 1 { 1 } else { LOOKUPS_IN_FLIGHT }.min(ids.len());

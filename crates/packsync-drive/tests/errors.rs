@@ -173,7 +173,7 @@ fn dropped_connections_are_retried_then_reported_offline() {
     env.mock.add_fault(FaultRule::new(Endpoint::FilesList, When::Always, Fault::DropConnection));
     let r = env.drive.list("warm/", &ctx());
     assert!(matches!(r, Err(StorageError::Offline(_))), "{r:?}");
-    assert_eq!(env.sleeps().len(), 5);
+    assert_eq!(env.sleeps().len() as u32, RetryPolicy::network().offline_attempts - 1);
     // Nothing listens on port 1: connection refused is Offline as well.
     let mut cfg = env.cfg.clone();
     cfg.endpoints = DriveEndpoints::custom("http://127.0.0.1:1");

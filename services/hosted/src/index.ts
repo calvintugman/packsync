@@ -147,11 +147,12 @@ async function createAccount(req: Request, env: Env): Promise<Response> {
   const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const quota = num(env.ACCOUNT_QUOTA_BYTES, 20 * 2 ** 30);
   const now = Date.now();
-  await env.DB.prepare(
-    "INSERT INTO accounts (id, token_hash, created_ms, last_seen_ms, used, quota) VALUES (?1, ?2, ?3, ?3, 0, ?4)",
-  )
-    .bind(id, await sha256Hex(token), now, quota)
-    .run();
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO accounts (id, token_hash, created_ms, last_seen_ms, used, quota) VALUES (?1, ?2, ?3, ?3, 0, ?4)",
+    ).bind(id, await sha256Hex(token), now, quota),
+    env.DB.prepare("INSERT INTO counted (account) VALUES (?1)").bind(id),
+  ]);
   return json({ account: id, token, quota }, 201);
 }
 
@@ -167,6 +168,8 @@ async function deleteAccount(acct: Account, env: Env): Promise<Response> {
     env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(acct.id),
     env.DB.prepare("DELETE FROM pairings WHERE account = ?1").bind(acct.id),
     env.DB.prepare("DELETE FROM passkeys WHERE account = ?1").bind(acct.id),
+    env.DB.prepare("DELETE FROM objects WHERE account = ?1").bind(acct.id),
+    env.DB.prepare("DELETE FROM counted WHERE account = ?1").bind(acct.id),
   ]);
   return json({ ok: true });
 }
@@ -244,24 +247,66 @@ async function getObject(req: Request, key: string, acct: Account, env: Env, hea
   return new Response(o.body, { status: 200, headers: { ...objectHeaders(o), "content-length": String(o.size) } });
 }
 
-/** Reserve `delta` bytes of the account's (and the service's) space; negative releases. */
-async function reserve(env: Env, acct: Account, delta: number): Promise<void> {
-  if (delta <= 0) {
-    if (delta < 0) {
-      await env.DB.prepare("UPDATE accounts SET used = MAX(0, used + ?2) WHERE id = ?1").bind(acct.id, delta).run();
-    }
-    return;
+/** Refuse a write of `delta` more bytes that would not fit. `record` keeps the exact count afterwards. */
+async function checkSpace(env: Env, acct: Account, delta: number): Promise<void> {
+  if (delta <= 0) return;
+  if (acct.used + delta > acct.quota) {
+    fail(507, "quota", `this account's space is full (${acct.used} of ${acct.quota} bytes used)`);
   }
   const total = await env.DB.prepare("SELECT COALESCE(SUM(used), 0) AS t FROM accounts").first<{ t: number }>();
   if ((total?.t ?? 0) + delta > num(env.TOTAL_QUOTA_BYTES, 200 * 2 ** 30)) {
     fail(507, "service_full", "the PackSync service is full; ask whoever runs it for more space");
   }
-  const r = await env.DB.prepare("UPDATE accounts SET used = used + ?2 WHERE id = ?1 AND used + ?2 <= quota")
-    .bind(acct.id, delta)
-    .run();
-  if (r.meta.changes === 0) {
-    fail(507, "quota", `this account's space is full (${acct.used} of ${acct.quota} bytes used)`);
+}
+
+/** `key` now holds `size` bytes (`null`: deleted). One transaction moves `used` by exactly the change. */
+async function record(env: Env, acct: Account, key: string, size: number | null): Promise<void> {
+  const old = "COALESCE((SELECT size FROM objects WHERE account = ?1 AND key = ?2), 0)";
+  await env.DB.batch([
+    env.DB.prepare(`UPDATE accounts SET used = MAX(0, used - ${old} + ?3) WHERE id = ?1`).bind(acct.id, key, size ?? 0),
+    size === null
+      ? env.DB.prepare("DELETE FROM objects WHERE account = ?1 AND key = ?2").bind(acct.id, key)
+      : env.DB.prepare(
+          "INSERT INTO objects (account, key, size) VALUES (?1, ?2, ?3) ON CONFLICT (account, key) DO UPDATE SET size = excluded.size",
+        ).bind(acct.id, key, size),
+  ]);
+}
+
+/** Accounts known to be fully in `objects` (per Worker instance; the table is the truth). */
+const COUNTED = new Set<string>();
+
+/** Accounts from before `objects` existed: list the bucket once and recount `used` from it. */
+async function ensureCounted(env: Env, acct: Account): Promise<void> {
+  if (COUNTED.has(acct.id)) return;
+  if (await env.DB.prepare("SELECT 1 AS x FROM counted WHERE account = ?1").bind(acct.id).first()) {
+    COUNTED.add(acct.id);
+    return;
   }
+  const root = `u/${acct.id}/`;
+  let cursor: string | undefined;
+  do {
+    const page = await env.BUCKET.list({ prefix: root, cursor, limit: 1000 });
+    const rows = page.objects.map((o) => [o.key.slice(root.length), o.size] as const);
+    const stmts: D1PreparedStatement[] = [];
+    // D1 binds at most 100 values per statement
+    for (let i = 0; i < rows.length; i += 30) {
+      const chunk = rows.slice(i, i + 30);
+      const values = chunk.map((_, j) => `(?1, ?${2 + 2 * j}, ?${3 + 2 * j})`).join(", ");
+      // OR IGNORE: a row written meanwhile by `record` is newer than this listing
+      stmts.push(env.DB.prepare(`INSERT OR IGNORE INTO objects (account, key, size) VALUES ${values}`).bind(acct.id, ...chunk.flat()));
+    }
+    if (stmts.length > 0) await env.DB.batch(stmts);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE accounts SET used = (SELECT COALESCE(SUM(size), 0) FROM objects WHERE account = ?1) WHERE id = ?1",
+    ).bind(acct.id),
+    env.DB.prepare("INSERT OR IGNORE INTO counted (account) VALUES (?1)").bind(acct.id),
+  ]);
+  const row = await env.DB.prepare("SELECT used FROM accounts WHERE id = ?1").bind(acct.id).first<{ used: number }>();
+  acct.used = row?.used ?? acct.used;
+  COUNTED.add(acct.id);
 }
 
 async function putObject(req: Request, key: string, acct: Account, env: Env): Promise<Response> {
@@ -282,8 +327,8 @@ async function putObject(req: Request, key: string, acct: Account, env: Env): Pr
     return json({ error: "precondition_failed", message: `${key} changed meanwhile` }, 412);
   }
 
-  const delta = len - (existing?.size ?? 0);
-  await reserve(env, acct, delta);
+  await ensureCounted(env, acct);
+  await checkSpace(env, acct, len - (existing?.size ?? 0));
   const onlyIf = new Headers();
   if (ifNone === "*") onlyIf.set("if-none-match", "*");
   if (ifMatch !== null) onlyIf.set("if-match", ifMatch.trim());
@@ -296,25 +341,22 @@ async function putObject(req: Request, key: string, acct: Account, env: Env): Pr
       httpMetadata: { contentType: "application/octet-stream" },
     });
   } catch (e) {
-    await reserve(env, acct, -delta);
     const msg = String(e);
     if (/digest|checksum|sha/i.test(msg)) fail(400, "bad_digest", "the upload was damaged in transit");
     throw e;
   }
   if (!stored) {
-    await reserve(env, acct, -delta);
     return json({ error: "precondition_failed", message: `${key} changed meanwhile` }, 412);
   }
+  await record(env, acct, key, stored.size);
   return json({ etag: stored.etag, size: stored.size, uploaded_ms: stored.uploaded.getTime() }, 200, objectHeaders(stored));
 }
 
 async function deleteObject(key: string, acct: Account, env: Env): Promise<Response> {
   const full = `u/${acct.id}/${key}`;
-  const existing = await env.BUCKET.head(full);
-  if (existing) {
-    await env.BUCKET.delete(full);
-    await reserve(env, acct, -existing.size);
-  }
+  await ensureCounted(env, acct);
+  await env.BUCKET.delete(full);
+  await record(env, acct, key, null);
   return json({ ok: true });
 }
 
@@ -451,6 +493,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   }
   if (path === "/v1/usage" && m === "GET") {
     const a = await authenticate(req, env);
+    await ensureCounted(env, a);
     return json({ used: a.used, quota: a.quota });
   }
   if (path === "/v1/objects" && m === "GET") {

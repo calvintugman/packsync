@@ -473,6 +473,16 @@ pub fn create(
     m.pack = req.pack.clone();
     m.worlds = req.worlds.clone();
     m.fork_of = req.fork_of.clone();
+    if !cfg!(unix) {
+        // this computer cannot see the executable bit: keep what the base recorded
+        if let Some((b, _)) = req.base {
+            for e in entries.iter_mut().filter(|e| e.is_file()) {
+                if let Some(be) = b.entry(&e.p) {
+                    e.x = be.x;
+                }
+            }
+        }
+    }
     m.entries = entries;
     m.finalize()?;
 

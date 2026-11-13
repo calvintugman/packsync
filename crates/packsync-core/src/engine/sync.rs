@@ -23,6 +23,8 @@ const LAST_DISCOVERY: &str = "last_discovery_ms:";
 /// the race to move HEAD and crashed before recording itself as a fork is found within this time.
 const HEAD_TRUST_MS: i64 = 30 * 60 * 1000;
 
+const CLEANUP_SEEN: &str = "cleanup_seen";
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct KnownHead {
     snapshot: SnapshotId,
@@ -317,14 +319,7 @@ impl Engine {
             };
             match base_files.get(c.path.as_str()) {
                 None => added.push(c.path.clone()),
-                Some(be)
-                    if be.h != Some(hash)
-                        || be.s != size
-                        || be.mx != mixed
-                        || (cfg!(unix) && be.x != c.stat.executable) =>
-                {
-                    modified.push(c.path.clone())
-                }
+                Some(be) if be.h != Some(hash) || be.s != size || be.mx != mixed => modified.push(c.path.clone()),
                 Some(_) => {}
             }
         }
@@ -836,7 +831,7 @@ impl Engine {
     }
 
     /// Storage with atomic compare-and-swap (R2/S3): only there is a HEAD pointer kept.
-    fn head_pointer_remote(&self) -> Option<crate::remote::Remote> {
+    pub(crate) fn head_pointer_remote(&self) -> Option<crate::remote::Remote> {
         self.remote().ok().filter(|r| r.storage.capabilities().conditional_write)
     }
 
@@ -859,7 +854,30 @@ impl Engine {
             updated: crate::manifest::now_rfc3339(),
             indexes,
             forks: vec![],
+            cleanup: self.cleanup_seen().unwrap_or(0),
         }
+    }
+
+    /// The latest cleanup this computer knows of (see [`HeadPointer::cleanup`]).
+    pub(crate) fn cleanup_seen(&self) -> Result<u64> {
+        Ok(self.db.meta_get(CLEANUP_SEEN)?.and_then(|v| v.parse().ok()).unwrap_or(0))
+    }
+
+    /// A HEAD that reports a cleanup this computer has not seen: the cache of what the cloud holds may
+    /// list deleted packs, so forget it. Returns `true` then, and the caller must not trust the fast path.
+    pub(crate) fn set_cleanup_seen(&self, stamp: u64) -> Result<()> {
+        self.db.meta_set(CLEANUP_SEEN, &stamp.to_string())
+    }
+
+    pub(crate) fn note_cleanup(&self, p: &HeadPointer) -> Result<bool> {
+        if p.cleanup <= self.cleanup_seen()? {
+            return Ok(false);
+        }
+        // as after any loss of cloud data: no fast path until a deep check has looked everything up
+        self.db.remote_cache_clear()?;
+        self.db.mark_cloud_data_lost()?;
+        self.db.meta_set(CLEANUP_SEEN, &p.cleanup.to_string())?;
+        Ok(true)
     }
 
     /// The fast path of `sync` (see [`HeadPointer`]): when this computer's last known HEAD is still the
@@ -886,7 +904,9 @@ impl Engine {
                 }
                 ctx.mark("fast path: read HEAD");
                 match remote.get_head_pointer(id, ctx) {
-                    Ok(Some((p, v))) if p.snapshot == *base && self.head_trusted(id, &p)? => {
+                    Ok(Some((p, v)))
+                        if !self.note_cleanup(&p)? && p.snapshot == *base && self.head_trusted(id, &p)? =>
+                    {
                         self.set_known_head(id, Some(&KnownHead { snapshot: *base, version: v }))?;
                         Ok(Some((ReconcileReport::UpToDate { head: *base }, None)))
                     }
@@ -918,7 +938,15 @@ impl Engine {
                     device: self.device(),
                     concurrency: self.cfg.upload_concurrency,
                 };
-                let report = match up.publish_fast(id, *sid, ctx) {
+                // read in parallel with the upload: a cleanup elsewhere records itself in HEAD before it
+                // deletes anything, and this save may rely on data it deleted
+                let no_cleanup = |ctx: &OpCtx| -> Result<bool> {
+                    Ok(match remote.get_head_pointer(id, ctx)? {
+                        Some((p, _)) => !self.note_cleanup(&p)?,
+                        None => true,
+                    })
+                };
+                let report = match up.publish_fast(id, *sid, &no_cleanup, ctx) {
                     Ok(Some(r)) => Some(r),
                     Ok(None) => return Ok(None),
                     Err(e) if is_offline(&e) => {
@@ -985,7 +1013,7 @@ impl Engine {
         self.guard_provider(&inst)?;
         ctx.mark("read HEAD");
         match remote.get_head_pointer(id, ctx)? {
-            Some((p, v)) if p.snapshot == known.snapshot && self.head_trusted(id, &p)? => {
+            Some((p, v)) if !self.note_cleanup(&p)? && p.snapshot == known.snapshot && self.head_trusted(id, &p)? => {
                 self.set_known_head(id, Some(&KnownHead { snapshot: known.snapshot, version: v }))?;
                 Ok(true)
             }
@@ -1042,23 +1070,35 @@ impl Engine {
         let inst = self.instance(id)?;
         let Some(base) = inst.base_snapshot else { return Ok(()) };
         let published = self.db.snapshot_get(id, base)?.is_some_and(|r| {
-            matches!(r.state, SnapshotState::Published | SnapshotState::Visible | SnapshotState::Remote)
+            r.kind == crate::manifest::SnapshotKind::Normal
+                && matches!(r.state, SnapshotState::Published | SnapshotState::Visible | SnapshotState::Remote)
         });
-        if !published {
+        // never a crash save, nor while one waits for a decision
+        if !published || inst.state != InstanceState::Ok {
             return self.set_known_head(id, None);
         }
         ctx.mark("HEAD pointer");
         let g = Graph::load(&self.db, id)?;
         let descends = |a: SnapshotId, b: SnapshotId| g.is_ancestor(a, b) == crate::graph::Relation::Yes;
-        let known = match remote.get_head_pointer(id, ctx)? {
+        // a recent full look found this version to be the only one in the cloud: HEAD may be re-anchored on it
+        // whatever it says (it can name a discarded crash save, or carry forks that are all resolved)
+        let single_head =
+            g.first_unknown_cloud_node().is_none() && g.cloud_heads() == [base] && self.discovery_recent(id)?;
+        let head = remote.get_head_pointer(id, ctx)?;
+        if let Some((p, _)) = &head {
+            self.note_cleanup(p)?;
+        }
+        let known = match head {
             // trusted only without recorded forks
-            Some((p, v)) if p.snapshot == base => {
-                p.forks.is_empty().then_some(KnownHead { snapshot: base, version: v })
-            }
-            Some((p, v)) if descends(p.snapshot, base) => {
-                // moving HEAD forward; a fork this version descends from is resolved by it
-                let mut np = self.new_head_pointer(id, base, Some(p.snapshot), vec![]);
-                np.forks = p.forks.iter().copied().filter(|f| *f != base && !descends(*f, base)).collect();
+            Some((p, v)) if p.snapshot == base && p.forks.is_empty() => Some(KnownHead { snapshot: base, version: v }),
+            Some((p, _)) if p.snapshot == base && !single_head => None,
+            Some((p, v)) if descends(p.snapshot, base) || single_head => {
+                // moving HEAD forward (or re-anchoring it); a fork this version descends from is resolved by it
+                let parent = if p.snapshot == base { p.parent } else { Some(p.snapshot) };
+                let mut np = self.new_head_pointer(id, base, parent, vec![]);
+                np.cleanup = np.cleanup.max(p.cleanup);
+                np.forks =
+                    p.forks.iter().copied().filter(|f| !single_head && *f != base && !descends(*f, base)).collect();
                 let unresolved = !np.forks.is_empty();
                 remote
                     .swap_head_pointer(&np, Some(v), ctx)?

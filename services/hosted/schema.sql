@@ -28,3 +28,13 @@ CREATE TABLE IF NOT EXISTS passkeys (
   label TEXT NOT NULL,
   created_ms INTEGER NOT NULL
 );
+-- The size of every stored object. Space is charged and released from this, in one transaction per
+-- change, so overlapping writes or deletes of the same object never count it twice.
+CREATE TABLE IF NOT EXISTS objects (
+  account TEXT NOT NULL,
+  key TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  PRIMARY KEY (account, key)
+);
+-- Accounts whose objects are all in `objects` (older accounts are counted from the bucket once).
+CREATE TABLE IF NOT EXISTS counted (account TEXT PRIMARY KEY);
