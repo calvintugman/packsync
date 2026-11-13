@@ -22,7 +22,23 @@ fn rfc3339_from_ms(ms: i64) -> String {
         .unwrap_or_else(now_rfc3339)
 }
 
+/// How long leases read ahead of a launch stand in for a fresh read.
+const LEASES_READ_AHEAD_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+
 impl Engine {
+    /// Read who is playing `id` elsewhere now, for the next [`Engine::begin_session`]: a launch does this
+    /// while it checks the cloud, instead of after. Best effort: without an answer the session start reads.
+    pub fn prefetch_leases(&self, id: InstanceId, ctx: &OpCtx) {
+        if !self.has_storage() {
+            return;
+        }
+        if let Ok(remote) = self.remote()
+            && let Ok(leases) = remote.list_leases(id, ctx)
+        {
+            self.lease_cache.lock().insert(id, (std::time::Instant::now(), leases));
+        }
+    }
+
     /// Register the start of a play session. Idempotent per token. Returns advisory warnings about
     /// other devices; **never blocks** on them.
     pub fn begin_session(&self, id: InstanceId, req: BeginSession, ctx: &OpCtx) -> Result<SessionBegun> {
@@ -45,7 +61,8 @@ impl Engine {
             && let Ok(remote) = self.remote()
         {
             let now = time::OffsetDateTime::now_utc();
-            if let Ok(leases) = remote.list_leases(id, ctx) {
+            let ahead = self.lease_cache.lock().remove(&id).filter(|(t, _)| t.elapsed() < LEASES_READ_AHEAD_FOR);
+            if let Ok(leases) = ahead.map(|(_, l)| Ok(l)).unwrap_or_else(|| remote.list_leases(id, ctx)) {
                 playing = leases
                     .iter()
                     .filter(|l| l.device_id != self.device().0 && !l.is_stale(now))

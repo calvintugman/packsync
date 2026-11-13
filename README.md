@@ -29,7 +29,7 @@ installed, pressing Play downloads the newest version and closing the game uploa
   client, pairing uses SPAKE2 so the server never learns the code, and passkey recovery uses WebAuthn PRF.
 - With a 5.4 GB GregTech: New Horizons pack on Cloudflare R2, the check at game launch takes 0.5 s, a sync
   with nothing changed 0.7–0.9 s, and a sync after a scripted world edit 3.4–3.8 s.
-- There are 453 Rust tests, 133 UI tests and 38 Playwright end-to-end tests. They cover crashes at every write,
+- There are 455 Rust tests, 133 UI tests and 38 Playwright end-to-end tests. They cover crashes at every write,
   corrupt or malicious cloud data, network failures, and a conformance suite that every storage backend runs.
 
 ## Install

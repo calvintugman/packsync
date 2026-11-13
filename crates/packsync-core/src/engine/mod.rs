@@ -67,6 +67,9 @@ impl EngineConfig {
     }
 }
 
+/// How many decoded manifests [`Engine::manifest_shared`] keeps.
+const DECODED_MANIFESTS: usize = 4;
+
 pub struct Engine {
     pub cfg: EngineConfig,
     pub(crate) db: Arc<Db>,
@@ -77,6 +80,9 @@ pub struct Engine {
     /// Session start and end leave the advisory lease to a background process (launch hooks: a cloud
     /// write costs ~1 s on R2, and the person waits for the hook).
     defer_leases: std::sync::atomic::AtomicBool,
+    /// Leases read ahead of a session start ([`Engine::prefetch_leases`]), with when they were read.
+    manifests: parking_lot::Mutex<Vec<(SnapshotId, Arc<Manifest>)>>,
+    lease_cache: parking_lot::Mutex<HashMap<InstanceId, (std::time::Instant, Vec<crate::remote::LeaseRecord>)>>,
 }
 
 impl Engine {
@@ -102,6 +108,8 @@ impl Engine {
             launchers: RwLock::new(HashMap::new()),
             sleeper,
             defer_leases: std::sync::atomic::AtomicBool::new(false),
+            manifests: Default::default(),
+            lease_cache: Default::default(),
         };
         e.register_launcher(Arc::new(GenericLauncher));
         Ok(Arc::new(e))
@@ -244,6 +252,29 @@ impl Engine {
 
     /// A verified manifest, from the local cache or the cloud (then cached and recorded).
     pub fn manifest(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Manifest> {
+        Ok((*self.manifest_shared(inst, id, ctx)?).clone())
+    }
+
+    /// [`Self::manifest`] without a copy. The last few stay decoded: one sync reads its base several
+    /// times (rules, the save, the change check), and decoding a large modpack's costs tens of ms.
+    /// A manifest never changes (its ID is its hash), so a decoded one stays valid; it is used only while
+    /// the copy on disk it was decoded from is still there (that copy is what is cached).
+    pub fn manifest_shared(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Arc<Manifest>> {
+        let cached = self.manifests.lock().iter().find(|(i, _)| *i == id).map(|(_, m)| m.clone());
+        if let Some(m) = cached
+            && manifest_path(&self.cfg.state_dir, id).is_file()
+        {
+            return Ok(m);
+        }
+        let m = Arc::new(self.load_manifest(inst, id, ctx)?);
+        let mut cache = self.manifests.lock();
+        cache.retain(|(i, _)| *i != id);
+        cache.insert(0, (id, m.clone()));
+        cache.truncate(DECODED_MANIFESTS);
+        Ok(m)
+    }
+
+    fn load_manifest(&self, inst: InstanceId, id: SnapshotId, ctx: &OpCtx) -> Result<Manifest> {
         let path = manifest_path(&self.cfg.state_dir, id);
         if let Ok(stored) = std::fs::read(&path) {
             if let Ok((m, _)) = Manifest::decode(&stored, Some(id)) {
@@ -317,7 +348,7 @@ impl Engine {
     /// the first snapshot, the rules chosen when syncing was turned on).
     pub(crate) fn rules_for(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<(RuleSet, String)> {
         let text = match (inst.base_snapshot, &inst.pending_rules) {
-            (Some(b), _) => self.manifest(inst.id, b, ctx)?.rules.text,
+            (Some(b), _) => self.manifest_shared(inst.id, b, ctx)?.rules.text.clone(),
             (None, Some(p)) => p.clone(),
             (None, None) => return Err(Error::Config("the instance has no rules yet".into())),
         };
@@ -329,7 +360,7 @@ impl Engine {
     /// The rules the last snapshot carried, without decisions made since: what the other computers follow.
     pub(crate) fn snapshot_rules(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<Option<RuleSet>> {
         inst.base_snapshot
-            .map(|b| RuleSet::compile(&self.manifest(inst.id, b, ctx)?.rules.text, &inst.game_root))
+            .map(|b| RuleSet::compile(&self.manifest_shared(inst.id, b, ctx)?.rules.text, &inst.game_root))
             .transpose()
     }
 

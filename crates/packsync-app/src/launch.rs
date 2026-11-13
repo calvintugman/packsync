@@ -224,6 +224,20 @@ impl App {
         ctx: &OpCtx,
         warnings: &mut Vec<String>,
     ) -> Result<(Option<ReconcileReport>, bool)> {
+        // the session start that follows needs the cloud's leases: read them at the same time
+        let engine = self.engine().clone();
+        std::thread::scope(|s| {
+            s.spawn(|| engine.prefetch_leases(id, ctx));
+            self.pre_launch_check(id, ctx, warnings)
+        })
+    }
+
+    fn pre_launch_check(
+        &self,
+        id: InstanceId,
+        ctx: &OpCtx,
+        warnings: &mut Vec<String>,
+    ) -> Result<(Option<ReconcileReport>, bool)> {
         let policy = self.settings().hook_offline_policy;
         // the fast path: one read says the cloud is where this computer left it
         let first = match self.engine().cloud_unchanged(id, ctx) {

@@ -37,6 +37,15 @@ pub fn stat_nofollow(path: &Path) -> io::Result<FileStat> {
 
 /// Convert already-fetched (non-following) metadata, e.g. from `DirEntry::metadata`.
 pub fn stat_from_md(path: &Path, md: &fs::Metadata) -> FileStat {
+    let mut st = quick_stat(md);
+    complete_stat(path, &mut st);
+    st
+}
+
+/// What the directory listing's metadata tells without further system calls. On Windows the change
+/// time and file ID need a handle on the file each: [`complete_stat`] adds them, only for the files
+/// that are synced (and the walk does that for many files side by side).
+pub fn quick_stat(md: &fs::Metadata) -> FileStat {
     let ft = md.file_type();
     let kind = if ft.is_symlink() {
         FileKind::Symlink
@@ -47,15 +56,25 @@ pub fn stat_from_md(path: &Path, md: &fs::Metadata) -> FileStat {
     } else {
         FileKind::Other
     };
-    platform::stat_from_metadata(path, md, kind)
+    platform::quick_stat(md, kind)
 }
+
+/// Add what [`quick_stat`] left out (nothing on Unix, where the metadata already has everything).
+pub fn complete_stat(path: &Path, st: &mut FileStat) {
+    platform::complete_stat(path, st)
+}
+
+/// Whether [`complete_stat`] does any work here (a system call per file).
+pub const COMPLETING_STATS_COSTS: bool = cfg!(windows);
 
 #[cfg(unix)]
 mod platform {
     use super::*;
     use std::os::unix::fs::MetadataExt;
 
-    pub fn stat_from_metadata(_path: &Path, md: &fs::Metadata, kind: FileKind) -> FileStat {
+    pub fn complete_stat(_path: &Path, _st: &mut FileStat) {}
+
+    pub fn quick_stat(md: &fs::Metadata, kind: FileKind) -> FileStat {
         FileStat {
             kind,
             size: md.len(),
@@ -103,10 +122,16 @@ mod platform {
         (t - WINDOWS_TICKS_TO_UNIX_EPOCH) * 100
     }
 
-    pub fn stat_from_metadata(path: &Path, md: &fs::Metadata, kind: FileKind) -> FileStat {
+    pub fn quick_stat(md: &fs::Metadata, kind: FileKind) -> FileStat {
         let mtime_ns = ticks_to_unix_ns(md.last_write_time() as i64);
-        let (ctime_ns, file_id) = extra(path).unwrap_or((None, None));
-        FileStat { kind, size: md.len(), mtime_ns, ctime_ns, file_id, executable: false }
+        FileStat { kind, size: md.len(), mtime_ns, ctime_ns: None, file_id: None, executable: false }
+    }
+
+    pub fn complete_stat(path: &Path, st: &mut FileStat) {
+        if let Some((ctime_ns, file_id)) = extra(path) {
+            st.ctime_ns = ctime_ns;
+            st.file_id = file_id;
+        }
     }
 
     /// NTFS ChangeTime and volume-serial/file-id via one handle (opened without following reparse points).
@@ -181,7 +206,9 @@ mod platform {
 #[cfg(not(any(unix, windows)))]
 mod platform {
     use super::*;
-    pub fn stat_from_metadata(_path: &Path, md: &fs::Metadata, kind: FileKind) -> FileStat {
+    pub fn complete_stat(_path: &Path, _st: &mut FileStat) {}
+
+    pub fn quick_stat(md: &fs::Metadata, kind: FileKind) -> FileStat {
         let mtime_ns = md
             .modified()
             .ok()

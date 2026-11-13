@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::chunk::{ChunkingConfig, chunk_stream, resolve_strategy};
 use crate::db::IndexRow;
 use crate::error::{Error, Result};
-use crate::fsutil::{FileKind, FileStat, stat_from_md, stat_nofollow};
+use crate::fsutil::{FileKind, FileStat, stat_nofollow};
 use crate::hash::{Hash, Hasher};
 use crate::manifest::Recipe;
 use crate::mixed::{self, MixedPolicy};
@@ -268,8 +268,6 @@ impl WalkResult {
 struct WalkCtx<'a> {
     root: &'a Path,
     rules: &'a RuleSet,
-    index: &'a HashMap<String, IndexRow>,
-    opts: &'a ScanOptions,
     ctx: &'a OpCtx,
     out: WalkResult,
 }
@@ -290,9 +288,15 @@ pub fn walk(
     if !meta.is_dir() {
         return Err(Error::InstanceUnavailable(format!("{} is not a directory", root.display())));
     }
-    let mut w = WalkCtx { root, rules, index, opts, ctx, out: WalkResult::default() };
+    let mut w = WalkCtx { root, rules, ctx, out: WalkResult::default() };
     walk_dir(&mut w, root, "")?;
     let mut out = w.out;
+    complete_stats(root, &mut out.files, opts.threads, ctx)?;
+    for c in &mut out.files {
+        let row = index.get(&c.path);
+        c.reason = classify(&c.path, &c.stat, row, opts);
+        c.reuse = if c.reason == RehashReason::Reuse { row.cloned() } else { None };
+    }
 
     // Portability: names that cannot exist on Windows, and case/Unicode collisions.
     let paths: Vec<(&str, bool)> = out
@@ -322,6 +326,28 @@ pub fn walk(
     out.files.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
     out.empty_dirs.sort();
     Ok(out)
+}
+
+/// The rest of each synced file's metadata (Windows: one handle per file), many files side by side.
+fn complete_stats(root: &Path, files: &mut [Candidate], threads: usize, ctx: &OpCtx) -> Result<()> {
+    if !crate::fsutil::COMPLETING_STATS_COSTS || files.is_empty() {
+        return Ok(());
+    }
+    let per = files.len().div_ceil(threads.clamp(1, 16));
+    std::thread::scope(|s| {
+        for chunk in files.chunks_mut(per) {
+            s.spawn(move || {
+                for c in chunk {
+                    if ctx.is_cancelled() {
+                        return;
+                    }
+                    let abs = root.join(c.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+                    crate::fsutil::complete_stat(&abs, &mut c.stat);
+                }
+            });
+        }
+    });
+    ctx.check()
 }
 
 fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
@@ -372,7 +398,7 @@ fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
                 continue;
             }
         };
-        let stat = stat_from_md(&child_abs, &md);
+        let stat = crate::fsutil::quick_stat(&md);
         match stat.kind {
             FileKind::Dir => {
                 if let Some(d) = w.rules.prune_dir(&child_rel) {
@@ -424,10 +450,14 @@ fn walk_dir(w: &mut WalkCtx<'_>, abs: &Path, rel: &str) -> Result<u64> {
                         format!("more than {MAX_WALK_FILES} files would be synced"),
                     ));
                 }
-                let row = w.index.get(&child_rel);
-                let reason = classify(&child_rel, &stat, row, w.opts);
-                let reuse = if reason == RehashReason::Reuse { row.cloned() } else { None };
-                w.out.files.push(Candidate { path: child_rel, stat, decision: d, reason, reuse });
+                // classified after the walk, once the stat is complete
+                w.out.files.push(Candidate {
+                    path: child_rel,
+                    stat,
+                    decision: d,
+                    reason: RehashReason::New,
+                    reuse: None,
+                });
                 included_below += 1;
             }
             FileKind::Symlink | FileKind::Other => {

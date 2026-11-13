@@ -151,8 +151,10 @@ fn the_launch_hooks_check_the_cloud_in_one_read_and_upload_on_the_fast_path() {
     let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
     a.upload(en.instance); // the first upload also creates the HEAD pointer
     assert!(w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance)).exists());
-    // HEAD is only trusted after a full look at the cloud (the first sync or launch after enabling)
-    assert!(!a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    // HEAD is only trusted after a look at the cloud: without a recent one, a listing is read with it
+    let before = a.meter.snapshot();
+    assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    assert_eq!(a.meter.snapshot().since(&before).lists, 1);
     a.engine.sync_now(en.instance, &a.ctx()).unwrap();
 
     let before = a.meter.snapshot();
@@ -247,6 +249,70 @@ fn an_unrecorded_competing_version_is_found_by_the_periodic_full_look() {
     // 31 minutes later it looks at the listing again and finds the other version
     let old = packsync_core::db::now_ms() - 31 * 60 * 1000;
     a.engine.db().meta_set(&format!("last_discovery_ms:{}", en.instance), &old.to_string()).unwrap();
+    let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    assert!(matches!(rec, ReconcileReport::Conflict(_)), "{rec:?}");
+}
+
+/// After the trust window a listing, read alongside HEAD, stands in for the full look at the cloud when it
+/// shows nothing new: the fast path stays one round trip instead of falling back to the full path.
+#[test]
+fn after_the_trust_window_one_listing_alongside_head_keeps_the_fast_path() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let age = |a: &TestDevice| {
+        let old = packsync_core::db::now_ms() - 31 * 60 * 1000;
+        a.engine.db().meta_set(&format!("last_discovery_ms:{}", en.instance), &old.to_string()).unwrap();
+    };
+
+    age(&a);
+    let before = a.meter.snapshot();
+    let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let d = a.meter.snapshot().since(&before);
+    assert!(matches!(rec, ReconcileReport::UpToDate { .. }), "{rec:?}");
+    assert_eq!(d.lists, 1, "one listing confirms HEAD: {d:?}");
+    assert!(d.requests <= 3, "HEAD and the listing, nothing else: {d:?}");
+    // the listing counts as a full look: the next check needs no listing
+    let before = a.meter.snapshot();
+    assert!(a.engine.cloud_unchanged(en.instance, &a.ctx()).unwrap());
+    assert_eq!(a.meter.snapshot().since(&before).lists, 0);
+
+    age(&a);
+    fs::write(&info.configs[0], b"changed = true\n").unwrap();
+    let before = a.meter.snapshot();
+    let (snap, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let d = a.meter.snapshot().since(&before);
+    let SnapshotResult::Created { id } = snap.unwrap().result else { panic!("a snapshot was expected") };
+    assert!(matches!(rec, ReconcileReport::LocalAhead { uploaded: true, .. }), "{rec:?}");
+    assert_eq!(d.lists, 1, "a publication after the window lists once, alongside the upload: {d:?}");
+    assert_eq!(head_snapshot(&w, en.instance), id.to_hex());
+}
+
+/// The same race as above, but the desktop has a new save of its own when the window has passed: the
+/// listing read alongside its upload shows the laptop's version, so the save is not published over it.
+#[test]
+fn an_unrecorded_competing_version_stops_a_fast_publication_after_the_window() {
+    let w = TestWorld::with_atomic_cas();
+    let a = w.device("desktop");
+    let (_root, info, en) = a.new_instance("pack", &FixtureSpec::tiny());
+    a.upload(en.instance);
+    a.engine.sync_now(en.instance, &a.ctx()).unwrap();
+    let b = w.device("laptop");
+    let rb = restore_on(&b, en.instance);
+    b.engine.sync_now(en.instance, &b.ctx()).unwrap();
+    let rel = info.configs[1].strip_prefix(&info.root).unwrap();
+    fs::write(rb.root.join(rel), b"laptop=1\n").unwrap();
+    let head = w.remote_dir.join(format!("instances/{}/HEAD.json", en.instance));
+    let head_before = fs::read(&head).unwrap();
+    b.engine.snapshot(en.instance, SnapshotOpts::default(), &b.ctx()).unwrap();
+    b.engine.upload_pending(en.instance, true, &b.ctx()).unwrap();
+    fs::write(&head, &head_before).unwrap();
+
+    let old = packsync_core::db::now_ms() - 31 * 60 * 1000;
+    a.engine.db().meta_set(&format!("last_discovery_ms:{}", en.instance), &old.to_string()).unwrap();
+    fs::write(&info.configs[0], b"desktop=1\n").unwrap();
     let (_, rec) = a.engine.sync_now(en.instance, &a.ctx()).unwrap();
     assert!(matches!(rec, ReconcileReport::Conflict(_)), "{rec:?}");
 }

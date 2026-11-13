@@ -52,11 +52,17 @@ impl Engine {
     pub(crate) fn discover(&self, inst: InstanceId, ctx: &OpCtx) -> Result<CloudView> {
         let remote = self.remote()?;
         ctx.phase(Phase::Discovery, "looking at the cloud");
-        ctx.mark("discover: list snapshots");
-        let listing = remote.list_commits(inst, ctx)?;
+        // the three listings are independent: one round trip instead of three (and their records in parallel)
+        ctx.mark("discover: list snapshots, head records and leases");
+        let (listing, head_records, leases) = std::thread::scope(|s| {
+            let heads = s.spawn(|| remote.list_heads(inst, ctx).unwrap_or_default());
+            let leases = s.spawn(|| remote.list_leases(inst, ctx).unwrap_or_default());
+            let listing = remote.list_commits(inst, ctx);
+            let join = |h: std::thread::ScopedJoinHandle<'_, Vec<_>>| h.join().unwrap_or_default();
+            (listing, join(heads), leases.join().unwrap_or_default())
+        });
+        let listing = listing?;
         self.db.meta_set(&format!("{LAST_DISCOVERY}{inst}"), &crate::db::now_ms().to_string())?;
-        ctx.mark("discover: read head records");
-        let head_records = remote.list_heads(inst, ctx).unwrap_or_default();
         ctx.mark("discover: compare");
         let mut recent: HashMap<SnapshotId, crate::remote::RecentCommit> = HashMap::new();
         for h in &head_records {
@@ -171,7 +177,6 @@ impl Engine {
             }
         }
         let graph = Graph::load(&self.db, inst)?;
-        let leases = remote.list_leases(inst, ctx).unwrap_or_default();
         Ok(CloudView { heads: graph.cloud_heads(), crash_saves: graph.cloud_crash_saves(), leases })
     }
 
@@ -242,7 +247,7 @@ impl Engine {
         let Some(base) = inst.base_snapshot else { return Ok(pending) };
         let launcher = self.launcher(&inst.launcher);
         let check = || -> Result<bool> {
-            let manifest = self.manifest(inst.id, base, ctx)?;
+            let manifest = self.manifest_shared(inst.id, base, ctx)?;
             let remote = self.remote()?;
             for path in &pending.modified {
                 let Some(e) = manifest.entries.iter().find(|e| e.p == *path && e.is_file()) else { return Ok(false) };
@@ -277,14 +282,14 @@ impl Engine {
         let inst = self.instance(id)?;
         self.check_marker(&inst)?;
         let (rules, _) = self.rules_for(&inst, ctx)?;
-        let base = inst.base_snapshot.map(|b| self.manifest(id, b, ctx)).transpose()?;
+        let base = inst.base_snapshot.map(|b| self.manifest_shared(id, b, ctx)).transpose()?;
         let index = if inst.needs_full_scan { HashMap::new() } else { self.db.index_load(id)? };
         let mut opts = self.cfg.snapshot.scan.now();
         if inst.needs_full_scan {
             opts.mode = ScanMode::Full;
         }
         let w = walk(&inst.root, &rules, &index, &opts, ctx)?;
-        snapshot::symlink_guard(&w.issues, base.as_ref())?;
+        snapshot::symlink_guard(&w.issues, base.as_deref())?;
         if !w.unreadable_dirs.is_empty() {
             return Err(Error::InstanceUnavailable(format!(
                 "{} could not be read; its content is unknown, so no changes can be computed",
@@ -384,7 +389,7 @@ impl Engine {
         let ctx = &ctx.clone().with_instance(inst.id);
         ctx.mark("snapshot: read the rules and the base manifest");
         let (rules, rules_text) = self.rules_for(inst, ctx)?;
-        let base = inst.base_snapshot.map(|b| self.manifest(inst.id, b, ctx).map(|m| (m, b))).transpose()?;
+        let base = inst.base_snapshot.map(|b| self.manifest_shared(inst.id, b, ctx).map(|m| (m, b))).transpose()?;
         let launcher = self.launcher(&inst.launcher);
         let desc = launcher.describe(&inst.root).ok();
         let game_dir = if inst.game_root.is_empty() { inst.root.clone() } else { inst.root.join(&inst.game_root) };
@@ -399,7 +404,7 @@ impl Engine {
             rules: &rules,
             rules_text: &rules_text,
             policies: &policies,
-            base: base.as_ref().map(|(m, id)| (m, *id)),
+            base: base.as_ref().map(|(m, id)| (&**m, *id)),
             parents: inst.base_snapshot.into_iter().collect(),
             kind: opts.kind,
             session: opts.session.clone(),
@@ -734,7 +739,7 @@ impl Engine {
         )?;
         self.db.instance_update(inst.id, |r| r.last_synced_ms = Some(crate::db::now_ms()))?;
         ctx.note(Phase::Reconcile, Level::Info, format!("updated to snapshot {} from the cloud", to.short()));
-        let changes = match fresh.base_snapshot.map(|b| self.manifest(inst.id, b, ctx)) {
+        let changes = match fresh.base_snapshot.map(|b| self.manifest_shared(inst.id, b, ctx)) {
             Some(Ok(before)) => crate::manifest::change_summary(&before, &target, &fresh.game_root),
             _ => Default::default(),
         };
@@ -800,11 +805,56 @@ impl Engine {
         }
     }
 
-    /// May this computer act on HEAD alone? Not while a fork is recorded in it, and not when its last full
-    /// look at the cloud is older than [`HEAD_TRUST_MS`].
-    fn head_trusted(&self, id: InstanceId, p: &HeadPointer) -> Result<bool> {
-        let last: i64 = self.db.meta_get(&format!("{LAST_DISCOVERY}{id}"))?.and_then(|v| v.parse().ok()).unwrap_or(0);
-        Ok(p.forks.is_empty() && crate::db::now_ms() - last < HEAD_TRUST_MS)
+    /// Read HEAD; when the last full look at the cloud is too old for HEAD alone to be trusted, list the
+    /// snapshots at the same time (no extra wait). Returns the pointer, its version, and whether it may be
+    /// trusted for a snapshot that equals it: no unseen cleanup, no recorded fork, and a recent full look
+    /// or a listing that confirms it ([`Self::listing_confirms`]).
+    fn read_head_checked(
+        &self,
+        id: InstanceId,
+        remote: &crate::remote::Remote,
+        ctx: &OpCtx,
+    ) -> Result<Option<(HeadPointer, String, bool)>> {
+        let stale = !self.discovery_recent(id)?;
+        let (head, listing) = std::thread::scope(|s| {
+            let listing = stale.then(|| s.spawn(|| remote.list_commits(id, ctx)));
+            let head = remote.get_head_pointer(id, ctx);
+            (head, listing.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+        });
+        let Some((p, v)) = head? else { return Ok(None) };
+        let trusted = !self.note_cleanup(&p)?
+            && p.forks.is_empty()
+            && match listing {
+                None => true,
+                Some(Ok(l)) => self.listing_confirms(id, &l, p.snapshot)?,
+                Some(Err(_)) => false,
+            };
+        Ok(Some((p, v, trusted)))
+    }
+
+    /// A listing of the snapshots stands in for a full look at the cloud when it shows nothing this
+    /// computer does not already know and `head` is the cloud's only version: the full look would find
+    /// nothing either (head records and leases only describe snapshots, and those are all known).
+    fn listing_confirms(
+        &self,
+        id: InstanceId,
+        listing: &[crate::remote::CommitListing],
+        head: SnapshotId,
+    ) -> Result<bool> {
+        if !listing.iter().any(|c| c.id == head) {
+            return Ok(false);
+        }
+        for c in listing {
+            if !self.db.snapshot_get(id, c.id)?.is_some_and(|r| r.state.is_in_cloud()) {
+                return Ok(false);
+            }
+        }
+        let g = Graph::load(&self.db, id)?;
+        if g.first_unknown_cloud_node().is_some() || g.cloud_heads() != [head] {
+            return Ok(false);
+        }
+        self.db.meta_set(&format!("{LAST_DISCOVERY}{id}"), &crate::db::now_ms().to_string())?;
+        Ok(true)
     }
 
     fn discovery_recent(&self, id: InstanceId) -> Result<bool> {
@@ -903,10 +953,8 @@ impl Engine {
                     return Ok(None);
                 }
                 ctx.mark("fast path: read HEAD");
-                match remote.get_head_pointer(id, ctx) {
-                    Ok(Some((p, v)))
-                        if !self.note_cleanup(&p)? && p.snapshot == *base && self.head_trusted(id, &p)? =>
-                    {
+                match self.read_head_checked(id, &remote, ctx) {
+                    Ok(Some((p, v, true))) if p.snapshot == *base => {
                         self.set_known_head(id, Some(&KnownHead { snapshot: *base, version: v }))?;
                         Ok(Some((ReconcileReport::UpToDate { head: *base }, None)))
                     }
@@ -922,7 +970,6 @@ impl Engine {
                 if graph.unpublished_in_order() != vec![*sid]
                     || graph.get(*sid).map(|n| n.parents.as_slice()) != Some(&[known.snapshot][..])
                     || self.db.full_check_peek(id, crate::upload::FULL_CHECK_EVERY)?
-                    || !self.discovery_recent(id)?
                 {
                     return Ok(None);
                 }
@@ -939,11 +986,23 @@ impl Engine {
                     concurrency: self.cfg.upload_concurrency,
                 };
                 // read in parallel with the upload: a cleanup elsewhere records itself in HEAD before it
-                // deletes anything, and this save may rely on data it deleted
+                // deletes anything, and this save may rely on data it deleted. Without a recent full look at
+                // the cloud, a listing must also show that no version appeared that this computer has not seen.
+                let stale = !self.discovery_recent(id)?;
                 let no_cleanup = |ctx: &OpCtx| -> Result<bool> {
-                    Ok(match remote.get_head_pointer(id, ctx)? {
-                        Some((p, _)) => !self.note_cleanup(&p)?,
+                    let (head, listing) = std::thread::scope(|s| {
+                        let listing = stale.then(|| s.spawn(|| remote.list_commits(id, ctx)));
+                        let head = remote.get_head_pointer(id, ctx);
+                        (head, listing.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+                    });
+                    if let Some((p, _)) = head?
+                        && self.note_cleanup(&p)?
+                    {
+                        return Ok(false);
+                    }
+                    Ok(match listing {
                         None => true,
+                        Some(l) => self.listing_confirms(id, &l?, known.snapshot)?,
                     })
                 };
                 let report = match up.publish_fast(id, *sid, &no_cleanup, ctx) {
@@ -1012,8 +1071,8 @@ impl Engine {
         }
         self.guard_provider(&inst)?;
         ctx.mark("read HEAD");
-        match remote.get_head_pointer(id, ctx)? {
-            Some((p, v)) if !self.note_cleanup(&p)? && p.snapshot == known.snapshot && self.head_trusted(id, &p)? => {
+        match self.read_head_checked(id, &remote, ctx)? {
+            Some((p, v, true)) if p.snapshot == known.snapshot => {
                 self.set_known_head(id, Some(&KnownHead { snapshot: known.snapshot, version: v }))?;
                 Ok(true)
             }

@@ -39,17 +39,24 @@ fn norm(p: &str) -> String {
     if cfg!(windows) { s.to_lowercase() } else { s }
 }
 
-/// Processes (other than `ignore_pids` and ourselves) that appear to be using `root`.
-pub fn find_writers(root: &Path, extra_patterns: &[String], ignore_pids: &[u32]) -> Vec<Writer> {
-    let sys = System::new_with_specifics(
+/// The process table. Threads are left out: on Linux each one is listed as a process of its own (a
+/// running game has hundreds), and reading their command lines and folders was most of the cost.
+/// Always read fresh: a game that started a moment ago must be seen.
+fn process_table() -> System {
+    System::new_with_specifics(
         RefreshKind::nothing().with_processes(
             ProcessRefreshKind::nothing()
+                .without_tasks()
                 .with_cmd(UpdateKind::Always)
                 .with_cwd(UpdateKind::Always)
                 .with_exe(UpdateKind::OnlyIfNotSet),
         ),
-    );
-    writers_in(&sys, root, extra_patterns, ignore_pids)
+    )
+}
+
+/// Processes (other than `ignore_pids` and ourselves) that appear to be using `root`.
+pub fn find_writers(root: &Path, extra_patterns: &[String], ignore_pids: &[u32]) -> Vec<Writer> {
+    writers_in(&process_table(), root, extra_patterns, ignore_pids)
 }
 
 fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids: &[u32]) -> Vec<Writer> {
@@ -99,7 +106,9 @@ fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids:
 
 /// Is a process with this pid alive and still looking like the same game (same start time)?
 pub fn pid_alive(pid: u32, started_ms: Option<i64>) -> bool {
-    let sys = System::new_with_specifics(RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()));
+    let sys = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing().without_tasks()),
+    );
     let Some(p) = sys.process(sysinfo::Pid::from_u32(pid)) else { return false };
     match started_ms {
         // Guard against pid reuse: a different process started long after the recorded start.
@@ -110,7 +119,9 @@ pub fn pid_alive(pid: u32, started_ms: Option<i64>) -> bool {
 
 /// When a process started (milliseconds since the epoch), if it is running.
 pub fn process_start_ms(pid: u32) -> Option<i64> {
-    let sys = System::new_with_specifics(RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()));
+    let sys = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing().without_tasks()),
+    );
     sys.process(sysinfo::Pid::from_u32(pid)).map(|p| p.start_time() as i64 * 1000)
 }
 

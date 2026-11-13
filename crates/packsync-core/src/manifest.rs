@@ -386,11 +386,16 @@ impl Manifest {
 
     /// Canonical encoding → `(snapshot id, stored bytes)`. The id is BLAKE3 of the uncompressed JSON.
     pub fn encode(&self) -> Result<(SnapshotId, Vec<u8>)> {
+        self.encode_sized().map(|(id, stored, _)| (id, stored))
+    }
+
+    /// [`Self::encode`], plus the size of the uncompressed JSON.
+    pub fn encode_sized(&self) -> Result<(SnapshotId, Vec<u8>, usize)> {
         let json = serde_json::to_vec(self)?;
         if json.len() as u64 > MAX_MANIFEST_RAW {
             return Err(Error::invalid("snapshot manifest", "manifest too large"));
         }
-        Ok((SnapshotId(Hash::of(&json)), compress_doc(&json)))
+        Ok((SnapshotId(Hash::of(&json)), compress_doc(&json), json.len()))
     }
 
     /// Decode untrusted stored bytes. When `expected` is given the content hash must match it.

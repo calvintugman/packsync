@@ -544,9 +544,9 @@ pub fn create(
     }
 
     ctx.mark("snapshot: encode the manifest");
-    let (id, stored) = m.encode()?;
+    let (id, stored, raw_len) = m.encode_sized()?;
     stats.manifest_bytes = stored.len() as u64;
-    stats.manifest_raw_bytes = serde_json::to_vec(&m).map(|v| v.len() as u64).unwrap_or(0);
+    stats.manifest_raw_bytes = raw_len as u64;
 
     // ---- required packs for publish-time verification -------------------------------------------
     let required =

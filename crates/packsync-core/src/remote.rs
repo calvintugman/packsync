@@ -831,9 +831,11 @@ impl Remote {
     pub fn list_heads(&self, inst: InstanceId, ctx: &OpCtx) -> Result<Vec<HeadRecord>> {
         let prefix = heads_prefix(inst);
         let items = self.call(ctx, "list head records", |_| self.storage.list(&prefix, ctx))?;
+        let keys: Vec<String> =
+            items.into_iter().filter(|i| !i.is_dir && i.key.ends_with(".json")).map(|i| i.key).collect();
         let mut out = vec![];
-        for i in items.into_iter().filter(|i| !i.is_dir && i.key.ends_with(".json")) {
-            match self.call(ctx, "read head record", |_| self.storage.get_bytes(&i.key, MAX_RECORD_BYTES, ctx)) {
+        for (key, got) in self.read_records(&keys, "read head record", ctx) {
+            match got {
                 Ok(b) => match serde_json::from_slice::<HeadRecord>(&b) {
                     Ok(r) if r.format == HEAD_FORMAT && r.version == 1 && r.recent.len() <= HEAD_WINDOW * 2 => {
                         out.push(r)
@@ -842,7 +844,7 @@ impl Remote {
                         Some(inst),
                         "warn",
                         "head_record_ignored",
-                        &format!("ignoring malformed head record {}", i.key),
+                        &format!("ignoring malformed head record {key}"),
                     ),
                 },
                 Err(Error::Storage(StorageError::NotFound(_))) => {}
@@ -866,12 +868,29 @@ impl Remote {
         self.call(ctx, "release lease", |_| self.storage.delete(&key, DeleteMode::Permanent, ctx))
     }
 
+    /// Small per-computer records (one per computer), read side by side.
+    fn read_records<'k>(&self, keys: &'k [String], what: &str, ctx: &OpCtx) -> Vec<(&'k str, Result<Vec<u8>>)> {
+        std::thread::scope(|s| {
+            let hs: Vec<_> = keys
+                .iter()
+                .map(|k| {
+                    s.spawn(move || {
+                        (k.as_str(), self.call(ctx, what, |_| self.storage.get_bytes(k, MAX_RECORD_BYTES, ctx)))
+                    })
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))).collect()
+        })
+    }
+
     pub fn list_leases(&self, inst: InstanceId, ctx: &OpCtx) -> Result<Vec<LeaseRecord>> {
         let prefix = leases_prefix(inst);
         let items = self.call(ctx, "list leases", |_| self.storage.list(&prefix, ctx))?;
+        let keys: Vec<String> =
+            items.into_iter().filter(|i| !i.is_dir && i.key.ends_with(".json")).map(|i| i.key).collect();
         let mut out = vec![];
-        for i in items.into_iter().filter(|i| !i.is_dir && i.key.ends_with(".json")) {
-            if let Ok(b) = self.call(ctx, "read lease", |_| self.storage.get_bytes(&i.key, MAX_RECORD_BYTES, ctx))
+        for (_, got) in self.read_records(&keys, "read lease", ctx) {
+            if let Ok(b) = got
                 && let Ok(r) = serde_json::from_slice::<LeaseRecord>(&b)
                 && r.format == LEASE_FORMAT
                 && r.version == 1
