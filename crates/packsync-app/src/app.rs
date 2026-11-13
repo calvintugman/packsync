@@ -659,7 +659,7 @@ mod tests {
         let app = open_in(&d.path().join("app"), &prism);
         let st = app.use_google("visible_folder").unwrap();
         assert!(!st.oauth_client_configured && !st.connected);
-        assert!(st.problem.as_deref().unwrap().contains("oauth-setup"), "{st:?}");
+        assert!(st.problem.as_deref().unwrap().contains("Desktop app"), "{st:?}");
         assert!(st.setup_hint.is_some());
         // the selection is saved, but no storage is active, and everything local still works
         assert!(app.engine().storage().is_err());

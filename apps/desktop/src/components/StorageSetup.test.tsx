@@ -36,7 +36,7 @@ describe("StorageSetup", () => {
   it("explains the missing OAuth client instead of failing", async () => {
     const u = userEvent.setup();
     const t = fresh();
-    t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false, setup_hint: "Create a client: docs/oauth-setup.md" }));
+    t.on("storage.use_google", () => storage({ kind: "google", connected: false, oauth_client_configured: false, setup_hint: "Create a client" }));
     await renderWithStore(<StorageSetup />, t);
     await u.click(screen.getByRole("button", { name: "Use my own Google Drive instead" }));
     await u.click(screen.getByRole("button", { name: "Sign in with Google" }));

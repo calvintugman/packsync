@@ -10,8 +10,6 @@
 //! * `mock` (feature `mock`) is an in-memory Drive/OAuth server with fault injection for tests and
 //!   benchmarks.
 //!
-//! Design and verified facts: `docs/testing.md`.
-//!
 //! ```no_run
 //! use std::sync::Arc;
 //! use packsync_core::credentials::CredentialStore;

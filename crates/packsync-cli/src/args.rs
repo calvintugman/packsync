@@ -1,5 +1,5 @@
 //! Command-line grammar. Everything a user can do in the desktop app can be done here, with stable
-//! `--json` output and documented exit codes (`docs/cli.md`).
+//! `--json` output and stable exit codes (`packsync_core::error::exit`).
 
 use std::path::PathBuf;
 

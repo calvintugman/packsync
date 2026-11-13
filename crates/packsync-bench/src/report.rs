@@ -1,4 +1,4 @@
-//! Markdown for `docs/benchmarks.md`.
+//! The benchmark report, as Markdown.
 
 use serde_json::Value;
 

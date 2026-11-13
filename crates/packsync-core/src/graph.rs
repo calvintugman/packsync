@@ -4,7 +4,7 @@
 //! module is deliberately free of I/O: [`decide`] maps (local base, dirty flag, cloud heads, graph)
 //! to what must happen next, so every divergence case is unit-testable.
 //!
-//! Policy (see `docs/architecture.md`): **no automatic merging**. If the cloud and the local copy
+//! Policy: **no automatic merging**. If the cloud and the local copy
 //! both moved, or the cloud itself has several heads, the result is `Conflict` and both versions
 //! stay available until a human chooses.
 

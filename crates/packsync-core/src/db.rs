@@ -1,7 +1,7 @@
 //! Local persistent state (SQLite, WAL, versioned migrations).
 //!
 //! The database is **never authoritative for file content**: the file index is an optimisation that
-//! the scan policy distrusts (see `docs/architecture.md`), remote-object caches are re-validated
+//! the scan policy distrusts (`scan.rs`), remote-object caches are re-validated
 //! against listings before they are relied on, and the cloud is the source of truth for history.
 //! What the DB *does* own: which instances are registered, the local snapshot lifecycle
 //! (`local_complete → uploading → published → visible`), play sessions, idempotent job requests and

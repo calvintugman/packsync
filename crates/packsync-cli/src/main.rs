@@ -1,4 +1,4 @@
-//! The `packsync` command-line tool. See `docs/cli.md`.
+//! The `packsync` command-line tool.
 
 mod args;
 mod ask;
@@ -9,7 +9,7 @@ mod ui;
 
 use clap::Parser;
 
-/// Measurements for `docs/benchmarks.md`: when `PACKSYNC_TRANSFER_STATS` names a file, one JSON line is
+/// Measurements for benchmarks: when `PACKSYNC_TRANSFER_STATS` names a file, one JSON line is
 /// appended to it per run with the wall-clock time, the exit code and what really went over HTTP to
 /// Google Drive (requests by kind, body bytes up and down, retries), labelled with
 /// `PACKSYNC_TRANSFER_LABEL`. Never written to stdout, so `--json` output is unchanged; contains no

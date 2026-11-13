@@ -1,7 +1,7 @@
 //! Scanning: walking an instance, applying the rules, deciding what must be (re)hashed, and
 //! hashing/chunking changed content into the staging sink.
 //!
-//! ## Correctness policy for the persistent file index (documented in `docs/architecture.md`)
+//! ## Correctness policy for the persistent file index
 //!
 //! The index is an *optimisation*, never authority. A file's cached hash is reused only when ALL of
 //! these hold (see [`classify`]):
@@ -22,7 +22,7 @@
 //!
 //! There is deliberately **no filesystem watcher**: a snapshot is taken at defined moments (the game has
 //! exited, "Sync now", enabling sync), and the cached metadata makes a scan with nothing changed cost
-//! milliseconds (`docs/benchmarks.md`). Events could only ever *mark paths dirty*; they would never be the
+//! milliseconds. Events could only ever *mark paths dirty*; they would never be the
 //! source of truth (the cases above would still need full hashing), so they are left out of v1.
 
 use std::collections::{BTreeMap, HashMap};

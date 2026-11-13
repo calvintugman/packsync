@@ -14,7 +14,7 @@ pub enum FileKind {
     Other,
 }
 
-/// Cheap change-detection metadata. Never trusted alone: see `docs/architecture.md` (scan policy).
+/// Cheap change-detection metadata. Never trusted alone (see the scan policy in `scan.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileStat {
     pub kind: FileKind,

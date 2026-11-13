@@ -1,4 +1,4 @@
-# PackSync hosted storage. See docs/hosted.md for deploying it to your Cloudflare account.
+# PackSync hosted storage. `./setup.sh` deploys it to your Cloudflare account.
 name = "packsync"
 main = "src/index.ts"
 compatibility_date = "2026-10-01"
@@ -12,7 +12,7 @@ bucket_name = "packsync-hosted"
 [[d1_databases]]
 binding = "DB"
 database_name = "packsync-hosted"
-# replaced by `wrangler d1 create packsync-hosted` output when deploying (see docs/hosted.md)
+# replaced by `wrangler d1 create packsync-hosted` output when deploying
 database_id = "432232b2-d537-4696-a68c-af0286074698"
 
 [vars]

@@ -80,7 +80,7 @@ pub fn report(app: &App, online: bool, ctx: &OpCtx) -> Result<Diagnostics> {
         checks.push(check(
             "Google OAuth client",
             st.oauth_client_configured,
-            st.oauth_client_source.clone().unwrap_or_else(|| "not configured (docs/oauth-setup.md)".into()),
+            st.oauth_client_source.clone().unwrap_or_else(|| "not configured".into()),
         ));
         let store =
             packsync_core::credentials::CredentialStore::describe(&packsync_drive::KeyringCredentialStore::new());

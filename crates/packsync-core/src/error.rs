@@ -141,7 +141,7 @@ impl fmt::Display for ErrorCode {
     }
 }
 
-/// CLI exit codes (documented in `docs/cli.md`).
+/// CLI exit codes.
 pub mod exit {
     pub const OK: i32 = 0;
     pub const FAILURE: i32 = 1;

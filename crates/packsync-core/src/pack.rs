@@ -1,4 +1,4 @@
-//! Pack files (remote format v1, `docs/architecture.md`).
+//! Pack files (remote format v1).
 //!
 //! A pack groups many small blobs into one remote object so the number of Drive requests stays
 //! low (thousands of tiny uploads would be slow and rate-limited). Layout:

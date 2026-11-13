@@ -11,6 +11,6 @@ export default function globalSetup(): void {
     execFileSync("cargo", ["build", "-p", "packsync-e2e", "-p", "packsync-cli"], { cwd: REPO_ROOT, stdio: "inherit" });
   }
   for (const p of [E2E_BIN, CLI_BIN, DIST]) {
-    if (!existsSync(p)) throw new Error(`${p} does not exist; build it first (see docs/testing.md)`);
+    if (!existsSync(p)) throw new Error(`${p} does not exist; build it first (see CONTRIBUTING.md)`);
   }
 }

@@ -36,9 +36,7 @@ jobs:
     name: Rust · tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # Windows has been cross-built and tested under Wine (scripts/windows-check.sh) but never run on real
-    # Windows; macOS never at all. Until their first green run here, a failure there is information, not a
-    # blocker; remove `experimental` when they pass.
+    # Windows is not a blocker until its first green run here; remove `experimental` when it passes.
     continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
@@ -46,7 +44,6 @@ jobs:
         include:
           - { os: ubuntu-latest, experimental: false }
           - { os: windows-latest, experimental: true }
-          - { os: macos-latest, experimental: true }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -131,14 +128,13 @@ jobs:
     name: Desktop app · build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: ${{ matrix.experimental }}   # see rust-test: Windows and macOS have never been run
+    continue-on-error: ${{ matrix.experimental }}   # see rust-test
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, experimental: false }
           - { os: windows-latest, experimental: true }
-          - { os: macos-latest, experimental: true }
     steps:
       - uses: actions/checkout@v4
       - name: "Linux: system libraries for the web view"

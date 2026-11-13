@@ -1,8 +1,8 @@
 name: Release build (manual, unsigned, nothing is published)
 
 # Builds installers for each platform and keeps them as artifacts of THIS run only.
-# It never creates a GitHub Release, never uploads anywhere else and never signs anything: code signing and
-# notarisation need certificates that belong to whoever distributes the build (see docs/desktop.md).
+# It never creates a GitHub Release, never uploads anywhere else and never signs anything: code signing
+# needs a certificate that belongs to whoever distributes the build.
 on:
   workflow_dispatch:
 
@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: "Linux: system libraries for the web view"

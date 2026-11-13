@@ -29,7 +29,7 @@ pub fn print_json(doc: &serde_json::Value) {
 }
 
 /// Ctrl-C asks the running operation to stop at its next safe point; a second Ctrl-C ends the process
-/// (every operation is built to survive that: see docs/architecture.md).
+/// (every operation is built to survive that).
 pub fn cancel_token() -> CancelToken {
     CANCEL
         .get_or_init(|| {

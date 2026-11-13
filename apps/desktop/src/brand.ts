@@ -1,4 +1,4 @@
-/** Product naming for the UI. See docs/architecture.md. */
+/** Product naming for the UI. */
 export const BRAND = {
   name: "PackSync",
   tagline: "Continue your modpack on any computer",

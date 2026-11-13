@@ -25,7 +25,7 @@ impl CancelToken {
     }
 }
 
-/// Coarse phases of the sync state machine (see `docs/architecture.md`).
+/// Coarse phases of the sync state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {

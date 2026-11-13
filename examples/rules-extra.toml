@@ -2,7 +2,7 @@
 #   packsync preview "<instance folder>" --rules-file examples/rules-extra.toml
 #   packsync enable  "<instance folder>" --rules-file examples/rules-extra.toml
 # They are appended after the built-in rules, and the last matching rule wins. The complete rules text
-# is stored in every snapshot, so all your computers agree on it. See docs/rules.md.
+# is stored in every snapshot, so all your computers agree on it.
 version = 1
 
 # Keep screenshots on every computer (excluded by default: they are large and rarely needed).

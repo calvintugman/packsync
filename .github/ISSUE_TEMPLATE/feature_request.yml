@@ -25,4 +25,4 @@ body:
     attributes:
       label: Scope
       options:
-        - label: I checked the README's "What it does not do" list and `docs/` for this.
+        - label: I checked the README and existing issues for this.

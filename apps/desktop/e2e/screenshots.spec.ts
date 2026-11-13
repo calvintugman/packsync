@@ -9,7 +9,7 @@ import type { World } from "./world";
 // Pictures for the README, taken from the real UI running against the real engine in the test world.
 // They are regenerated on demand and are not part of the normal run:
 //   SCREENSHOTS=1 npx playwright test e2e/screenshots.spec.ts
-test.skip(!process.env.SCREENSHOTS, "set SCREENSHOTS=1 to regenerate docs/images");
+test.skip(!process.env.SCREENSHOTS, "set SCREENSHOTS=1 to regenerate the README screenshot");
 
 const OUT = join(REPO_ROOT, "docs", "images");
 mkdirSync(OUT, { recursive: true });

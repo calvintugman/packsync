@@ -227,7 +227,7 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
             if let Err(e) = &client {
                 st.problem = Some(e.to_string());
                 st.setup_hint = Some(
-                    "Create a Google OAuth client and point PackSync at its JSON file; see docs/oauth-setup.md.".into(),
+                    "In the Google Cloud console, enable the Google Drive API, create an OAuth client of type \"Desktop app\" and point PackSync at its JSON file.".into(),
                 );
             }
             if let Some(a) = auth {

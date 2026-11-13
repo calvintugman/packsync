@@ -294,8 +294,7 @@ const STORAGE_QUOTA_REASONS: &[&str] = &[
 ];
 const SCOPE_REASONS: &[&str] = &["insufficientPermissions", "insufficientScopes", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"];
 
-/// Map a Google API error to a [`StorageError`] following the table in
-/// `docs/testing.md` §5.
+/// Map a Google API error to a [`StorageError`].
 pub(crate) fn classify(e: &ApiError, what: &str) -> StorageError {
     let detail = if e.message.is_empty() { "no details".to_string() } else { e.message.clone() };
     let msg = redact(&format!("{what}: {} (HTTP {})", truncate_utf8(&detail, 300), e.status)).into_owned();

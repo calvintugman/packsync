@@ -12,7 +12,7 @@
 //!
 //! The flow is implemented directly with `sha2` + `base64` rather than the `oauth2` crate: v5 of
 //! that crate pins `ureq` 2, `base64` < 0.23 and `sha2` 0.10, and its parse errors carry raw
-//! response bodies (which may contain tokens). See `docs/testing.md`.
+//! response bodies (which may contain tokens).
 
 mod flow;
 
@@ -515,8 +515,7 @@ impl Authenticator {
             }
             let err = if e.has_reason("invalid_client") || e.has_reason("unauthorized_client") {
                 StorageError::Auth(AuthProblem::Other(format!(
-                    "Google rejected the OAuth client ({desc}); check the client ID/secret, see {}",
-                    crate::config::OAUTH_SETUP_DOC
+                    "Google rejected the OAuth client ({desc}); check the client ID and secret"
                 )))
             } else if status == 429 || status >= 500 {
                 http::classify(&e, "the Google token endpoint")

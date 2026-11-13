@@ -9,7 +9,6 @@
 # Everything it creates is under %TEMP%\packsync-verify and is deleted at the next run.
 #
 # Result: windows-report.txt (send this back) and windows-test-full.log (only if tests failed).
-# See docs/windows-checklist.md.
 
 $ErrorActionPreference = 'Continue'
 $repo = (Get-Location).Path

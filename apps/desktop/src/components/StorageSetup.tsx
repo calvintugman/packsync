@@ -85,9 +85,10 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
             <div className="card col">
               <h3>PackSync needs a Google OAuth client</h3>
               <p className="muted">
-                Google requires every app to identify itself. Create a free OAuth client for your own Google account
-                (about ten minutes); <code>docs/oauth-setup.md</code> in the PackSync repository walks through it. Then
-                choose the downloaded file here.
+                Google requires every app to identify itself, so you create a free one for your own account (about ten
+                minutes). In the Google Cloud console: create a project, enable the Google Drive API, set up the consent
+                screen with the <code>drive.file</code> scope and publish it (in testing mode Google signs you out every
+                7 days), then create an OAuth client of type “Desktop app”. Choose the downloaded file here.
               </p>
               {(google ?? storage)?.problem ? <p className="faint">{(google ?? storage)?.problem}</p> : null}
               <PathField

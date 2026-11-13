@@ -1028,7 +1028,7 @@ impl Storage for DriveStorage {
             resumable_uploads: true,
             // sha256Checksum is documented but only verified when the server returns it.
             server_checksums: vec![ChecksumKind::Md5],
-            // Undocumented by Google; treated as eventual (see docs/testing.md).
+            // Undocumented by Google; treated as eventual.
             list_consistency: Consistency::Eventual,
             max_object_size: Some(DRIVE_MAX_FILE_SIZE),
             recommended_concurrency: 4,

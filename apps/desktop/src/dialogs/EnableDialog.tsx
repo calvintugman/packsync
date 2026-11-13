@@ -124,7 +124,7 @@ export function EnableDialog({
             <>
               <TextArea
                 label="Extra rules (TOML)"
-                hint="Appended after the built-in rules. Example: include screenshots with a rule that matches $GAME/screenshots/**. See docs/rules.md."
+                hint="Appended after the built-in rules. Example: include screenshots with a rule that matches $GAME/screenshots/**."
                 value={rules}
                 spellCheck={false}
                 onChange={(e) => setRules(e.target.value)}

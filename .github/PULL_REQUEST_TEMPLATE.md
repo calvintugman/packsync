@@ -15,7 +15,7 @@
 - [ ] Touches restore/upload/snapshot/sessions: a failpoint/crash test covers the new boundary
 - [ ] Reads cloud or disk data: a hostile-data test covers it
 
-Platform(s) I ran this on: <!-- Linux / Windows / macOS -->
+Platform(s) I ran this on: <!-- Linux / Windows -->
 
 ## Not verified
 
@@ -23,7 +23,7 @@ Platform(s) I ran this on: <!-- Linux / Windows / macOS -->
 
 ## Docs
 
-- [ ] `docs/` and the README still tell the truth (or are updated here)
+- [ ] The README is still accurate (or is updated here)
 
 ## Checklist
 

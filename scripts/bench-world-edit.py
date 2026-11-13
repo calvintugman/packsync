@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Make the kind of change one short play session makes to a world, the same way every time.
 
-Used by docs/benchmarks.md to measure a sync after "a small in-game change" without starting the game,
+Used by the benchmarks to measure a sync after "a small in-game change" without starting the game,
 so that two builds can be compared on an identical workload. The world stays valid and playable: only
 bytes that Minecraft ignores are changed, or changes are made through the file's own format.
 

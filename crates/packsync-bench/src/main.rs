@@ -1,4 +1,4 @@
-//! `packsync-bench`: reproducible benchmarks. Always run with `--release`; see `docs/benchmarks.md`.
+//! `packsync-bench`: reproducible benchmarks. Always run with `--release`.
 
 mod hw;
 mod lab;

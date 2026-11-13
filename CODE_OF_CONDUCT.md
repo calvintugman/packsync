@@ -9,4 +9,3 @@ bug, ask a question or send a fix.
   reason to skip it.
 
 Maintainers may remove comments, close issues or pull requests, and block people who break these rules.
-There is no reporting address yet because the project is unpublished; whoever publishes it should add one here.

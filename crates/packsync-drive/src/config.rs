@@ -31,8 +31,9 @@ pub const SCOPE_DRIVE_FILE: &str = "https://www.googleapis.com/auth/drive.file";
 pub const SCOPE_DRIVE_APPDATA: &str = "https://www.googleapis.com/auth/drive.appdata";
 /// MIME type of Drive folders.
 pub const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
-/// Where the user-facing OAuth client setup is documented (written by the app layer).
-pub const OAUTH_SETUP_DOC: &str = "docs/oauth-setup.md";
+/// How to get an OAuth client, for error messages.
+pub const OAUTH_SETUP_HINT: &str =
+    "in the Google Cloud console, enable the Google Drive API and create an OAuth client of type \"Desktop app\"";
 /// Drive's documented maximum file size (5,120 GB).
 pub const DRIVE_MAX_FILE_SIZE: u64 = 5120 * 1024 * 1024 * 1024;
 /// Resumable upload chunks must be multiples of this (except the last one).
@@ -363,9 +364,8 @@ impl fmt::Debug for OAuthClientConfig {
 pub enum ClientConfigError {
     /// Nothing is configured.
     #[error(
-        "no Google OAuth client is configured: set PACKSYNC_GOOGLE_CLIENT_ID (and optionally \
-         PACKSYNC_GOOGLE_CLIENT_SECRET) or provide the client_secret*.json file downloaded from the \
-         Google Cloud console; see {OAUTH_SETUP_DOC}"
+        "no Google OAuth client is configured: {OAUTH_SETUP_HINT}, then give PackSync its downloaded \
+         client_secret*.json file (or set PACKSYNC_GOOGLE_CLIENT_ID and optionally PACKSYNC_GOOGLE_CLIENT_SECRET)"
     )]
     NotConfigured,
     /// The JSON file could not be read.
@@ -377,16 +377,16 @@ pub enum ClientConfigError {
         detail: String,
     },
     /// The JSON is not a Google client file.
-    #[error("the OAuth client file is not valid: {0}; see {OAUTH_SETUP_DOC}")]
+    #[error("the OAuth client file is not valid: {0}; download it again from the Google Cloud console")]
     InvalidJson(String),
     /// The file describes a non-desktop client.
     #[error(
         "the OAuth client file describes a \"{0}\" client; PackSync needs a \"Desktop app\" client \
-         (an \"installed\" object); see {OAUTH_SETUP_DOC}"
+         (an \"installed\" object)"
     )]
     WrongClientType(String),
     /// A value is malformed.
-    #[error("invalid OAuth client configuration: {0}; see {OAUTH_SETUP_DOC}")]
+    #[error("invalid OAuth client configuration: {0}")]
     Invalid(String),
 }
 
@@ -503,8 +503,8 @@ impl OAuthClientConfig {
     }
 
     /// Find a client: an explicitly given JSON file first, then the environment, then the
-    /// compiled-in values. Fails with [`ClientConfigError::NotConfigured`] (pointing to
-    /// `docs/oauth-setup.md`) when there is none.
+    /// compiled-in values. Fails with [`ClientConfigError::NotConfigured`] when there is
+    /// none.
     pub fn discover(json_path: Option<&Path>) -> Result<Self, ClientConfigError> {
         if let Some(p) = json_path {
             return Self::from_json_file(p);
@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(c.client_id, "id-1");
         assert!(c.client_secret.is_none());
         assert_eq!(c.source, ClientConfigSource::Environment);
-        assert!(ClientConfigError::NotConfigured.to_string().contains(OAUTH_SETUP_DOC));
+        assert!(ClientConfigError::NotConfigured.to_string().contains(OAUTH_SETUP_HINT));
         assert!(OAuthClientConfig::new("has space", None).is_err());
     }
 
