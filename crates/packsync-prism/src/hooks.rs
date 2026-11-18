@@ -63,23 +63,33 @@ pub struct OurHook {
     pub chained: Option<String>,
 }
 
+/// Whether `root` is inside Prism Launcher's Flatpak sandbox (`~/.var/app/org.prismlauncher.PrismLauncher/...`).
+pub fn is_flatpak_instance_root(root: &Path) -> bool {
+    let comps: Vec<_> = root.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+    comps.windows(3).any(|w| w[0] == ".var" && w[1] == "app" && w[2] == crate::env::FLATPAK_APP_ID)
+}
+
 /// Recognise a command line written by [`build_command`].
 pub fn parse_ours(cmd: &str) -> Option<OurHook> {
     let toks: Vec<String> = tokenize(cmd).into_iter().map(|t| t.text).collect();
+    let off = match (toks.first().map(String::as_str), toks.get(1).map(String::as_str)) {
+        (Some("flatpak-spawn" | "/usr/bin/flatpak-spawn"), Some("--host")) => 2,
+        _ => 0,
+    };
     let marker_at = toks.iter().position(|t| t == "--marker")?;
     if toks.get(marker_at + 1).map(|s| s.as_str()) != Some(HOOK_MARKER)
-        || toks.get(1).map(|s| s.as_str()) != Some("hook")
+        || toks.get(off + 1).map(|s| s.as_str()) != Some("hook")
     {
         return None;
     }
-    let kind = match toks.get(2)?.as_str() {
+    let kind = match toks.get(off + 2)?.as_str() {
         "pre-launch" => HookKind::Pre,
         "post-exit" => HookKind::Post,
         _ => return None,
     };
     let inst_at = toks.iter().position(|t| t == "--instance")?;
     Some(OurHook {
-        exe: toks[0].clone(),
+        exe: toks.get(off)?.clone(),
         kind,
         instance: toks.get(inst_at + 1)?.clone(),
         chained: chain_suffix(cmd).map(|s| s.to_string()),
@@ -94,8 +104,13 @@ pub fn build_command(spec: &HookSpec, kind: HookKind, chained: Option<&str>) -> 
     if !spec.executable.is_absolute() {
         return Err(Error::invalid("hook command", "the PackSync executable path must be absolute"));
     }
-    let mut s =
-        format!("{} hook {} --instance {} --marker {HOOK_MARKER}", quote_arg(exe)?, kind.word(), spec.instance_id);
+    let prefix = if spec.flatpak_host_spawn { "flatpak-spawn --host " } else { "" };
+    let mut s = format!(
+        "{prefix}{} hook {} --instance {} --marker {HOOK_MARKER}",
+        quote_arg(exe)?,
+        kind.word(),
+        spec.instance_id
+    );
     for a in &spec.extra_args {
         s.push(' ');
         s.push_str(&quote_arg(a)?);
@@ -394,7 +409,12 @@ mod tests {
     }
 
     fn spec(exe: &str) -> HookSpec {
-        HookSpec { executable: PathBuf::from(abs(exe)), instance_id: InstanceId::new(), extra_args: vec![] }
+        HookSpec {
+            executable: PathBuf::from(abs(exe)),
+            instance_id: InstanceId::new(),
+            extra_args: vec![],
+            flatpak_host_spawn: false,
+        }
     }
 
     fn instance(cfg: &str) -> (tempfile::TempDir, PathBuf) {
@@ -601,5 +621,26 @@ mod tests {
         let st = state(&root).unwrap();
         assert_eq!(st.pre_launch.as_deref(), Some(cmd.as_str()), "the INI value round-trips");
         assert_eq!(crate::cmdline::split_command(&cmd)[0], r"C:\Program Files\PackSync\packsync.exe");
+    }
+
+    #[test]
+    fn flatpak_host_spawn_roundtrips_install_state_and_removal() {
+        let (_d, root) = instance(PLAIN);
+        let mut s = spec("/usr/local/bin/packsync");
+        s.flatpak_host_spawn = true;
+        s.extra_args = vec!["--config-dir".into(), "/home/u/.config/packsync".into()];
+        let plan = plan_install(&root, &s, false, &GlobalCommands::default()).unwrap();
+        apply(&plan, false).unwrap();
+        let st = state(&root).unwrap();
+        assert!(st.installed && st.intact);
+        assert!(st.pre_launch.as_deref().unwrap().starts_with("flatpak-spawn --host "));
+        assert!(parse_ours("/usr/bin/flatpak-spawn --host /usr/local/bin/packsync hook pre-launch --instance x --marker packsync-hook").is_some());
+        apply(&plan_remove(&root, false).unwrap(), false).unwrap();
+        assert!(!state(&root).unwrap().installed);
+
+        assert!(is_flatpak_instance_root(Path::new(
+            "/home/u/.var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/instances/Pack"
+        )));
+        assert!(!is_flatpak_instance_root(Path::new("/home/u/.local/share/PrismLauncher/instances/Pack")));
     }
 }

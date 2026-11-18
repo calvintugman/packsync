@@ -51,7 +51,7 @@ body:
     id: cloud
     attributes:
       label: Cloud
-      options: [Google Drive (visible folder), Google Drive (hidden app data), A folder, Not connected]
+      options: [PackSync cloud, Cloudflare R2, Google Drive (visible folder), Google Drive (hidden app data), A folder, Not connected]
     validations:
       required: true
   - type: input

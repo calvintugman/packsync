@@ -81,14 +81,33 @@ impl Reply {
     }
 }
 
-fn check_endpoint(endpoint: &str) -> StorageResult<String> {
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.starts_with('[') {
+        let Some((host, rest)) = authority.split_once(']') else { return false };
+        let valid_port = rest.is_empty() || (rest.starts_with(':') && rest[1..].bytes().all(|b| b.is_ascii_digit()));
+        return valid_port && &host[1..] == "::1";
+    }
+    let host = authority.split_once(':').map(|(h, _)| h).unwrap_or(authority);
+    let port_ok = authority.split_once(':').is_none_or(|(_, p)| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    port_ok && (host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost"))
+}
+
+pub(crate) fn check_endpoint(endpoint: &str) -> StorageResult<String> {
     let e = endpoint.trim().trim_end_matches('/');
-    let rest = e
-        .strip_prefix("https://")
-        .or_else(|| e.strip_prefix("http://"))
-        .ok_or_else(|| StorageError::Other(format!("the service address {endpoint:?} must start with https://")))?;
-    if rest.is_empty() || rest.contains('/') {
+    let (scheme_http, rest) = if let Some(r) = e.strip_prefix("https://") {
+        (false, r)
+    } else if let Some(r) = e.strip_prefix("http://") {
+        (true, r)
+    } else {
+        return Err(StorageError::Other(format!("the service address {endpoint:?} must start with https://")));
+    };
+    if rest.is_empty() || rest.contains('/') || rest.contains('?') || rest.contains('#') || rest.contains('@') {
         return Err(StorageError::Other(format!("the service address {endpoint:?} must be a scheme and a host")));
+    }
+    if scheme_http && !is_loopback_authority(rest) {
+        return Err(StorageError::Other(format!(
+            "the service address {endpoint:?} must start with https:// (http:// is only allowed for localhost)"
+        )));
     }
     Ok(e.to_string())
 }
@@ -153,7 +172,7 @@ impl Http {
                 let mut b = $b
                     .config()
                     .timeout_send_body(Some(Self::budget(up)))
-                    .timeout_recv_body(Some(Self::budget(max_body.min(64 << 20))))
+                    .timeout_recv_body(Some(Self::budget(max_body.min(MAX_PUT))))
                     .build();
                 for (k, v) in headers {
                     b = b.header(*k, v.as_str());
@@ -614,5 +633,24 @@ impl Storage for HostedStorage {
 
     fn quota(&self, ctx: &OpCtx) -> StorageResult<Option<Quota>> {
         self.usage(ctx).map(Some)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_requires_https_except_loopback() {
+        assert!(check_endpoint("https://packsync.example.workers.dev").is_ok());
+        assert!(check_endpoint("http://127.0.0.1:8787").is_ok());
+        assert!(check_endpoint("http://localhost:8787/").is_ok());
+        assert!(check_endpoint("http://[::1]:8787").is_ok());
+        assert!(check_endpoint("http://evil.example.com").is_err());
+        assert!(check_endpoint("http://127.0.0.1.evil.com").is_err());
+        assert!(check_endpoint("javascript:alert(1)").is_err());
+        assert!(check_endpoint("file:///tmp/x").is_err());
+        assert!(check_endpoint("https://user@evil.example.com").is_err());
+        assert!(check_endpoint("https://evil.example.com/path").is_err());
     }
 }

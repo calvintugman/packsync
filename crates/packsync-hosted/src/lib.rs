@@ -23,6 +23,7 @@ use packsync_core::progress::OpCtx;
 use packsync_core::redact::Secret;
 use packsync_core::storage::{Storage, StorageError, StorageResult};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 pub use client::{AccountCredentials, HostedStats, HostedStorage};
 pub use crypto::{EncryptedStorage, MasterKey};
@@ -53,6 +54,15 @@ struct Stored {
     a: String,
     t: String,
     k: String,
+}
+
+impl Drop for Stored {
+    fn drop(&mut self) {
+        self.e.zeroize();
+        self.a.zeroize();
+        self.t.zeroize();
+        self.k.zeroize();
+    }
 }
 
 const RECOVERY_PREFIX: &str = "packsync1-";
@@ -97,9 +107,10 @@ impl Credentials {
         let body: String = text.split_whitespace().collect();
         let raw = body.strip_prefix(RECOVERY_PREFIX).ok_or_else(bad)?;
         let s: Stored = b64().decode(raw).ok().and_then(|j| serde_json::from_slice(&j).ok()).ok_or_else(bad)?;
+        let endpoint = client::check_endpoint(&s.e)?;
         let key: [u8; 32] = b64().decode(&s.k).ok().and_then(|k| k.try_into().ok()).ok_or_else(bad)?;
         Ok(Credentials {
-            account: AccountCredentials { endpoint: s.e, account: s.a, token: Secret::new(s.t) },
+            account: AccountCredentials { endpoint, account: s.a.clone(), token: Secret::new(s.t.clone()) },
             key: MasterKey::from_bytes(key),
         })
     }
@@ -143,5 +154,15 @@ mod tests {
         assert_eq!(s.key.as_bytes(), c.key.as_bytes());
         assert!(Credentials::from_recovery_key("packsync1-nonsense").is_err());
         assert!(!format!("{c:?}").contains("TTTT"), "credentials never print secrets");
+
+        // Recovery keys pointing at cleartext non-loopback http:// or non-http schemes are refused.
+        let bad_payload = serde_json::json!({
+            "e": "http://evil.example.com",
+            "a": "abcdefghijklmnopqrstuvwxyz",
+            "t": "T".repeat(43),
+            "k": b64().encode([9; 32]),
+        });
+        let bad_key = format!("packsync1-{}", b64().encode(bad_payload.to_string().as_bytes()));
+        assert!(Credentials::from_recovery_key(&bad_key).is_err());
     }
 }

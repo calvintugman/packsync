@@ -15,6 +15,10 @@ fn exe_name() -> String {
     if cfg!(windows) { format!("{CLI_NAME}.exe") } else { CLI_NAME.to_string() }
 }
 
+fn is_ephemeral_appimage_path(p: &Path) -> bool {
+    p.to_str().is_some_and(|s| s.starts_with("/tmp/.mount_"))
+}
+
 impl App {
     /// The command-line executable that launcher hooks should call: the configured path, this
     /// executable when it *is* the CLI, a `packsync` next to it, or one on `PATH`.
@@ -27,13 +31,24 @@ impl App {
             };
         }
         let name = exe_name();
-        if let Ok(me) = std::env::current_exe() {
+        if let Ok(me) = std::env::current_exe()
+            && !is_ephemeral_appimage_path(&me)
+        {
             if me.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&name)) {
                 return Ok(me);
             }
-            if let Some(sibling) = me.parent().map(|d| d.join(&name)).filter(|p| p.is_file()) {
+            if let Some(sibling) = me.parent().map(|d| d.join(&name)).filter(|p| p.is_file())
+                && !is_ephemeral_appimage_path(&sibling)
+            {
                 return Ok(sibling);
             }
+        }
+        if let Some(appimage) = std::env::var_os("APPIMAGE").map(PathBuf::from)
+            && !is_ephemeral_appimage_path(&appimage)
+            && appimage.is_file()
+            && appimage.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&name))
+        {
+            return Ok(appimage);
         }
         if let Some(path) = std::env::var_os("PATH") {
             for dir in std::env::split_paths(&path) {
@@ -65,9 +80,15 @@ impl App {
     /// What installing the hooks would change. Writes nothing.
     pub fn hooks_plan_install(&self, id: InstanceId, cli: &Path) -> Result<HookPlan> {
         let (inst, l) = self.hook_target(id)?;
+        let flatpak = packsync_prism::is_flatpak_instance_root(&inst.root);
         l.plan_install_hooks(
             &inst.root,
-            &HookSpec { executable: cli.to_path_buf(), instance_id: id, extra_args: self.paths.hook_args() },
+            &HookSpec {
+                executable: cli.to_path_buf(),
+                instance_id: id,
+                extra_args: if flatpak { self.paths.hook_args_explicit() } else { self.paths.hook_args() },
+                flatpak_host_spawn: flatpak,
+            },
         )
     }
 
@@ -92,5 +113,16 @@ impl App {
         );
         self.bus().emit(crate::events::AppEvent::InstanceChanged { instance: id });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skips_ephemeral_appimage_mount_paths() {
+        assert!(is_ephemeral_appimage_path(Path::new("/tmp/.mount_PackSyXYZ/usr/bin/packsync")));
+        assert!(!is_ephemeral_appimage_path(Path::new("/usr/local/bin/packsync")));
     }
 }

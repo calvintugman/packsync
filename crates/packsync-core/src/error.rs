@@ -241,16 +241,16 @@ impl Error {
             Offline => {
                 "Check your internet connection. Your local copy is safe; PackSync will retry and nothing was marked as synced."
             }
-            AuthRequired => "Connect your Google account again (Settings → Storage → Connect), then retry.",
-            AuthRevoked => "Google access was revoked or expired. Reconnect your account; cloud data was not touched.",
+            AuthRequired => "Connect your cloud storage in Settings, then retry.",
+            AuthRevoked => "Cloud access was revoked or expired. Reconnect in Settings; cloud data was not touched.",
             AuthScope => {
-                "The granted Google permission is too narrow for this operation. Disconnect and reconnect the account."
+                "The granted cloud permission is too narrow for this operation. Disconnect and reconnect in Settings."
             }
             QuotaExceeded => {
-                "Your Google Drive is full. Free up space or buy more storage; local data is unaffected and the upload will resume."
+                "Your cloud storage is full. Free up space, prune old snapshots with `packsync gc`, or increase quota; local data is unaffected and the upload will resume."
             }
             RateLimited => {
-                "Google is rate-limiting requests. PackSync backs off automatically; try again in a few minutes."
+                "The cloud service is rate-limiting requests. PackSync backs off automatically; try again in a few minutes."
             }
             StorageUnavailable => {
                 "The storage service had a temporary problem. The operation will be retried; local data is unaffected."
@@ -259,7 +259,7 @@ impl Error {
                 "Some cloud data is missing or damaged. Your instance was not modified. Run `packsync verify --remote` to see what is affected."
             }
             CloudDataMissing => {
-                "Data this version builds on is no longer in the cloud (a cleanup on another computer, or files removed from Drive). \
+                "Data this version builds on is no longer in the cloud (a cleanup on another computer, or files removed from cloud storage). \
                  Nothing was published. PackSync re-uploads it from this computer's files when they still match; \
                  `packsync verify <instance> --remote --repair` does the same on request and says what could not be repaired."
             }

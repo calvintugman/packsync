@@ -6,9 +6,9 @@ import { useStore } from "../../state/context";
 import { Banner, Button, Kv, Pill } from "../../ui/controls";
 import { ErrorNote } from "../../ui/ErrorNote";
 
-export function HooksTab({ inst }: { inst: InstanceStatus }) {
+export function HooksTab({ inst, revision = 0 }: { inst: InstanceStatus; revision?: number }) {
   const store = useStore();
-  const state = useLoad(() => store.call("hooks.state", { instance: inst.id }), inst.id);
+  const state = useLoad(() => store.call("hooks.state", { instance: inst.id }), `${inst.id}:${revision}`);
   const [dialog, setDialog] = useState<"install" | "remove" | null>(null);
   const s = state.data;
   const label = !s ? null : s.installed ? (s.intact ? "Installed" : "Changed since installed") : s.partial ? "Partly installed" : "Not installed";

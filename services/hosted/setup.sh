@@ -17,23 +17,31 @@ else
 fi
 
 echo "== D1 database packsync-hosted"
-if grep -q 'database_id = "00000000-0000-0000-0000-000000000000"' wrangler.toml; then
-  id=$(npx wrangler d1 list --json 2>/dev/null | node -e '
+current_id=$(sed -nE 's/^[[:space:]]*database_id[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' wrangler.toml | head -1 || true)
+d1_list=$(npx wrangler d1 list --json 2>/dev/null || echo '[]')
+id=$(printf '%s' "$d1_list" | CURRENT_ID="$current_id" node -e '
+  let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+    const list = JSON.parse(s || "[]");
+    const cur = process.env.CURRENT_ID;
+    if (cur && cur !== "00000000-0000-0000-0000-000000000000" && list.some(d => d.uuid === cur)) {
+      console.log(cur);
+      return;
+    }
+    const db = list.find(d => d.name === "packsync-hosted");
+    console.log(db ? db.uuid : "");
+  });')
+if [ -z "$id" ]; then
+  npx wrangler d1 create packsync-hosted
+  id=$(npx wrangler d1 list --json | node -e '
     let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
-      const db = JSON.parse(s).find(d => d.name === "packsync-hosted");
-      console.log(db ? db.uuid : "");
+      console.log(JSON.parse(s).find(d => d.name === "packsync-hosted").uuid);
     });')
-  if [ -z "$id" ]; then
-    npx wrangler d1 create packsync-hosted
-    id=$(npx wrangler d1 list --json | node -e '
-      let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
-        console.log(JSON.parse(s).find(d => d.name === "packsync-hosted").uuid);
-      });')
-  fi
-  sed -i.bak "s/database_id = \"00000000-0000-0000-0000-000000000000\"/database_id = \"$id\"/" wrangler.toml && rm -f wrangler.toml.bak
-  echo "using database $id"
+fi
+if [ "$id" != "$current_id" ]; then
+  sed -i.bak -E "s|^([[:space:]]*database_id[[:space:]]*=[[:space:]]*\")[^\"]*(\".*)|\1$id\2|" wrangler.toml && rm -f wrangler.toml.bak
+  echo "configured database $id in wrangler.toml"
 else
-  echo "already configured in wrangler.toml"
+  echo "using database $id"
 fi
 npx wrangler d1 execute packsync-hosted --remote --file=schema.sql
 

@@ -21,6 +21,7 @@ use packsync_core::redact::Secret;
 use packsync_core::storage::{StorageError, StorageResult};
 use serde::{Deserialize, Serialize};
 use spake2::{Ed25519Group, Identity, Password, Spake2};
+use zeroize::Zeroize;
 
 use crate::client::{AccountCredentials, HostedStorage, Http, classify};
 use crate::crypto::MasterKey;
@@ -37,6 +38,13 @@ const LIFETIME: Duration = Duration::from_secs(10 * 60);
 pub struct PairingCode {
     pub nameplate: String,
     secret: String,
+}
+
+impl Drop for PairingCode {
+    fn drop(&mut self) {
+        self.nameplate.zeroize();
+        self.secret.zeroize();
+    }
 }
 
 impl std::fmt::Debug for PairingCode {
@@ -94,29 +102,47 @@ struct Offer {
     key: String,
 }
 
-fn subkey(shared: &[u8], purpose: &str) -> XChaCha20Poly1305 {
-    let k = blake3::derive_key(purpose, shared);
-    XChaCha20Poly1305::new(&k.into())
+impl Drop for Offer {
+    fn drop(&mut self) {
+        self.token.zeroize();
+        self.key.zeroize();
+    }
 }
 
-fn seal(shared: &[u8], purpose: &str, msg: &[u8]) -> String {
+fn subkey(shared: &[u8], purpose: &str) -> XChaCha20Poly1305 {
+    let mut k = blake3::derive_key(purpose, shared);
+    let cipher = XChaCha20Poly1305::new(&k.into());
+    k.zeroize();
+    cipher
+}
+
+fn seal_bytes(shared: &[u8], purpose: &str, msg: &[u8]) -> Vec<u8> {
     let mut nonce = [0u8; 24];
     getrandom::getrandom(&mut nonce).expect("random nonce");
     let ct = subkey(shared, purpose)
         .encrypt(XNonce::from_slice(&nonce), Payload { msg, aad: purpose.as_bytes() })
         .expect("in-memory encryption");
-    let mut out = nonce.to_vec();
+    let mut out = Vec::with_capacity(nonce.len() + ct.len());
+    out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
-    b64().encode(out)
+    out
 }
 
-fn open(shared: &[u8], purpose: &str, text: &str) -> Option<Vec<u8>> {
-    let raw = b64().decode(text.trim()).ok()?;
+fn open_bytes(shared: &[u8], purpose: &str, raw: &[u8]) -> Option<Vec<u8>> {
     if raw.len() < 24 {
         return None;
     }
     let (nonce, ct) = raw.split_at(24);
     subkey(shared, purpose).decrypt(XNonce::from_slice(nonce), Payload { msg: ct, aad: purpose.as_bytes() }).ok()
+}
+
+fn seal(shared: &[u8], purpose: &str, msg: &[u8]) -> String {
+    b64().encode(seal_bytes(shared, purpose, msg))
+}
+
+fn open(shared: &[u8], purpose: &str, text: &str) -> Option<Vec<u8>> {
+    let raw = b64().decode(text.trim()).ok()?;
+    open_bytes(shared, purpose, &raw)
 }
 
 fn slot_path(nameplate: &str, slot: char) -> String {
@@ -214,14 +240,30 @@ impl PairingOffer {
             let Some(b) = read_slot(http, &n, 'b', self.expires, ctx)? else {
                 return Err(StorageError::Other("nobody joined with the code in 10 minutes; make a new one".into()));
             };
-            let theirs =
+            let raw =
                 b64().decode(b.trim()).map_err(|_| StorageError::Other("the other computer sent garbage".into()))?;
-            let shared = self
+            if raw.len() < 2 {
+                return Err(StorageError::Other("the other computer sent garbage".into()));
+            }
+            let msg_len = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+            if raw.len() < 2 + msg_len {
+                return Err(StorageError::Other("the other computer sent garbage".into()));
+            }
+            let (theirs, confirm) = raw[2..].split_at(msg_len);
+            let mut shared = self
                 .state
                 .take()
                 .expect("wait runs once")
-                .finish(&theirs)
+                .finish(theirs)
                 .map_err(|_| StorageError::Other("the other computer's message was not valid".into()))?;
+            // Verify key confirmation before sending credentials/encryption key in slot c.
+            if open_bytes(&shared, "packsync pairing confirm", confirm).as_deref() != Some(b"confirm") {
+                shared.zeroize();
+                return Err(StorageError::Other(
+                    "the code typed on the other computer was wrong; nothing was shared. Make a new code and try again"
+                        .into(),
+                ));
+            }
             let offer = Offer {
                 v: 1,
                 endpoint: self.creds.account.endpoint.clone(),
@@ -229,17 +271,30 @@ impl PairingOffer {
                 token: self.creds.account.token.expose().to_string(),
                 key: b64().encode(self.creds.key.as_bytes()),
             };
-            let body = serde_json::to_vec(&offer).expect("serialisable");
-            write_slot(http, Some(self.storage.auth()), &n, 'c', &seal(&shared, "packsync pairing offer", &body), ctx)?;
-            let Some(d) = read_slot(http, &n, 'd', self.expires, ctx)? else {
-                return Err(StorageError::Other("the other computer did not finish pairing in time".into()));
+            let mut body = serde_json::to_vec(&offer).expect("serialisable");
+            let sealed_offer = seal(&shared, "packsync pairing offer", &body);
+            body.zeroize();
+            write_slot(http, Some(self.storage.auth()), &n, 'c', &sealed_offer, ctx)?;
+            let d = read_slot(http, &n, 'd', self.expires, ctx)?;
+            let ok = d.as_deref().and_then(|d| open(&shared, "packsync pairing joined", d));
+            shared.zeroize();
+            let Some(m) = ok else {
+                return Err(StorageError::Other(
+                    if d.is_none() {
+                        "the other computer did not finish pairing in time"
+                    } else {
+                        "the code typed on the other computer was wrong; nothing was shared. Make a new code and try again"
+                    }
+                    .into(),
+                ));
             };
-            match open(&shared, "packsync pairing joined", &d) {
-                Some(m) if m == b"joined" => Ok(()),
-                _ => Err(StorageError::Other(
+            if m == b"joined" {
+                Ok(())
+            } else {
+                Err(StorageError::Other(
                     "the code typed on the other computer was wrong; nothing was shared. Make a new code and try again"
                         .into(),
-                )),
+                ))
             }
         })();
         let _ =
@@ -262,13 +317,34 @@ pub fn join(endpoint: &str, code: &str, ctx: &OpCtx) -> StorageResult<Credential
     let theirs = b64().decode(a.trim()).map_err(|_| StorageError::Other("the other computer sent garbage".into()))?;
     let (state, msg) =
         Spake2::<Ed25519Group>::start_symmetric(&Password::new(code.password()), &Identity::new(IDENTITY));
-    write_slot(&http, None, &n, 'b', &b64().encode(msg), ctx)?;
-    let shared =
+    let mut shared =
         state.finish(&theirs).map_err(|_| StorageError::Other("the other computer's message was not valid".into()))?;
-    let Some(c) = read_slot(&http, &n, 'c', Instant::now() + LIFETIME, ctx)? else {
-        return Err(StorageError::Other("the other computer did not answer in time".into()));
+    let confirm = seal_bytes(&shared, "packsync pairing confirm", b"confirm");
+    let mut payload = Vec::with_capacity(2 + msg.len() + confirm.len());
+    payload.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+    payload.extend_from_slice(&msg);
+    payload.extend_from_slice(&confirm);
+    write_slot(&http, None, &n, 'b', &b64().encode(payload), ctx)?;
+    let c = match read_slot(&http, &n, 'c', Instant::now() + LIFETIME, ctx) {
+        Ok(Some(c)) => c,
+        Ok(None) => {
+            shared.zeroize();
+            return Err(StorageError::Other("the other computer did not answer in time".into()));
+        }
+        Err(StorageError::Other(e)) if e.contains("expired") => {
+            shared.zeroize();
+            return Err(StorageError::Other(
+                "the code does not match the one shown on the other computer (or the pairing expired); check it and try again with a new code"
+                    .into(),
+            ));
+        }
+        Err(e) => {
+            shared.zeroize();
+            return Err(e);
+        }
     };
-    let Some(plain) = open(&shared, "packsync pairing offer", &c) else {
+    let Some(mut plain) = open(&shared, "packsync pairing offer", &c) else {
+        shared.zeroize();
         // tell the other side at once instead of letting it wait for the expiry
         let _ = write_slot(&http, None, &n, 'd', &b64().encode(b"wrong code"), ctx);
         return Err(StorageError::Other(
@@ -278,19 +354,23 @@ pub fn join(endpoint: &str, code: &str, ctx: &OpCtx) -> StorageResult<Credential
     };
     let offer: Offer =
         serde_json::from_slice(&plain).map_err(|e| StorageError::Other(format!("unexpected pairing offer: {e}")))?;
-    let key: [u8; 32] = b64()
+    plain.zeroize();
+    let mut key: [u8; 32] = b64()
         .decode(&offer.key)
         .ok()
         .and_then(|k| k.try_into().ok())
         .ok_or_else(|| StorageError::Other("the pairing offer carried no valid key".into()))?;
     write_slot(&http, None, &n, 'd', &seal(&shared, "packsync pairing joined", b"joined"), ctx)?;
+    shared.zeroize();
+    let master = MasterKey::from_bytes(key);
+    key.zeroize();
     Ok(Credentials {
         account: AccountCredentials {
-            endpoint: offer.endpoint,
-            account: offer.account,
-            token: Secret::new(offer.token),
+            endpoint: offer.endpoint.clone(),
+            account: offer.account.clone(),
+            token: Secret::new(offer.token.clone()),
         },
-        key: MasterKey::from_bytes(key),
+        key: master,
     })
 }
 

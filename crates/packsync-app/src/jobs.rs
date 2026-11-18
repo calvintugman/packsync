@@ -15,6 +15,7 @@ use crate::events::{AppEvent, BusSink, ErrorView, EventBus, JobInfo, JobState};
 
 struct Entry {
     info: JobInfo,
+    params: serde_json::Value,
     cancel: CancelToken,
 }
 
@@ -50,14 +51,30 @@ impl JobRunner {
     where
         F: FnOnce(&OpCtx) -> Result<serde_json::Value> + Send + 'static,
     {
+        self.start_with_params(method, instance, serde_json::Value::Null, work)
+    }
+
+    /// Start `work` with explicit `params` for coalescing: an idempotent method only reuses an
+    /// already-running job when both method/instance and `params` match.
+    pub fn start_with_params<F>(
+        &self,
+        method: &str,
+        instance: Option<InstanceId>,
+        params: serde_json::Value,
+        work: F,
+    ) -> Result<JobId>
+    where
+        F: FnOnce(&OpCtx) -> Result<serde_json::Value> + Send + 'static,
+    {
         let id = JobId::new();
         {
             let mut g = self.inner.lock();
             if let Some((existing, _)) = g.iter().find(|(_, e)| {
                 e.info.state == JobState::Running && e.info.method == method && e.info.instance == instance
             }) {
-                if COALESCED.contains(&method) {
-                    return Ok(*existing);
+                let existing = *existing;
+                if COALESCED.contains(&method) && g[&existing].params == params {
+                    return Ok(existing);
                 }
                 return Err(Error::Busy(format!(
                     "{method} is already running for this instance; wait for it to finish"
@@ -74,7 +91,7 @@ impl JobRunner {
                 result: None,
                 progress: None,
             };
-            g.insert(id, Entry { info: info.clone(), cancel: CancelToken::new() });
+            g.insert(id, Entry { info: info.clone(), params, cancel: CancelToken::new() });
             self.bus.emit(AppEvent::Job(info));
         }
         let _ = self.db.job_register(id, method, instance, None);
@@ -237,5 +254,33 @@ mod tests {
         assert_eq!(j.state, JobState::Failed, "a panic is reported as a failed job, not a dead app");
         assert!(rx.try_iter().filter(|e| matches!(e, AppEvent::Job(_))).count() >= 8);
         assert_eq!(jobs.running(), 0);
+    }
+
+    #[test]
+    fn coalescing_requires_matching_parameters() {
+        let (_d, jobs, _) = runner();
+        let inst = Some(InstanceId::new());
+        let first = jobs
+            .start_with_params("instance.verify_remote", inst, serde_json::json!({"deep": false}), |ctx| {
+                for _ in 0..500 {
+                    ctx.check()?;
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap();
+        assert_eq!(
+            jobs.start_with_params("instance.verify_remote", inst, serde_json::json!({"deep": false}), |_| {
+                Ok(serde_json::Value::Null)
+            })
+            .unwrap(),
+            first
+        );
+        let diff = jobs.start_with_params("instance.verify_remote", inst, serde_json::json!({"deep": true}), |_| {
+            Ok(serde_json::Value::Null)
+        });
+        assert!(matches!(diff, Err(Error::Busy(_))), "{diff:?}");
+        jobs.cancel(first);
+        let _ = jobs.wait(first, Duration::from_secs(5));
     }
 }

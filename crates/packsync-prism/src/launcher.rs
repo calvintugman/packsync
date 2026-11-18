@@ -328,12 +328,20 @@ impl Launcher for PrismLauncher {
                 "the restored instance has no mmc-pack.json; the snapshot is incomplete".into(),
             ));
         }
-        // 1. make instance.cfg valid for this machine
+        // 1. make instance.cfg valid for this machine: strip any launcher-command keys that must
+        //    never come from another machine's snapshot, then apply the requested local settings.
         let cfg_file = req.staged_root.join(INSTANCE_CFG);
         let cur = std::fs::read(&cfg_file).unwrap_or_default();
         let view_has_type =
             CfgView::parse(&cur).ok().and_then(|v| v.string("InstanceType")).is_some_and(|s| !s.is_empty());
-        let mut edits = vec![KeyEdit::Set { key: "name".into(), value: req.display_name.clone() }];
+        let mut edits = vec![
+            KeyEdit::Remove { key: "PreLaunchCommand".into() },
+            KeyEdit::Remove { key: "PostExitCommand".into() },
+            KeyEdit::Remove { key: "WrapperCommand".into() },
+            KeyEdit::Remove { key: "OverrideCommands".into() },
+            KeyEdit::Remove { key: "OverrideLaunchCmd".into() },
+            KeyEdit::Set { key: "name".into(), value: req.display_name.clone() },
+        ];
         if !view_has_type {
             edits.push(KeyEdit::Set { key: "InstanceType".into(), value: "OneSix".into() });
         }
@@ -342,6 +350,8 @@ impl Launcher for PrismLauncher {
             edits.push(KeyEdit::Set { key: "OverrideJavaLocation".into(), value: "true".into() });
             edits.push(KeyEdit::Set { key: "JavaPath".into(), value: j.clone() });
         } else {
+            edits.push(KeyEdit::Remove { key: "OverrideJavaLocation".into() });
+            edits.push(KeyEdit::Remove { key: "JavaPath".into() });
             notes.push("Java: Prism will use its global Java setting for this instance. Set a Java path in the instance's settings if the pack needs a specific version.".into());
         }
         if req.local.min_memory_mb.is_some() || req.local.max_memory_mb.is_some() {
@@ -369,7 +379,10 @@ impl Launcher for PrismLauncher {
             return Err(Error::Busy(format!("{} appeared while restoring; try again", dest.display())));
         }
         std::fs::rename(&req.staged_root, &dest).map_err(|e| {
-            if e.raw_os_error() == Some(18) {
+            if e.kind() == std::io::ErrorKind::CrossesDevices
+                || e.raw_os_error() == Some(18)
+                || (cfg!(windows) && e.raw_os_error() == Some(17))
+            {
                 Error::Unsupported("the staging folder and Prism's instances folder are on different file systems; PackSync will not copy a half-finished instance into place".into())
             } else {
                 Error::io(format!("moving the restored instance to {}", dest.display()), e)
@@ -398,6 +411,12 @@ impl Launcher for PrismLauncher {
 
     fn launch(&self, req: &LaunchRequest) -> Result<LaunchHandle> {
         let lc = self.launch_command(req)?;
+        if matches!(self.find_exe(), Some(Exe::Native(ref p)) if !p.is_file()) {
+            return Err(Error::Config(format!(
+                "the configured Prism Launcher executable {} does not exist",
+                lc.program.display()
+            )));
+        }
         let forwarded = self.is_launcher_running(&req.launcher_ref);
         let mut cmd = Command::new(&lc.program);
         cmd.args(&lc.args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -654,6 +673,7 @@ mod tests {
             executable: PathBuf::from(if cfg!(windows) { r"C:\opt\packsync" } else { "/opt/packsync" }),
             instance_id: InstanceId::new(),
             extra_args: vec![],
+            flatpak_host_spawn: false,
         };
         let running =
             PrismLauncher::new().with_data_dirs(vec![dd.clone()]).with_process_source(Arc::new(OneProc(dd.clone())));
@@ -669,5 +689,47 @@ mod tests {
         let pats = idle.game_process_patterns(&root);
         assert_eq!(pats.len(), 1, "no generic pattern that would match other instances' games: {pats:?}");
         assert!(pats[0].ends_with("/natives") || pats[0].ends_with("\\natives"), "{pats:?}");
+    }
+
+    #[test]
+    fn register_restored_strips_launch_commands_and_remote_java_path() {
+        let t = tempfile::tempdir().unwrap();
+        let dd = data_dir(t.path());
+        let l = launcher(&dd);
+        let staged = dd.join("instances/.packsync-staged");
+        std::fs::create_dir_all(staged.join(".minecraft")).unwrap();
+        std::fs::write(staged.join("mmc-pack.json"), br#"{"formatVersion":1,"components":[]}"#).unwrap();
+        std::fs::write(
+            staged.join("instance.cfg"),
+            b"[General]\nInstanceType=OneSix\nOverrideCommands=true\nPreLaunchCommand=/bin/sh -c pwn\nWrapperCommand=/tmp/wrap\nPostExitCommand=/tmp/post\nOverrideJavaLocation=true\nJavaPath=/other/pc/java\n",
+        )
+        .unwrap();
+        let reg = l
+            .register_restored(&RegisterRequest {
+                staged_root: staged,
+                target: Some(LauncherRef {
+                    launcher: KIND.into(),
+                    data_dir: Some(dd.clone()),
+                    instance_id: None,
+                    executable: None,
+                }),
+                display_name: "Safe Pack".into(),
+                preferred_folder: "Safe Pack".into(),
+                local: LocalSettings::default(),
+                instance_id: InstanceId::new(),
+            })
+            .unwrap();
+        let cfg = std::fs::read_to_string(reg.root.join("instance.cfg")).unwrap();
+        for forbidden in [
+            "PreLaunchCommand",
+            "PostExitCommand",
+            "WrapperCommand",
+            "OverrideCommands",
+            "JavaPath",
+            "OverrideJavaLocation",
+        ] {
+            assert!(!cfg.contains(forbidden), "{forbidden} leaked into restored instance.cfg:\n{cfg}");
+        }
+        assert!(cfg.contains("name=Safe Pack"), "{cfg}");
     }
 }

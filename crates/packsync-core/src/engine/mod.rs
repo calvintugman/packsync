@@ -70,8 +70,17 @@ impl EngineConfig {
 /// How many decoded manifests [`Engine::manifest_shared`] keeps.
 const DECODED_MANIFESTS: usize = 4;
 
+/// Mutable runtime tuning parameters updated when the user saves settings.
+#[derive(Debug, Clone, Copy)]
+struct RuntimeOptions {
+    upload_concurrency: usize,
+    lease_ttl_secs: u32,
+    keep_recovery_days: u32,
+}
+
 pub struct Engine {
     pub cfg: EngineConfig,
+    runtime_opts: RwLock<RuntimeOptions>,
     pub(crate) db: Arc<Db>,
     device: RwLock<(DeviceId, String)>,
     storage: RwLock<Option<Arc<dyn Storage>>>,
@@ -100,8 +109,14 @@ impl Engine {
             db.set_device_name(n)?;
         }
         let device = RwLock::new(db.device()?);
+        let runtime_opts = RwLock::new(RuntimeOptions {
+            upload_concurrency: cfg.upload_concurrency,
+            lease_ttl_secs: cfg.lease_ttl_secs,
+            keep_recovery_days: cfg.restore.keep_recovery_days,
+        });
         let e = Engine {
             cfg,
+            runtime_opts,
             db,
             device,
             storage: RwLock::new(None),
@@ -120,6 +135,28 @@ impl Engine {
     }
     pub fn device(&self) -> (DeviceId, String) {
         self.device.read().clone()
+    }
+
+    /// Update live tuning options (upload concurrency, lease TTL, recovery retention) without restarting.
+    pub fn update_runtime_options(&self, upload_concurrency: usize, lease_ttl_secs: u32, keep_recovery_days: u32) {
+        let mut g = self.runtime_opts.write();
+        g.upload_concurrency = upload_concurrency.max(1);
+        g.lease_ttl_secs = lease_ttl_secs.max(10);
+        g.keep_recovery_days = keep_recovery_days;
+    }
+
+    pub(crate) fn upload_concurrency(&self) -> usize {
+        self.runtime_opts.read().upload_concurrency
+    }
+
+    pub(crate) fn lease_ttl_secs(&self) -> u32 {
+        self.runtime_opts.read().lease_ttl_secs
+    }
+
+    pub(crate) fn restore_cfg(&self) -> crate::restore::RestoreConfig {
+        let mut cfg = self.cfg.restore.clone();
+        cfg.keep_recovery_days = self.runtime_opts.read().keep_recovery_days;
+        cfg
     }
 
     /// Rename this computer (shown as the "source device" in other devices' history).
@@ -346,7 +383,7 @@ impl Engine {
 
     /// The rules the next save uses: the last snapshot's, followed by decisions made since (or, before
     /// the first snapshot, the rules chosen when syncing was turned on).
-    pub(crate) fn rules_for(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<(RuleSet, String)> {
+    pub fn rules_for(&self, inst: &InstanceRow, ctx: &OpCtx) -> Result<(RuleSet, String)> {
         let text = match (inst.base_snapshot, &inst.pending_rules) {
             (Some(b), _) => self.manifest_shared(inst.id, b, ctx)?.rules.text.clone(),
             (None, Some(p)) => p.clone(),

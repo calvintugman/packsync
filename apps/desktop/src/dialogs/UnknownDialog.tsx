@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { InstanceStatus } from "../api/types";
 import { asDecisions, proposals, UnknownChoices } from "../components/UnknownChoices";
 import type { Choices } from "../components/UnknownChoices";
+import { describeSync } from "../lib/describe";
 import { useAction, useStore } from "../state/context";
 import { Button } from "../ui/controls";
 import { Dialog } from "../ui/Dialog";
@@ -15,8 +16,13 @@ export function UnknownDialog({ inst, onClose }: { inst: InstanceStatus; onClose
     await store.call("instance.decide_unknown", { instance: inst.id, decisions: asDecisions(choices) });
     const synced = Object.values(choices).filter(Boolean).length;
     // the sync applies the answers (after catching up with the cloud); a failure is shown here
-    await store.runJob("instance.sync", { instance: inst.id });
-    store.toast("success", synced > 0 ? `Now syncing ${synced} more ${synced === 1 ? "item" : "items"}.` : "Saved your choices.", inst.name);
+    const r = await store.runJob("instance.sync", { instance: inst.id });
+    const o = describeSync(r);
+    if (o.tone === "warn" || o.tone === "danger") {
+      store.toast(o.tone === "danger" ? "error" : "warn", o.text, inst.name);
+    } else {
+      store.toast("success", synced > 0 ? `Now syncing ${synced} more ${synced === 1 ? "item" : "items"}.` : "Saved your choices.", inst.name);
+    }
     await store.refreshInstances();
     onClose();
   });

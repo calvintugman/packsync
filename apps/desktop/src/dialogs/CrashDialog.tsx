@@ -22,8 +22,14 @@ export function CrashDialog({ instance, onClose }: { instance: InstanceStatus; o
   });
   const decide = useAction(async () => {
     if (pick === "promote") {
-      await store.runJob("crash.promote", { instance: instance.id }, { onStart: setJobId });
-      store.toast("success", "Kept. This is now your latest progress.");
+      const r = await store.runJob("crash.promote", { instance: instance.id }, { onStart: setJobId });
+      if (r.upload && "error" in r.upload) {
+        store.toast("warn", "Kept as your latest progress, but it could not be uploaded yet.");
+      } else if (r.upload?.deferred_until_ms || (r.upload?.remaining ?? 0) > 0) {
+        store.toast("warn", "Kept on this computer. It will upload once the cloud is reachable.");
+      } else {
+        store.toast("success", "Kept. This is now your latest progress.");
+      }
     } else {
       await store.runJob("crash.discard", { instance: instance.id }, { onStart: setJobId });
       store.toast("success", "Went back to the last good save. The crash save stays in History.");

@@ -195,6 +195,7 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
             other => other,
         })
     })();
+    let mut spawn_lease = false;
     match ours {
         Ok(HookOutcome::Block { message, exit_code }) => {
             eprintln!("PackSync stopped the launch: {message}");
@@ -204,15 +205,25 @@ pub fn run_hook(cli: &Cli, h: &HookCmd, out: &Out) -> Result<i32> {
             for m in messages {
                 eprintln!("PackSync: {m}");
             }
-            // pre-launch: write the "playing" lease; post-exit: upload what was saved, then remove it
-            if let Ok(id) = InstanceId::parse(&args.instance) {
-                spawn_background(id, cli, if pre { "lease" } else { "finish" });
+            if pre {
+                spawn_lease = true;
+            } else if let Ok(id) = InstanceId::parse(&args.instance) {
+                spawn_background(id, cli, "finish");
             }
         }
         Ok(HookOutcome::Ask { .. } | HookOutcome::ChooseVersion { .. }) => unreachable!("answered above"),
         Err(e) => eprintln!("PackSync could not run its part of the hook ({e}); continuing without syncing"),
     }
-    Ok(run_chained(&args.chained))
+    let code = run_chained(&args.chained);
+    if spawn_lease && let Ok(id) = InstanceId::parse(&args.instance) {
+        if code == 0 {
+            spawn_background(id, cli, "lease");
+        } else if let Ok(app) = open_app(cli) {
+            app.engine().defer_leases(true);
+            let _ = app.hook_post_exit(id, &out.ctx());
+        }
+    }
+    Ok(code)
 }
 
 /// `hook lease` / `hook finish`, run detached by the hooks above. Failures only go to the activity log: the

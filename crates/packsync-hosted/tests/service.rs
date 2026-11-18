@@ -128,7 +128,13 @@ fn wrong_code(endpoint: &str) {
 fn pairing_shares_the_account_and_a_wrong_code_shares_nothing() {
     let m = MockService::start();
     pair(m.url());
+    let before = m.pairing_offer_writes.load(std::sync::atomic::Ordering::SeqCst);
     wrong_code(m.url());
+    assert_eq!(
+        m.pairing_offer_writes.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "key confirmation in slot b must reject a wrong code before slot c is ever written"
+    );
 }
 
 /// The same checks against the Worker (`services/hosted`, `npm run dev`).
@@ -171,7 +177,7 @@ fn against_the_real_service_when_running() {
 fn fake_browser(credential_id: &'static str, secret: [u8; 32]) -> impl Fn(&str) -> std::io::Result<()> {
     move |url: &str| {
         use base64::Engine as _;
-        let q = url.split_once('?').unwrap().1;
+        let q = url.split_once('#').or_else(|| url.split_once('?')).unwrap().1;
         let get = |k: &str| {
             q.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| {
                 let mut out = String::new();

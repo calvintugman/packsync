@@ -92,6 +92,7 @@ export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus)
               </p>
               {(google ?? storage)?.problem ? <p className="faint">{(google ?? storage)?.problem}</p> : null}
               <PathField
+                kind="file"
                 label="Downloaded client file (JSON)"
                 value={clientFile}
                 onChange={setClientFile}

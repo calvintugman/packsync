@@ -8,12 +8,18 @@ import { Dialog } from "../ui/Dialog";
 import { ErrorNote } from "../ui/ErrorNote";
 
 /** What an already-synced instance syncs and what it leaves out (read-only). */
-export function PreviewDialog({ root, onClose }: { root: string; onClose: () => void }) {
+export function PreviewDialog({ root, instance, onClose }: { root: string; instance?: string; onClose: () => void }) {
   const store = useStore();
   const [report, setReport] = useState<PreviewReport | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const load = useAction(async () => {
-    setReport(await store.runJob("instances.preview", { root, launcher: "prism" }, { onStart: setJobId }));
+    setReport(
+      await store.runJob(
+        "instances.preview",
+        { root, launcher: "prism", ...(instance ? { instance } : {}) },
+        { onStart: setJobId },
+      ),
+    );
   });
   const started = useRef(false);
   useEffect(() => {

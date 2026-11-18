@@ -25,6 +25,7 @@ use packsync_core::hash::Hash;
 use packsync_core::progress::OpCtx;
 use packsync_core::storage::*;
 use parking_lot::Mutex;
+use zeroize::Zeroize;
 
 /// Plaintext bytes per segment.
 pub const SEGMENT: u64 = 64 * 1024;
@@ -35,6 +36,12 @@ const AAD_PREFIX: &[u8] = b"packsync object segment v1";
 /// The secret every computer of an account shares. Derived keys are used, never this one directly.
 #[derive(Clone)]
 pub struct MasterKey([u8; 32]);
+
+impl Drop for MasterKey {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl std::fmt::Debug for MasterKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -75,6 +82,12 @@ pub fn plain_len(c: u64) -> Option<u64> {
 struct Keys {
     aead: XChaCha20Poly1305,
     nonce: [u8; 32],
+}
+
+impl Drop for Keys {
+    fn drop(&mut self) {
+        self.nonce.zeroize();
+    }
 }
 
 impl Keys {

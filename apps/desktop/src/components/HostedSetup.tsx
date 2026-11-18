@@ -62,6 +62,9 @@ export function HostedSetup({
   const [shownCode, setShownCode] = useState<string | null>(null);
   const [joinedNote, setJoinedNote] = useState(false);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+  const [pairJobId, setPairJobId] = useState<string | null>(null);
+  const [addPasskeyJobId, setAddPasskeyJobId] = useState<string | null>(null);
+  const [recoverJobId, setRecoverJobId] = useState<string | null>(null);
 
   const finish = async (status: StorageStatus, message: string) => {
     await store.refreshSettings();
@@ -92,23 +95,32 @@ export function HostedSetup({
     const r = await store.call("storage.hosted_pair_start");
     setShownCode(r.code);
     try {
-      await store.runJob("storage.hosted_pair_wait", undefined);
+      await store.runJob("storage.hosted_pair_wait", undefined, { onStart: setPairJobId });
       setJoinedNote(true);
       store.toast("success", "The other computer joined.");
     } finally {
       setShownCode(null);
+      setPairJobId(null);
     }
   });
   const addPasskey = useAction(async () => {
-    await store.runJob("storage.passkey_add", undefined);
-    store.toast(
-      "success",
-      "Passkey added. If you ever lose every computer, it gets you back in.",
-    );
+    try {
+      await store.runJob("storage.passkey_add", undefined, { onStart: setAddPasskeyJobId });
+      store.toast(
+        "success",
+        "Passkey added. If you ever lose every computer, it gets you back in.",
+      );
+    } finally {
+      setAddPasskeyJobId(null);
+    }
   });
   const passkeyRecover = useAction(async () => {
-    const status = await store.runJob("storage.passkey_recover", undefined);
-    await finish(status, "You're back in your PackSync cloud.");
+    try {
+      const status = await store.runJob("storage.passkey_recover", undefined, { onStart: setRecoverJobId });
+      await finish(status, "You're back in your PackSync cloud.");
+    } finally {
+      setRecoverJobId(null);
+    }
   });
   const [showRecovery, setShowRecovery] = useState(false);
   const showKey = useAction(async () => {
@@ -151,6 +163,9 @@ export function HostedSetup({
             >
               {shownCode ? "Waiting…" : "Show a pairing code"}
             </Button>
+            {pair.busy && pairJobId ? (
+              <Button onClick={() => void store.cancelJob(pairJobId)}>Cancel</Button>
+            ) : null}
           </div>
         </div>
         <div className="card col">
@@ -174,6 +189,9 @@ export function HostedSetup({
             >
               Add a passkey
             </Button>
+            {addPasskey.busy && addPasskeyJobId ? (
+              <Button onClick={() => void store.cancelJob(addPasskeyJobId)}>Cancel</Button>
+            ) : null}
             {!showRecovery ? (
               <button
                 type="button"
@@ -246,7 +264,12 @@ export function HostedSetup({
           </div>
           {start.error ? <ErrorNote error={start.error} /> : null}
           {passkeyRecover.busy ? (
-            <p className="faint">Finish in your browser…</p>
+            <div className="row">
+              <p className="faint">Finish in your browser…</p>
+              {recoverJobId ? (
+                <Button size="sm" onClick={() => void store.cancelJob(recoverJobId)}>Cancel</Button>
+              ) : null}
+            </div>
           ) : null}
           {passkeyRecover.error ? (
             <ErrorNote error={passkeyRecover.error} />

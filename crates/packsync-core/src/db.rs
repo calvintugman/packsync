@@ -186,6 +186,30 @@ ALTER TABLE jobs ADD COLUMN owner_start_ms INTEGER;
 ALTER TABLE instances ADD COLUMN rule_decisions TEXT;
 UPDATE instances SET pending_rules = NULL WHERE base_snapshot IS NOT NULL;
 "#,
+    // v4: multiple snapshots may share a content-identical pack file in staging, so key `staged_packs`
+    // by `(snapshot_id, id)` instead of `id` alone; also index `jobs` for state/pruning queries.
+    r#"
+CREATE TABLE staged_packs_new (
+  id              BLOB NOT NULL,
+  snapshot_id     TEXT NOT NULL,
+  path            TEXT NOT NULL,
+  size            INTEGER NOT NULL,
+  uploaded        INTEGER NOT NULL DEFAULT 0,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  next_attempt_ms INTEGER,
+  last_error      TEXT,
+  last_error_code TEXT,
+  created_ms      INTEGER NOT NULL,
+  PRIMARY KEY (snapshot_id, id)
+) WITHOUT ROWID;
+INSERT INTO staged_packs_new(id, snapshot_id, path, size, uploaded, attempts, next_attempt_ms, last_error, last_error_code, created_ms)
+  SELECT id, snapshot_id, path, size, uploaded, attempts, next_attempt_ms, last_error, last_error_code, created_ms FROM staged_packs;
+DROP TABLE staged_packs;
+ALTER TABLE staged_packs_new RENAME TO staged_packs;
+CREATE INDEX staged_packs_by_id ON staged_packs(id);
+CREATE INDEX IF NOT EXISTS jobs_by_state ON jobs(state);
+CREATE INDEX IF NOT EXISTS jobs_by_created ON jobs(created_ms);
+"#,
 ];
 
 pub fn now_ms() -> i64 {
@@ -716,7 +740,7 @@ impl Db {
             for (id, path, size) in c.staged {
                 tx.execute(
                     "INSERT INTO staged_packs(id,snapshot_id,path,size,created_ms) VALUES (?1,?2,?3,?4,?5)
-                     ON CONFLICT(id) DO UPDATE SET snapshot_id=excluded.snapshot_id, path=excluded.path",
+                     ON CONFLICT(snapshot_id, id) DO UPDATE SET path=excluded.path",
                     params![id.0.to_vec(), r.id.to_hex(), path.to_string_lossy(), *size as i64, now_ms()],
                 )?;
             }
@@ -1149,6 +1173,10 @@ impl Db {
                 "UPDATE jobs SET state=?2, error=?3, updated_ms=?4 WHERE id=?1",
                 params![id.to_string(), state, error, now_ms()],
             )?;
+            let _ = c.execute(
+                "DELETE FROM jobs WHERE state != 'running' AND id NOT IN (SELECT id FROM jobs WHERE state != 'running' ORDER BY created_ms DESC, rowid DESC LIMIT 2000)",
+                [],
+            );
             Ok(())
         })
     }
@@ -1899,5 +1927,64 @@ mod tests {
         assert!(db.blob_known(e.hash).unwrap());
         db.blobs_forget_pack(pack).unwrap();
         assert!(!db.blob_known(e.hash).unwrap(), "cache entries for a vanished pack are dropped");
+    }
+
+    #[test]
+    fn two_snapshots_sharing_a_staged_pack_retain_both_rows_and_mark_uploaded() {
+        let db = Db::open_memory().unwrap();
+        assert_eq!(Db::schema_version(), 4);
+        let a = inst("a");
+        let b = inst("b");
+        db.instance_insert(&a).unwrap();
+        db.instance_insert(&b).unwrap();
+        let pack_id = Hash::of(b"shared-pack");
+        let mk_row = |inst_id: InstanceId, tag: &[u8]| SnapshotRow {
+            id: SnapshotId(Hash::of(tag)),
+            instance_id: inst_id,
+            kind: SnapshotKind::Normal,
+            parents: vec![],
+            parents_known: true,
+            device_id: None,
+            device_name: None,
+            created: Some("2026-01-01T00:00:00Z".into()),
+            origin: Origin::Local,
+            state: SnapshotState::LocalComplete,
+            files: 1,
+            bytes: 10,
+            note: None,
+            session_outcome: None,
+            published_ms: None,
+            visible_ms: None,
+            has_manifest: true,
+        };
+        let r1 = mk_row(a.id, b"s1");
+        let r2 = mk_row(b.id, b"s2");
+        let staged = vec![(pack_id, PathBuf::from("p.pack"), 10)];
+        db.commit_local_snapshot(&LocalSnapshotCommit {
+            row: &r1,
+            staged: &staged,
+            index: None,
+            index_before: None,
+            full_scan: false,
+        })
+        .unwrap();
+        db.commit_local_snapshot(&LocalSnapshotCommit {
+            row: &r2,
+            staged: &staged,
+            index: None,
+            index_before: None,
+            full_scan: false,
+        })
+        .unwrap();
+
+        let p1 = db.staged_for(r1.id).unwrap();
+        let p2 = db.staged_for(r2.id).unwrap();
+        assert_eq!(p1.len(), 1);
+        assert_eq!(p2.len(), 1);
+        assert!(!p1[0].uploaded && !p2[0].uploaded);
+
+        db.staged_mark_uploaded(pack_id).unwrap();
+        assert!(db.staged_for(r1.id).unwrap()[0].uploaded);
+        assert!(db.staged_for(r2.id).unwrap()[0].uploaded);
     }
 }

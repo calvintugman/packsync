@@ -8,6 +8,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 license = "MIT"
+repository = "https://github.com/calvintugman/packsync"
 publish = false
 description = "PackSync desktop app: a Tauri shell around the PackSync application layer"
 
@@ -35,3 +36,12 @@ panic = "unwind"           # the engine catches panics at job boundaries
 
 [profile.dev.package."*"]
 opt-level = 1              # hashing and compression are unusably slow at opt-level 0
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "warn"
+unwrap_used = "allow"

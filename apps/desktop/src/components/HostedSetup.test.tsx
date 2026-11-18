@@ -66,6 +66,7 @@ describe("HostedSetup", () => {
     expect(screen.queryByText(/packsync1-SECRET/)).not.toBeInTheDocument();
     await u.click(screen.getByRole("button", { name: "Show a pairing code" }));
     expect(await screen.findByText("4821-K7QM-X2PD")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     release({ joined: true });
     expect(await screen.findByText(/The other computer joined/)).toBeInTheDocument();
     expect(screen.queryByText("4821-K7QM-X2PD")).not.toBeInTheDocument();

@@ -16,16 +16,31 @@ pub(crate) struct ListPage {
     pub next_token: Option<String>,
 }
 
-/// Every `<tag>…</tag>` body in `xml`, in order.
+/// Every `<tag ...>…</tag>` body in `xml`, in order.
 fn blocks<'a>(xml: &'a str, tag: &str) -> Vec<&'a str> {
-    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let prefix = format!("<{tag}");
+    let close = format!("</{tag}>");
     let mut out = vec![];
     let mut rest = xml;
-    while let Some(i) = rest.find(&open) {
-        let after = &rest[i + open.len()..];
-        let Some(j) = after.find(&close) else { break };
-        out.push(&after[..j]);
-        rest = &after[j + close.len()..];
+    while let Some(i) = rest.find(&prefix) {
+        let after_name = &rest[i + prefix.len()..];
+        match after_name.as_bytes().first() {
+            Some(b'>' | b' ' | b'\t' | b'\r' | b'\n' | b'/') => {}
+            _ => {
+                rest = after_name;
+                continue;
+            }
+        }
+        let Some(gt) = after_name.find('>') else { break };
+        if gt > 0 && after_name.as_bytes()[gt - 1] == b'/' {
+            out.push("");
+            rest = &after_name[gt + 1..];
+            continue;
+        }
+        let body_start = &after_name[gt + 1..];
+        let Some(j) = body_start.find(&close) else { break };
+        out.push(&body_start[..j]);
+        rest = &body_start[j + close.len()..];
     }
     out
 }
@@ -117,5 +132,10 @@ mod tests {
         assert_eq!(text(err, "Code").as_deref(), Some("SignatureDoesNotMatch"));
         assert_eq!(text(err, "Message").as_deref(), Some("a & b"));
         assert!(parse_list(err).is_err());
+
+        let with_attrs = r#"<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Contents id="1"><Key attr="k">a/b</Key><Size type="int">42</Size></Contents><Contents/><Keyring>ignored</Keyring></ListBucketResult>"#;
+        assert_eq!(blocks(with_attrs, "Contents"), vec![r#"<Key attr="k">a/b</Key><Size type="int">42</Size>"#, ""]);
+        assert_eq!(text(with_attrs, "Key").as_deref(), Some("a/b"));
+        assert_eq!(text(with_attrs, "Size").as_deref(), Some("42"));
     }
 }

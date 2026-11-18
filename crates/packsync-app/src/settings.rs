@@ -164,8 +164,24 @@ impl Settings {
             }
         }
         if let StorageSetting::Hosted { endpoint, account } = &self.storage {
-            if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-                return Err(Error::Config(format!("the service address {endpoint:?} must start with https://")));
+            let trimmed = endpoint.trim().trim_end_matches('/');
+            let valid = if let Some(rest) = trimmed.strip_prefix("https://") {
+                !rest.is_empty() && !rest.contains('/') && !rest.contains('@')
+            } else if let Some(rest) = trimmed.strip_prefix("http://") {
+                let host_port = rest.split('/').next().unwrap_or("");
+                let host = if let Some(h) = host_port.strip_prefix('[') {
+                    h.split(']').next().unwrap_or("")
+                } else {
+                    host_port.split(':').next().unwrap_or("")
+                };
+                !rest.contains('/') && (host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost") || host == "::1")
+            } else {
+                false
+            };
+            if !valid {
+                return Err(Error::Config(format!(
+                    "the service address {endpoint:?} must start with https:// (http:// is only allowed for localhost)"
+                )));
             }
             if account.is_empty() || !account.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
                 return Err(Error::Config(format!("{account:?} is not a PackSync account ID")));
@@ -209,5 +225,22 @@ mod tests {
         assert!(Settings::load(&p).is_err());
         std::fs::write(&p, "not json").unwrap();
         assert!(Settings::load(&p).is_err());
+
+        let remote_http = Settings {
+            storage: StorageSetting::Hosted {
+                endpoint: "http://evil.example.com".into(),
+                account: "abcdefghijklmnopqrstuvwxyz".into(),
+            },
+            ..Settings::default()
+        };
+        assert!(remote_http.validate().is_err());
+        let local_http = Settings {
+            storage: StorageSetting::Hosted {
+                endpoint: "http://127.0.0.1:8787".into(),
+                account: "abcdefghijklmnopqrstuvwxyz".into(),
+            },
+            ..Settings::default()
+        };
+        assert!(local_http.validate().is_ok());
     }
 }

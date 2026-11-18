@@ -45,6 +45,7 @@ pub struct AppOptions {
 pub struct App {
     pub paths: AppPaths,
     settings: RwLock<Settings>,
+    settings_lock: parking_lot::Mutex<()>,
     engine: Arc<Engine>,
     auth: RwLock<Option<Arc<Authenticator>>>,
     creds: Arc<dyn CredentialStore>,
@@ -111,6 +112,7 @@ impl App {
         let app = Arc::new(App {
             paths,
             settings: RwLock::new(settings),
+            settings_lock: parking_lot::Mutex::new(()),
             engine,
             auth: RwLock::new(None),
             creds: opts.credentials.unwrap_or_else(provider::default_credentials),
@@ -146,6 +148,9 @@ impl App {
     }
     pub fn settings(&self) -> Settings {
         self.settings.read().clone()
+    }
+    pub fn credential_store_description(&self) -> String {
+        self.creds.describe()
     }
     pub fn prism(&self) -> Arc<PrismLauncher> {
         self.prism.read().clone()
@@ -214,14 +219,16 @@ impl App {
     // ------------------------------------------------------------------------------ settings
     /// Change settings: validate, save (atomically), then apply (storage, launcher, device name).
     pub fn update_settings(&self, f: impl FnOnce(&mut Settings)) -> Result<SettingsUpdate> {
-        let mut next = self.settings.read().clone();
+        let _guard = self.settings_lock.lock();
+        let prev = self.settings.read().clone();
+        let mut next = prev.clone();
         f(&mut next);
         next.validate()?;
         next.save(&self.paths.settings_file())?;
-        let storage_changed = next.storage != self.settings.read().storage
-            || next.google_client_file != self.settings.read().google_client_file;
-        let device_changed = next.device_name != self.settings.read().device_name;
+        let storage_changed = next.storage != prev.storage || next.google_client_file != prev.google_client_file;
+        let device_changed = next.device_name != prev.device_name;
         *self.settings.write() = next.clone();
+        self.engine.update_runtime_options(next.upload_concurrency, next.lease_ttl_secs, next.recovery_point_days);
         if device_changed && let Some(n) = &next.device_name {
             self.engine.rename_device(n)?;
         }
@@ -241,6 +248,13 @@ impl App {
         Ok(SettingsUpdate { settings: next, storage_problem })
     }
 
+    fn wrap_storage(&self, s: Arc<dyn Storage>) -> Arc<dyn Storage> {
+        match &self.storage_wrapper {
+            Some(wrap) => wrap(s),
+            None => s,
+        }
+    }
+
     fn apply_storage(&self) -> Result<()> {
         let settings = self.settings();
         // Detach first: a failure to build the new storage must not leave the old one silently active.
@@ -248,10 +262,7 @@ impl App {
         *self.auth.write() = None;
         let p = provider::build(&settings, &self.paths, self.engine.db(), self.creds.clone())?;
         *self.auth.write() = p.auth;
-        let storage = match (p.storage, &self.storage_wrapper) {
-            (Some(s), Some(wrap)) => Some(wrap(s)),
-            (s, _) => s,
-        };
+        let storage = p.storage.map(|s| self.wrap_storage(s));
         self.engine.set_storage(storage)
     }
 
@@ -292,11 +303,13 @@ impl App {
         secret: &packsync_core::redact::Secret,
         ctx: &OpCtx,
     ) -> Result<StorageStatus> {
+        let (account_id, bucket, prefix, access_key_id) =
+            (account_id.trim(), bucket.trim(), prefix.trim().trim_matches('/'), access_key_id.trim());
         let setting = StorageSetting::R2 {
-            account_id: account_id.trim().to_string(),
-            bucket: bucket.trim().to_string(),
-            prefix: prefix.trim().trim_matches('/').to_string(),
-            access_key_id: access_key_id.trim().to_string(),
+            account_id: account_id.to_string(),
+            bucket: bucket.to_string(),
+            prefix: prefix.to_string(),
+            access_key_id: access_key_id.to_string(),
         };
         let mut probe = self.settings();
         probe.storage = setting.clone();
@@ -304,14 +317,17 @@ impl App {
         if secret.is_empty() {
             return Err(Error::Config("the secret access key is empty".into()));
         }
+        // Verify connectivity before overwriting existing credentials or settings.
+        let (tmp, _stats) = provider::build_r2(account_id, bucket, prefix, access_key_id, secret.clone())?;
+        self.wrap_storage(tmp).list("instances/", ctx)?;
+
         self.creds
-            .set(&StorageSetting::r2_secret_account(account_id.trim(), access_key_id.trim()), secret)
+            .set(&StorageSetting::r2_secret_account(account_id, access_key_id), secret)
             .map_err(|e| Error::Config(e.to_string()))?;
         let up = self.update_settings(|s| s.storage = setting)?;
         if let Some(p) = up.storage_problem {
             return Err(Error::Config(p));
         }
-        self.engine.storage()?.list("instances/", ctx)?;
         Ok(self.storage_status())
     }
 
@@ -334,14 +350,17 @@ impl App {
         })
     }
 
-    /// Use `c` from now on: secrets to the credential store, the account to the settings, then one
-    /// listing to prove it works.
+    /// Use `c` from now on: check the connection first so a bad configuration never clobbers the
+    /// existing storage, then write the secret to the credential store and update settings.
     fn save_hosted(&self, c: &packsync_hosted::Credentials, ctx: &OpCtx) -> Result<StorageStatus> {
         let setting =
             StorageSetting::Hosted { endpoint: c.account.endpoint.clone(), account: c.account.account.clone() };
         let mut probe = self.settings();
         probe.storage = setting.clone();
         probe.validate()?;
+        let (tmp, _stats) = packsync_hosted::open_storage(c).map_err(Error::from)?;
+        self.wrap_storage(tmp).list("instances/", ctx)?;
+
         self.creds
             .set(&StorageSetting::hosted_secret_account(&c.account.account), &c.secret())
             .map_err(|e| Error::Config(e.to_string()))?;
@@ -349,7 +368,6 @@ impl App {
         if let Some(p) = up.storage_problem {
             return Err(Error::Config(p));
         }
-        self.engine.storage()?.list("instances/", ctx)?;
         Ok(self.storage_status())
     }
 
@@ -682,5 +700,113 @@ mod tests {
         // settings validation protects the stored file
         assert!(app.update_settings(|s| s.upload_concurrency = 0).is_err());
         assert_eq!(app.settings().upload_concurrency, 4);
+    }
+
+    #[test]
+    fn failed_preflight_keeps_existing_storage_and_credentials_intact() {
+        let d = tempfile::tempdir().unwrap();
+        let prism = d.path().join("prism");
+        std::fs::create_dir_all(&prism).unwrap();
+        let creds = Arc::new(MemoryCredentialStore::default());
+        let reject_cloud: StorageWrapper = Arc::new(|s| {
+            if s.provider_id().starts_with("local:") {
+                return s;
+            }
+            struct Rejecting(Arc<dyn Storage>);
+            impl Storage for Rejecting {
+                fn provider_id(&self) -> String {
+                    self.0.provider_id()
+                }
+                fn capabilities(&self) -> packsync_core::storage::Capabilities {
+                    self.0.capabilities()
+                }
+                fn list(
+                    &self,
+                    _: &str,
+                    _: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<Vec<packsync_core::storage::ObjectInfo>> {
+                    Err(packsync_core::storage::StorageError::Auth(packsync_core::storage::AuthProblem::Revoked))
+                }
+                fn stat(
+                    &self,
+                    k: &str,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<Option<packsync_core::storage::ObjectInfo>> {
+                    self.0.stat(k, c)
+                }
+                fn get(
+                    &self,
+                    k: &str,
+                    r: Option<(u64, u64)>,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<Box<dyn std::io::Read + Send>> {
+                    self.0.get(k, r, c)
+                }
+                fn get_with_info(
+                    &self,
+                    k: &str,
+                    m: u64,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<Option<(Vec<u8>, packsync_core::storage::ObjectInfo)>>
+                {
+                    self.0.get_with_info(k, m, c)
+                }
+                fn put(
+                    &self,
+                    k: &str,
+                    s: packsync_core::storage::PutSource<'_>,
+                    o: &packsync_core::storage::PutOptions,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<packsync_core::storage::ObjectInfo> {
+                    self.0.put(k, s, o, c)
+                }
+                fn delete(
+                    &self,
+                    k: &str,
+                    m: packsync_core::storage::DeleteMode,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<()> {
+                    self.0.delete(k, m, c)
+                }
+                fn quota(
+                    &self,
+                    c: &OpCtx,
+                ) -> packsync_core::storage::StorageResult<Option<packsync_core::storage::Quota>> {
+                    self.0.quota(c)
+                }
+            }
+            Arc::new(Rejecting(s))
+        });
+        let app = App::open(
+            AppPaths::under(&d.path().join("app")),
+            AppOptions {
+                credentials: Some(creds.clone()),
+                prism: Some(PrismLauncher::new().with_data_dirs(vec![prism])),
+                storage_wrapper: Some(reject_cloud),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cloud = d.path().join("cloud");
+        app.use_local_storage(&cloud).unwrap();
+
+        let err = app
+            .use_r2("acct123", "bucket", "prefix", "key123", &packsync_core::redact::Secret::new("secret"), &app.ctx())
+            .unwrap_err();
+        assert!(matches!(err, Error::Storage(_)), "{err}");
+        assert_eq!(app.storage_status().kind, "local");
+        assert!(creds.get(&StorageSetting::r2_secret_account("acct123", "key123")).unwrap().is_none());
+
+        let hosted = packsync_hosted::Credentials::from_secret(
+            "http://127.0.0.1:9",
+            "abcdefghijklmnopqrstuvwxyz",
+            &packsync_core::redact::Secret::new("tok.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+        )
+        .unwrap();
+        let rec = hosted.recovery_key();
+        let err = app.hosted_recover(&rec, &app.ctx()).unwrap_err();
+        assert!(matches!(err, Error::Storage(_)), "{err}");
+        assert_eq!(app.storage_status().kind, "local");
+        assert!(creds.get(&StorageSetting::hosted_secret_account(&hosted.account.account)).unwrap().is_none());
     }
 }

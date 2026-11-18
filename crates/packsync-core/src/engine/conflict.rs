@@ -81,9 +81,10 @@ impl Engine {
         let mut problems = vec![];
         let local_changes = self.pending_changes(id, ctx).map(|p| p.dirty).unwrap_or(false);
         let summary = self.summarize(id, snapshot, ctx);
-        match restore::plan(&target, snapshot, &local, &inst.root, &self.cfg.restore) {
+        let restore_cfg = self.restore_cfg();
+        match restore::plan(&target, snapshot, &local, &inst.root, &restore_cfg) {
             Ok(plan) => {
-                if let Err(e) = restore::preflight(&plan, &inst.root, &self.cfg.restore) {
+                if let Err(e) = restore::preflight(&plan, &inst.root, &restore_cfg) {
                     problems.push(e.to_string());
                 }
                 let sample = |ops: &[crate::journal::JOp], writes: bool| -> Vec<String> {
@@ -186,7 +187,7 @@ impl Engine {
         let before = fresh.base_snapshot;
         // 2. apply
         let (policies, local) = self.restore_scan(&fresh, &target, ctx)?;
-        let mut cfg = self.cfg.restore.clone();
+        let mut cfg = self.restore_cfg();
         cfg.skip_incompatible = opts.skip_incompatible;
         let idle = || self.ensure_idle(&fresh);
         let env = RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &cfg, writers: Some(&idle) };
@@ -259,7 +260,7 @@ impl Engine {
             .map_err(|e| Error::io(format!("creating {}", req.parent_dir.display()), e))?;
         let staged: PathBuf =
             req.parent_dir.join(format!(".packsync-restore-{}", &uuid::Uuid::new_v4().simple().to_string()[..12]));
-        let mut cfg = self.cfg.restore.clone();
+        let mut cfg = self.restore_cfg();
         cfg.skip_incompatible = req.skip_incompatible;
         let policies = {
             let mut m = std::collections::HashMap::new();
@@ -426,11 +427,12 @@ impl Engine {
                 remote.sync_index_cache(ctx)?;
                 let (policies, st) = self.restore_scan(&inst, &tm, ctx)?;
                 let idle = || self.ensure_idle(&inst);
+                let restore_cfg = self.restore_cfg();
                 let env = RestoreEnv {
                     db: &self.db,
                     remote: &remote,
                     policies: &policies,
-                    cfg: &self.cfg.restore,
+                    cfg: &restore_cfg,
                     writers: Some(&idle),
                 };
                 restore::restore_in_place(
@@ -584,13 +586,9 @@ impl Engine {
         remote.sync_index_cache(ctx)?;
         let (policies, st) = self.restore_scan(&inst, &gm, ctx)?;
         let idle = || self.ensure_idle(&inst);
-        let env = RestoreEnv {
-            db: &self.db,
-            remote: &remote,
-            policies: &policies,
-            cfg: &self.cfg.restore,
-            writers: Some(&idle),
-        };
+        let restore_cfg = self.restore_cfg();
+        let env =
+            RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &restore_cfg, writers: Some(&idle) };
         let rep = restore::restore_in_place(
             &env,
             &inst,

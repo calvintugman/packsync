@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PackSync",
   "version": "0.1.0",
-  "identifier": "org.example.packsync",
+  "identifier": "io.github.calvintugman.packsync",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:1420",
@@ -32,7 +32,7 @@
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "category": "Utility",
     "shortDescription": "Continue your Minecraft modpack on any computer",
-    "longDescription": "PackSync syncs a Prism Launcher instance — mods, configuration and single-player worlds — between your computers through your own Google Drive. It never merges worlds automatically and keeps every save recoverable.",
+    "longDescription": "PackSync syncs a Prism Launcher instance — mods, configuration and single-player worlds — between your computers through PackSync Cloud, Cloudflare R2, Google Drive or a synced folder. It never merges worlds automatically and keeps every save recoverable.",
     "copyright": "MIT licence",
     "license": "MIT",
     "licenseFile": "../../../LICENSE"

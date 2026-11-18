@@ -48,6 +48,7 @@ pub struct MockService {
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     pub requests: Arc<AtomicU64>,
+    pub pairing_offer_writes: Arc<AtomicU64>,
     quota: Arc<AtomicU64>,
     server: Arc<tiny_http::Server>,
     workers: Vec<std::thread::JoinHandle<()>>,
@@ -108,20 +109,34 @@ impl MockService {
             state: Arc::new(Mutex::new(State { next_nameplate: 1000, ..Default::default() })),
             stop: Arc::new(AtomicBool::new(false)),
             requests: Arc::new(AtomicU64::new(0)),
+            pairing_offer_writes: Arc::new(AtomicU64::new(0)),
             quota: Arc::new(AtomicU64::new(20 << 30)),
             server,
             workers: vec![],
             page_cap,
         };
         for _ in 0..12 {
-            let (server, state, stop, requests, quota, cap) =
-                (m.server.clone(), m.state.clone(), m.stop.clone(), m.requests.clone(), m.quota.clone(), m.page_cap);
+            let (server, state, stop, requests, offer_writes, quota, cap) = (
+                m.server.clone(),
+                m.state.clone(),
+                m.stop.clone(),
+                m.requests.clone(),
+                m.pairing_offer_writes.clone(),
+                m.quota.clone(),
+                m.page_cap,
+            );
             m.workers.push(std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
                     let Ok(Some(mut req)) = server.recv_timeout(std::time::Duration::from_millis(100)) else {
                         continue;
                     };
                     requests.fetch_add(1, Ordering::SeqCst);
+                    if req.method().as_str() == "PUT"
+                        && req.url().ends_with("/c")
+                        && req.url().starts_with("/v1/pairings/")
+                    {
+                        offer_writes.fetch_add(1, Ordering::SeqCst);
+                    }
                     let mut body = Vec::new();
                     let _ = std::io::Read::read_to_end(req.as_reader(), &mut body);
                     let headers: HashMap<String, String> = req

@@ -552,10 +552,7 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
         "rules.show" | "rules.explain" => {
             let a: Inst = p(&params)?;
             let inst = e.instance(a.instance)?;
-            let text = match inst.base_snapshot {
-                Some(b) => e.manifest(a.instance, b, ctx)?.rules.text,
-                None => inst.pending_rules.clone().unwrap_or_default(),
-            };
+            let (rs, text) = e.rules_for(&inst, ctx)?;
             if method == "rules.show" {
                 return Ok(json!({ "rules": text }));
             }
@@ -563,7 +560,6 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| Error::invalid("request", "path is required"))?;
-            let rs = packsync_core::rules::RuleSet::compile(&text, &inst.game_root)?;
             let d = rs.decide(path.trim_start_matches('/'));
             Ok(json!({ "path": path, "synced": d.include, "explanation": d.explain(path) }))
         }
@@ -623,5 +619,6 @@ pub fn start_job(app: &Arc<App>, method: &str, params: Value) -> Result<JobId> {
     }
     let inst = instance_of(&params);
     let (a, name) = (app.clone(), method.to_string());
-    app.jobs().start(method, inst, move |ctx| call(&a, &name, params, ctx))
+    let key_params = params.clone();
+    app.jobs().start_with_params(method, inst, key_params, move |ctx| call(&a, &name, params, ctx))
 }

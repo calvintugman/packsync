@@ -278,4 +278,60 @@ describe("AppStore: retrying", () => {
     await store.retryJob("job-from-elsewhere"); // nothing happens
     store.stop();
   });
+
+  it("does not leak polling intervals across StrictMode stop/start", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const t = baseTransport();
+    const waiters: Array<(v: unknown) => void> = [];
+    t.on("instances.list", () => new Promise((r) => waiters.push(r)));
+    const store = new AppStore(t, { pollMs: 5000 });
+    const p1 = store.start();
+    store.stop();
+    const p2 = store.start();
+    for (const r of waiters) r([]);
+    await Promise.all([p1, p2]);
+    store.stop();
+    const after = t.count("instances.list");
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(t.count("instances.list")).toBe(after);
+    vi.useRealTimers();
+  });
+
+  it("ignores stale running events once a job has finished and caps retry args", async () => {
+    const t = baseTransport();
+    t.on("instance.sync", () => ({ ok: true }));
+    const { store } = await started(t);
+    t.emit({
+      type: "job",
+      id: "j-done",
+      method: "instance.sync",
+      instance: null,
+      state: "succeeded",
+      started_ms: 1,
+      finished_ms: 2,
+      error: null,
+      result: {},
+      progress: null,
+    });
+    t.emit({
+      type: "job",
+      id: "j-done",
+      method: "instance.sync",
+      instance: null,
+      state: "running",
+      started_ms: 1,
+      finished_ms: null,
+      error: null,
+      result: null,
+      progress: null,
+    });
+    expect(store.getState().jobs["j-done"]?.state).toBe("succeeded");
+
+    for (let i = 0; i < 105; i++) {
+      await store.runJob("instance.sync", { instance: "i" });
+    }
+    expect(store.canRetry("job-1")).toBe(false);
+    expect(store.canRetry("job-105")).toBe(true);
+    store.stop();
+  });
 });

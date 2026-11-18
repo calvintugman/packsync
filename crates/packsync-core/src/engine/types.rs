@@ -37,7 +37,7 @@ pub struct EnableOutcome {
     pub issues: Vec<ScanIssue>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PreviewRequest {
     pub root: PathBuf,
     pub launcher: String,
@@ -46,6 +46,9 @@ pub struct PreviewRequest {
     /// Also hash everything to estimate how much would be uploaded (reads the whole instance).
     #[serde(default)]
     pub estimate_upload: bool,
+    /// When previewing an already-registered instance without custom overrides, apply its effective rules.
+    #[serde(default)]
+    pub instance: Option<InstanceId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

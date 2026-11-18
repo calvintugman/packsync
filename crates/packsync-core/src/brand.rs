@@ -8,8 +8,8 @@
 pub const PRODUCT_NAME: &str = "PackSync";
 /// Executable name of the command-line interface.
 pub const CLI_NAME: &str = "packsync";
-/// Reverse-DNS application identifier (placeholder: this identifier is not registered by anyone).
-pub const APP_ID: &str = "org.example.packsync";
+/// Reverse-DNS application identifier.
+pub const APP_ID: &str = "io.github.calvintugman.packsync";
 /// Service name under which credentials are stored in the OS credential store.
 pub const KEYRING_SERVICE: &str = "packsync";
 /// Name of the application-created root folder in the user's Google Drive.

@@ -93,7 +93,7 @@ impl Engine {
                 session: s.id,
                 started: rfc3339_from_ms(s.started_ms),
                 heartbeat: now_rfc3339(),
-                ttl_secs: self.cfg.lease_ttl_secs,
+                ttl_secs: self.lease_ttl_secs(),
                 base: s.base_snapshot,
             },
             ctx,

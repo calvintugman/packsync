@@ -144,15 +144,29 @@ impl S3Storage {
     }
 
     pub fn with_sleeper(cfg: S3Config, secret: Secret, sleeper: Arc<dyn Sleeper>) -> StorageResult<Self> {
-        let host = cfg
-            .endpoint
-            .strip_prefix("https://")
-            .or_else(|| cfg.endpoint.strip_prefix("http://"))
-            .ok_or_else(|| StorageError::Other(format!("endpoint {:?} must start with https://", cfg.endpoint)))?
-            .trim_end_matches('/')
-            .to_string();
-        if host.is_empty() || host.contains('/') {
+        let trimmed = cfg.endpoint.trim().trim_end_matches('/');
+        let (scheme_http, host) = if let Some(h) = trimmed.strip_prefix("https://") {
+            (false, h.to_string())
+        } else if let Some(h) = trimmed.strip_prefix("http://") {
+            (true, h.to_string())
+        } else {
+            return Err(StorageError::Other(format!("endpoint {:?} must start with https://", cfg.endpoint)));
+        };
+        if host.is_empty() || host.contains('/') || host.contains('@') {
             return Err(StorageError::Other(format!("endpoint {:?} must be a scheme and a host only", cfg.endpoint)));
+        }
+        if scheme_http {
+            let h = if let Some(b) = host.strip_prefix('[') {
+                b.split(']').next().unwrap_or("")
+            } else {
+                host.split(':').next().unwrap_or("")
+            };
+            if h != "127.0.0.1" && !h.eq_ignore_ascii_case("localhost") && h != "::1" {
+                return Err(StorageError::Other(format!(
+                    "endpoint {:?} must start with https:// (http:// is only allowed for localhost)",
+                    cfg.endpoint
+                )));
+            }
         }
         if cfg.bucket.is_empty()
             || !cfg.bucket.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
@@ -239,7 +253,7 @@ impl S3Storage {
                 let mut b = $b
                     .config()
                     .timeout_send_body(Some(self.body_budget(up)))
-                    .timeout_recv_body(Some(self.body_budget(max_body.min(64 << 20))))
+                    .timeout_recv_body(Some(self.body_budget(max_body.min(MAX_SINGLE_PUT))))
                     .build();
                 for (k, v) in &headers {
                     if k != "host" {
@@ -585,7 +599,9 @@ impl Storage for S3Storage {
         match r.status {
             200 => {
                 let etag = r.header("etag").map(etag_clean).unwrap_or_default();
-                if !etag.eq_ignore_ascii_case(&md5_hex) {
+                let sse = r.header("x-amz-server-side-encryption").unwrap_or_default();
+                let kms = sse.eq_ignore_ascii_case("aws:kms") || sse.eq_ignore_ascii_case("aws:kms:dsse");
+                if !kms && !etag.eq_ignore_ascii_case(&md5_hex) {
                     return Err(StorageError::Corrupt(format!(
                         "{key}: the server stored something else (ETag {etag}, expected {md5_hex})"
                     )));
@@ -635,4 +651,23 @@ impl Storage for S3Storage {
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_validation_rejects_remote_plaintext_http() {
+        let mk = |endpoint: &str| {
+            let mut cfg = S3Config::r2("acct", "b", "p", "k");
+            cfg.endpoint = endpoint.into();
+            S3Storage::new(cfg, Secret::new("s"))
+        };
+        assert!(mk("https://acct.r2.cloudflarestorage.com").is_ok());
+        assert!(mk("http://127.0.0.1:9000").is_ok());
+        assert!(mk("http://localhost:9000").is_ok());
+        assert!(mk("http://evil.example.com").is_err());
+        assert!(mk("ftp://evil.example.com").is_err());
+    }
 }

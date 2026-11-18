@@ -7,6 +7,7 @@ dist/
 apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/binaries/
+/dist-release/
 
 # secrets / local configuration (never commit)
 .env

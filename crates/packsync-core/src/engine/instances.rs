@@ -35,8 +35,16 @@ impl Engine {
     pub fn preview(&self, req: &PreviewRequest, ctx: &OpCtx) -> Result<PreviewReport> {
         let launcher = self.launcher(&req.launcher);
         let desc = launcher.describe(&req.root)?;
-        let text = rules::effective_rules_text(launcher.rules_fragment(), &req.rules_overrides)?;
-        let rs = RuleSet::compile(&text, &desc.game_root)?;
+        let (rs, text) = if let Some(id) = req.instance
+            && req.rules_overrides.is_empty()
+        {
+            let inst = self.instance(id)?;
+            self.rules_for(&inst, ctx)?
+        } else {
+            let text = rules::effective_rules_text(launcher.rules_fragment(), &req.rules_overrides)?;
+            let rs = RuleSet::compile(&text, &desc.game_root)?;
+            (rs, text)
+        };
         let opts = ScanOptions { mode: ScanMode::Quick, ..self.cfg.snapshot.scan.now() };
         let w = walk(&req.root, &rs, &HashMap::new(), &opts, ctx)?;
         let mut by_cat: BTreeMap<String, (u64, u64)> = BTreeMap::new();

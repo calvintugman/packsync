@@ -86,6 +86,33 @@ async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(d), (x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+/** Collapse IPv6 clients to their /64 prefix so host-part rotation cannot bypass daily limits. */
+function clientSubnet(req: Request): string {
+  const raw = (req.headers.get("cf-connecting-ip") ?? "unknown").trim().toLowerCase().split("%")[0] ?? "";
+  if (!raw.includes(":")) return raw || "unknown";
+  const [head = "", tail] = raw.split("::");
+  const hParts = head ? head.split(":").filter(Boolean) : [];
+  const tParts = tail !== undefined ? tail.split(":").filter(Boolean) : [];
+  const fill = Math.max(0, 8 - hParts.length - tParts.length);
+  const full = [...hParts, ...Array<string>(fill).fill("0"), ...tParts];
+  if (full.length !== 8) return raw;
+  return `${full.slice(0, 4).map((g) => g.padStart(4, "0")).join(":")}::/64`;
+}
+
+async function takeRateSlot(env: Env, bucket: string, limit: number): Promise<boolean> {
+  const day = Math.floor(Date.now() / 86_400_000);
+  const counted = await env.DB.prepare(
+    `INSERT INTO registrations (ip_hash, day, n) VALUES (?1, ?2, 1)
+     ON CONFLICT (ip_hash, day) DO UPDATE SET n = n + 1 WHERE n < ?3`,
+  )
+    .bind(bucket, day, limit)
+    .run();
+  if (Math.random() < 0.05) {
+    await env.DB.prepare("DELETE FROM registrations WHERE day < ?1").bind(day - 2).run();
+  }
+  return counted.meta.changes > 0;
+}
+
 /** Constant-time comparison of two equal-length hex strings. */
 function sameHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -128,20 +155,12 @@ async function authenticate(req: Request, env: Env): Promise<Account> {
 // ------------------------------------------------------------------------------------- accounts
 
 async function createAccount(req: Request, env: Env): Promise<Response> {
-  const ip = req.headers.get("cf-connecting-ip") ?? "unknown";
-  const ipHash = await sha256Hex(`packsync-registration:${ip}`);
-  const day = Math.floor(Date.now() / 86_400_000);
+  const subnet = clientSubnet(req);
+  const ipHash = await sha256Hex(`packsync-registration:${subnet}`);
   const limit = num(env.REGISTRATIONS_PER_DAY, 5);
-  const counted = await env.DB.prepare(
-    `INSERT INTO registrations (ip_hash, day, n) VALUES (?1, ?2, 1)
-     ON CONFLICT (ip_hash, day) DO UPDATE SET n = n + 1 WHERE n < ?3`,
-  )
-    .bind(ipHash, day, limit)
-    .run();
-  if (counted.meta.changes === 0) {
+  if (!(await takeRateSlot(env, ipHash, limit))) {
     fail(429, "too_many_accounts", "too many new accounts from this network today; try again tomorrow");
   }
-  await env.DB.prepare("DELETE FROM registrations WHERE day < ?1").bind(day - 2).run();
 
   const id = randomId(26);
   const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -157,13 +176,7 @@ async function createAccount(req: Request, env: Env): Promise<Response> {
 }
 
 async function deleteAccount(acct: Account, env: Env): Promise<Response> {
-  const prefix = `u/${acct.id}/`;
-  let cursor: string | undefined;
-  do {
-    const page = await env.BUCKET.list({ prefix, cursor, limit: 1000 });
-    if (page.objects.length > 0) await env.BUCKET.delete(page.objects.map((o) => o.key));
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
+  // Revoke the account and its auth credentials in D1 first so the token stops working immediately.
   await env.DB.batch([
     env.DB.prepare("DELETE FROM accounts WHERE id = ?1").bind(acct.id),
     env.DB.prepare("DELETE FROM pairings WHERE account = ?1").bind(acct.id),
@@ -171,6 +184,13 @@ async function deleteAccount(acct: Account, env: Env): Promise<Response> {
     env.DB.prepare("DELETE FROM objects WHERE account = ?1").bind(acct.id),
     env.DB.prepare("DELETE FROM counted WHERE account = ?1").bind(acct.id),
   ]);
+  const prefix = `u/${acct.id}/`;
+  let cursor: string | undefined;
+  do {
+    const page = await env.BUCKET.list({ prefix, cursor, limit: 1000 });
+    if (page.objects.length > 0) await env.BUCKET.delete(page.objects.map((o) => o.key));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
   return json({ ok: true });
 }
 
@@ -214,7 +234,9 @@ function parseRange(h: string | null): { offset: number; length: number } | null
   if (!m) fail(400, "bad_range", "only `bytes=a-b` ranges are supported");
   const a = Number(m[1]);
   const b = Number(m[2]);
-  if (b < a) fail(416, "bad_range", "empty range");
+  if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || b < a) {
+    fail(416, "bad_range", "invalid range");
+  }
   return { offset: a, length: b - a + 1 };
 }
 
@@ -247,23 +269,39 @@ async function getObject(req: Request, key: string, acct: Account, env: Env, hea
   return new Response(o.body, { status: 200, headers: { ...objectHeaders(o), "content-length": String(o.size) } });
 }
 
-/** Refuse a write of `delta` more bytes that would not fit. `record` keeps the exact count afterwards. */
-async function checkSpace(env: Env, acct: Account, delta: number): Promise<void> {
-  if (delta <= 0) return;
-  if (acct.used + delta > acct.quota) {
-    fail(507, "quota", `this account's space is full (${acct.used} of ${acct.quota} bytes used)`);
-  }
+/** Atomically reserve `reserved` bytes against account & service quotas before R2 upload. */
+async function reserveSpace(env: Env, acct: Account, reserved: number): Promise<void> {
+  if (reserved <= 0) return;
   const total = await env.DB.prepare("SELECT COALESCE(SUM(used), 0) AS t FROM accounts").first<{ t: number }>();
-  if ((total?.t ?? 0) + delta > num(env.TOTAL_QUOTA_BYTES, 200 * 2 ** 30)) {
+  if ((total?.t ?? 0) + reserved > num(env.TOTAL_QUOTA_BYTES, 200 * 2 ** 30)) {
     fail(507, "service_full", "the PackSync service is full; ask whoever runs it for more space");
+  }
+  const r = await env.DB.prepare("UPDATE accounts SET used = used + ?2 WHERE id = ?1 AND used + ?2 <= quota")
+    .bind(acct.id, reserved)
+    .run();
+  if (r.meta.changes === 0) {
+    const cur = await env.DB.prepare("SELECT used, quota FROM accounts WHERE id = ?1")
+      .bind(acct.id)
+      .first<{ used: number; quota: number }>();
+    fail(507, "quota", `this account's space is full (${cur?.used ?? acct.used} of ${cur?.quota ?? acct.quota} bytes used)`);
   }
 }
 
-/** `key` now holds `size` bytes (`null`: deleted). One transaction moves `used` by exactly the change. */
-async function record(env: Env, acct: Account, key: string, size: number | null): Promise<void> {
+async function releaseReserved(env: Env, acctId: string, reserved: number): Promise<void> {
+  if (reserved <= 0) return;
+  await env.DB.prepare("UPDATE accounts SET used = MAX(0, used - ?2) WHERE id = ?1").bind(acctId, reserved).run();
+}
+
+/** `key` now holds `size` bytes (`null`: deleted), adjusting `used` minus any prior `reserved`. */
+async function record(env: Env, acct: Account, key: string, size: number | null, reserved = 0): Promise<void> {
   const old = "COALESCE((SELECT size FROM objects WHERE account = ?1 AND key = ?2), 0)";
   await env.DB.batch([
-    env.DB.prepare(`UPDATE accounts SET used = MAX(0, used - ${old} + ?3) WHERE id = ?1`).bind(acct.id, key, size ?? 0),
+    env.DB.prepare(`UPDATE accounts SET used = MAX(0, used - ${old} + ?3 - ?4) WHERE id = ?1`).bind(
+      acct.id,
+      key,
+      size ?? 0,
+      reserved,
+    ),
     size === null
       ? env.DB.prepare("DELETE FROM objects WHERE account = ?1 AND key = ?2").bind(acct.id, key)
       : env.DB.prepare(
@@ -328,7 +366,11 @@ async function putObject(req: Request, key: string, acct: Account, env: Env): Pr
   }
 
   await ensureCounted(env, acct);
-  await checkSpace(env, acct, len - (existing?.size ?? 0));
+  const prevRow = await env.DB.prepare("SELECT size FROM objects WHERE account = ?1 AND key = ?2")
+    .bind(acct.id, key)
+    .first<{ size: number }>();
+  const reserved = Math.max(0, len - (prevRow?.size ?? existing?.size ?? 0));
+  await reserveSpace(env, acct, reserved);
   const onlyIf = new Headers();
   if (ifNone === "*") onlyIf.set("if-none-match", "*");
   if (ifMatch !== null) onlyIf.set("if-match", ifMatch.trim());
@@ -341,14 +383,16 @@ async function putObject(req: Request, key: string, acct: Account, env: Env): Pr
       httpMetadata: { contentType: "application/octet-stream" },
     });
   } catch (e) {
+    await releaseReserved(env, acct.id, reserved);
     const msg = String(e);
     if (/digest|checksum|sha/i.test(msg)) fail(400, "bad_digest", "the upload was damaged in transit");
     throw e;
   }
   if (!stored) {
+    await releaseReserved(env, acct.id, reserved);
     return json({ error: "precondition_failed", message: `${key} changed meanwhile` }, 412);
   }
-  await record(env, acct, key, stored.size);
+  await record(env, acct, key, stored.size, reserved);
   return json({ etag: stored.etag, size: stored.size, uploaded_ms: stored.uploaded.getTime() }, 200, objectHeaders(stored));
 }
 
@@ -365,6 +409,12 @@ async function deleteObject(key: string, acct: Account, env: Env): Promise<Respo
 async function createPairing(acct: Account, env: Env): Promise<Response> {
   const now = Date.now();
   await env.DB.prepare("DELETE FROM pairings WHERE created_ms < ?1").bind(now - PAIRING_TTL_MS).run();
+  const active = await env.DB.prepare("SELECT COUNT(*) AS n FROM pairings WHERE account = ?1")
+    .bind(acct.id)
+    .first<{ n: number }>();
+  if ((active?.n ?? 0) >= 10) {
+    fail(429, "too_many_pairings", "too many active pairing codes for this account; wait a few minutes");
+  }
   for (let i = 0; i < 20; i++) {
     const nameplate = String(1000 + (crypto.getRandomValues(new Uint32Array(1))[0] % 9000));
     const r = await env.DB.prepare(
@@ -401,6 +451,12 @@ async function pairingSlot(req: Request, env: Env, nameplate: string, slot: stri
   if (OWNER_SLOTS.has(slot)) {
     const acct = await authenticate(req, env);
     if (acct.id !== row.account) fail(403, "forbidden", "this pairing belongs to another account");
+  } else if (slot === "b") {
+    const hour = Math.floor(Date.now() / 3_600_000);
+    const key = await sha256Hex(`packsync-pair-join:${hour}:${clientSubnet(req)}`);
+    if (!(await takeRateSlot(env, key, 20))) {
+      fail(429, "too_many_attempts", "too many pairing attempts from this network; wait an hour and try again");
+    }
   }
   const body = await req.text();
   if (body.length === 0 || body.length > PAIRING_SLOT_MAX || !/^[A-Za-z0-9_-]+$/.test(body)) {
@@ -500,7 +556,12 @@ async function route(req: Request, env: Env): Promise<Response> {
     return listObjects(url, await authenticate(req, env), env);
   }
   if (path.startsWith("/v1/objects/")) {
-    const key = decodeURIComponent(path.slice("/v1/objects/".length));
+    let key: string;
+    try {
+      key = decodeURIComponent(path.slice("/v1/objects/".length));
+    } catch {
+      fail(400, "bad_key", "invalid object key encoding");
+    }
     if (!validKey(key, false)) fail(400, "bad_key", "invalid object key");
     const acct = await authenticate(req, env);
     if (m === "GET" || m === "HEAD") return getObject(req, key, acct, env, m === "HEAD");

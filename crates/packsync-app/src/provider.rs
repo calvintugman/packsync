@@ -130,16 +130,29 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
                             .into(),
                     )
                 })?;
-            let mut cfg = packsync_s3::S3Config::r2(account_id, bucket, prefix, access_key_id);
-            // testing only: another S3-compatible endpoint (the mock server, MinIO)
-            if let Ok(ep) = std::env::var("PACKSYNC_R2_ENDPOINT") {
-                cfg.endpoint = ep;
-            }
-            let st = packsync_s3::S3Storage::new(cfg, secret).map_err(Error::from)?;
-            *S3_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(st.stats());
-            Ok(Provider { storage: Some(Arc::new(st)), auth: None })
+            let (st, stats) = build_r2(account_id, bucket, prefix, access_key_id, secret)?;
+            *S3_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(stats);
+            Ok(Provider { storage: Some(st), auth: None })
         }
     }
+}
+
+/// Construct an R2 storage backend from settings fields and secret (honouring `PACKSYNC_R2_ENDPOINT` for tests).
+pub fn build_r2(
+    account_id: &str,
+    bucket: &str,
+    prefix: &str,
+    access_key_id: &str,
+    secret: packsync_core::redact::Secret,
+) -> Result<(Arc<dyn Storage>, Arc<packsync_s3::S3Stats>)> {
+    let mut cfg = packsync_s3::S3Config::r2(account_id, bucket, prefix, access_key_id);
+    // testing only: another S3-compatible endpoint (the mock server, MinIO)
+    if let Ok(ep) = std::env::var("PACKSYNC_R2_ENDPOINT") {
+        cfg.endpoint = ep;
+    }
+    let st = packsync_s3::S3Storage::new(cfg, secret).map_err(Error::from)?;
+    let stats = st.stats();
+    Ok((Arc::new(st), stats))
 }
 
 /// A hosted account's credentials: the settings name it, the credential store holds its secrets.

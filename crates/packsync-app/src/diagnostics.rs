@@ -52,11 +52,19 @@ pub fn report(app: &App, online: bool, ctx: &OpCtx) -> Result<Diagnostics> {
     checks.push(check("this computer", true, format!("{dev_name} ({dev_id})")));
     let prism = app.prism();
     let exe = prism.find_exe();
+    let exe_ok = match &exe {
+        Some(packsync_prism::Exe::Native(p)) => p.is_file(),
+        Some(packsync_prism::Exe::Flatpak) => true,
+        None => false,
+    };
     checks.push(check(
         "Prism Launcher",
-        exe.is_some(),
+        exe_ok,
         match &exe {
-            Some(packsync_prism::Exe::Native(p)) => p.display().to_string(),
+            Some(packsync_prism::Exe::Native(p)) if p.is_file() => p.display().to_string(),
+            Some(packsync_prism::Exe::Native(p)) => {
+                format!("{} (file does not exist; update or clear `prism_executable`)", p.display())
+            }
             Some(packsync_prism::Exe::Flatpak) => "Flatpak (org.prismlauncher.PrismLauncher)".into(),
             None => "not found: set it with `packsync settings set prism_executable <path>`".into(),
         },
@@ -82,8 +90,9 @@ pub fn report(app: &App, online: bool, ctx: &OpCtx) -> Result<Diagnostics> {
             st.oauth_client_configured,
             st.oauth_client_source.clone().unwrap_or_else(|| "not configured".into()),
         ));
-        let store =
-            packsync_core::credentials::CredentialStore::describe(&packsync_drive::KeyringCredentialStore::new());
+    }
+    if matches!(st.kind.as_str(), "google" | "hosted" | "r2") {
+        let store = app.credential_store_description();
         checks.push(check("credential store", !store.contains("unsupported"), store));
     }
     checks.push(check("synced instances", true, format!("{} registered", app.engine().instances()?.len())));

@@ -964,18 +964,16 @@ mod tests {
         let w = walk(r, &rules(), &HashMap::new(), &ScanOptions::default(), &OpCtx::detached()).unwrap();
         let path = r.join(".minecraft/config/busy.json");
         // A sink that rewrites the file mid-read, as an active writer would.
-        struct Interfering<'a>(&'a Path, std::sync::atomic::AtomicBool);
+        struct Interfering<'a>(&'a Path);
         impl BlobSink for Interfering<'_> {
             fn offer(&self, _: Hash, _: &[u8], _: u8, _: &str, _: crate::rules::Compress) -> Result<bool> {
-                if !self.1.swap(true, Ordering::SeqCst) || true {
-                    let mut data = vec![b'b'; 3_000_001];
-                    data[0] = fastrand::u8(..);
-                    fs::write(self.0, data).unwrap();
-                }
+                let mut data = vec![b'b'; 3_000_001];
+                data[0] = fastrand::u8(..);
+                fs::write(self.0, data).unwrap();
                 Ok(true)
             }
         }
-        let sink = Interfering(&path, Default::default());
+        let sink = Interfering(&path);
         let c = &w.files[0];
         let err = hash_candidate(r, c, &sink, &ChunkingConfig::default(), &HashMap::new()).unwrap_err();
         assert!(matches!(err, Error::GameRunning(_)), "{err}");

@@ -152,6 +152,7 @@ pub fn preview(cx: &Cx, a: PreviewArgs) -> Result<()> {
             launcher: a.launcher,
             rules_overrides: rules,
             estimate_upload: a.estimate_upload,
+            instance: None,
         },
         &ctx,
     )?;
@@ -206,6 +207,7 @@ pub fn enable(cx: &Cx, a: EnableArgs) -> Result<()> {
             launcher: a.launcher.clone(),
             rules_overrides: rules.clone(),
             estimate_upload: false,
+            instance: None,
         },
         &ctx,
     )?;

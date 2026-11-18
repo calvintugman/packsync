@@ -24,7 +24,12 @@ pub const EVENT: &str = "packsync://event";
 struct AppState(Arc<App>);
 
 fn internal(message: String) -> ErrorView {
-    ErrorView { code: "internal".into(), message, advice: Some("Please report this, with Settings → Run checks.".into()), exit_code: 1 }
+    ErrorView {
+        code: "internal".into(),
+        message,
+        advice: Some("Please report this, with Settings → Run checks.".into()),
+        exit_code: 1,
+    }
 }
 
 /// Run a short application method. The engine blocks, so it runs on a thread that may block.
@@ -73,13 +78,11 @@ pub fn run() {
             // events from the application layer → the window
             let rx = app.bus().subscribe();
             let handle = tauri_app.handle().clone();
-            std::thread::Builder::new()
-                .name("events".into())
-                .spawn(move || {
-                    for ev in rx {
-                        let _ = handle.emit(EVENT, &ev);
-                    }
-                })?;
+            std::thread::Builder::new().name("events".into()).spawn(move || {
+                for ev in rx {
+                    let _ = handle.emit(EVENT, &ev);
+                }
+            })?;
             app.start_upload_retries(std::time::Duration::from_secs(60));
             tauri_app.manage(AppState(app));
             Ok(())

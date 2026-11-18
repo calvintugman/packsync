@@ -499,6 +499,7 @@ export interface PreviewRequest {
   launcher: string;
   rules_overrides?: string;
   estimate_upload?: boolean;
+  instance?: InstanceId;
 }
 
 export interface VerifyReport {

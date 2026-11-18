@@ -287,6 +287,20 @@ pub fn plan(
         }
     }
 
+    let mut delete_paths: Vec<&str> = local
+        .files
+        .keys()
+        .map(|s| s.as_str())
+        .filter(|p| !target_files.contains_key(p) && !local.not_synced_here.contains(*p))
+        .collect();
+    delete_paths.sort_unstable();
+    let delete_set: HashSet<&str> = delete_paths.iter().copied().collect();
+    let delete_folded: HashSet<String> = if mode == FoldMode::Sensitive {
+        HashSet::new()
+    } else {
+        delete_paths.iter().map(|p| crate::paths::fold_path(p, mode)).collect()
+    };
+
     let mut writes: Vec<Entry> = vec![];
     let mut unchanged = 0u64;
     let mut bytes_to_write = 0u64;
@@ -298,21 +312,18 @@ pub fn plan(
         if same {
             unchanged += 1;
         } else {
-            let existed =
-                root.join(Path::new(&e.p.replace('/', std::path::MAIN_SEPARATOR_STR))).symlink_metadata().is_ok();
+            // A differently-cased file being removed by `JOp::Delete` clears the slot before
+            // `JOp::Write` runs; marking `existed = false` also keeps case-insensitive trash from
+            // rolling back under the target's casing instead of `JOp::Delete` restoring the original.
+            let replaced_diff_case =
+                mode != FoldMode::Sensitive && delete_folded.contains(&crate::paths::fold_path(&e.p, mode));
+            let existed = !replaced_diff_case
+                && root.join(Path::new(&e.p.replace('/', std::path::MAIN_SEPARATOR_STR))).symlink_metadata().is_ok();
             write_ops.push(JOp::Write { p: e.p.clone(), existed });
             bytes_to_write += e.s;
             writes.push((*e).clone());
         }
     }
-    let mut delete_paths: Vec<&str> = local
-        .files
-        .keys()
-        .map(|s| s.as_str())
-        .filter(|p| !target_files.contains_key(p) && !local.not_synced_here.contains(*p))
-        .collect();
-    delete_paths.sort_unstable();
-    let delete_set: HashSet<&str> = delete_paths.iter().copied().collect();
     let mut ops: Vec<JOp> = delete_paths.iter().map(|p| JOp::Delete { p: p.to_string() }).collect();
 
     // Directories emptied by the deletions (attempted, deepest first) and directories that stand where
@@ -337,7 +348,9 @@ pub fn plan(
             // a directory where the snapshot has a file: allowed only if everything inside is being deleted
             for ent in walkdir::WalkDir::new(&live).into_iter().flatten().filter(|x| x.file_type().is_file()) {
                 let rel = crate::paths::to_relpath(root, ent.path()).unwrap_or_default();
-                if !delete_set.contains(rel.as_str()) {
+                let deleted = delete_set.contains(rel.as_str())
+                    || (mode != FoldMode::Sensitive && delete_folded.contains(&crate::paths::fold_path(&rel, mode)));
+                if !deleted {
                     return Err(Error::Unsupported(format!(
                         "{} is a folder on this computer but a file in the snapshot, and it holds local-only content ({}); move it away first. Nothing was changed",
                         e.p, rel
@@ -354,6 +367,11 @@ pub fn plan(
     }
     let mut rm_sorted: Vec<String> = rm.into_iter().collect();
     rm_sorted.sort_by_key(|p| std::cmp::Reverse(p.matches('/').count()));
+    let rm_folded: HashSet<String> = if mode == FoldMode::Sensitive {
+        HashSet::new()
+    } else {
+        rm_sorted.iter().map(|p| crate::paths::fold_path(p, mode)).collect()
+    };
     ops.extend(rm_sorted.into_iter().map(|p| JOp::RmDir { p }));
 
     // Directories to create (missing ones only), shallow first.
@@ -361,8 +379,17 @@ pub fn plan(
     for d in &needed_dirs {
         let live = root.join(Path::new(&d.replace('/', std::path::MAIN_SEPARATOR_STR)));
         match live.symlink_metadata() {
-            Ok(md) if md.is_dir() => {}
-            Ok(_) if delete_set.contains(d.as_str()) => mk.push(d.clone()), // a file being deleted stands here
+            Ok(md) if md.is_dir() => {
+                if mode != FoldMode::Sensitive && rm_folded.contains(&crate::paths::fold_path(d, mode)) {
+                    mk.push(d.clone());
+                }
+            }
+            Ok(_)
+                if delete_set.contains(d.as_str())
+                    || (mode != FoldMode::Sensitive && delete_folded.contains(&crate::paths::fold_path(d, mode))) =>
+            {
+                mk.push(d.clone()); // a file being deleted stands here
+            }
             Ok(_) => {
                 return Err(Error::Unsupported(format!(
                     "{d} is a local file that is not part of the sync, but the snapshot needs a folder there. Nothing was changed"
@@ -702,6 +729,28 @@ struct Materialise<'a> {
     after_file: Option<&'static str>,
 }
 
+/// Resolve the mixed-file policy for a manifest entry. Matching by path guarantees that an
+/// untrusted remote manifest cannot omit `e.mx` (or attach the wrong policy id) to bypass stripping
+/// of machine-local or command keys during restore.
+fn resolve_entry_policy<'a>(policies: &'a HashMap<String, MixedPolicy>, e: &Entry) -> Result<Option<&'a MixedPolicy>> {
+    let path_policy = policies.values().find(|p| p.path.eq_ignore_ascii_case(&e.p));
+    let manifest_policy =
+        e.mx.as_ref()
+            .map(|id| {
+                policies.get(id).ok_or_else(|| Error::Config(format!("snapshot uses unknown mixed-file policy {id:?}")))
+            })
+            .transpose()?;
+    if let (Some(mp), Some(pp)) = (manifest_policy, path_policy)
+        && mp.id != pp.id
+    {
+        return Err(Error::invalid(
+            "manifest",
+            format!("{} specifies mixed-file policy {:?}, expected {:?}", e.p, mp.id, pp.id),
+        ));
+    }
+    Ok(path_policy.or(manifest_policy))
+}
+
 /// Download (in storage order, batch by batch), assemble and verify every file of `writes`, and make it
 /// durable before returning. Returns (bytes downloaded, bytes reused from local files).
 fn materialise(
@@ -740,14 +789,7 @@ fn materialise(
         crate::failpoint!("restore.after_fetch_batch")?;
         for_each_parallel(&batch, env.cfg.assemble_threads, ctx, |e| {
             let out = (m.out)(&e.p);
-            let policy =
-                e.mx.as_ref()
-                    .map(|id| {
-                        env.policies
-                            .get(id)
-                            .ok_or_else(|| Error::Config(format!("snapshot uses unknown mixed-file policy {id:?}")))
-                    })
-                    .transpose()?;
+            let policy = resolve_entry_policy(env.policies, e)?;
             let local_current = match (policy, m.local_root) {
                 (Some(_), Some(root)) => match fs::read(lp(&local_path(root, &e.p))) {
                     // an oversized local copy must not be treated as absent: that would drop every local-only
@@ -928,10 +970,19 @@ fn run_op(root: &Path, txd: &Path, op: &JOp) -> Result<()> {
 
 fn map_rename_err(e: std::io::Error, path: &Path) -> Error {
     // Windows: sharing violation (32) / lock violation (33): another process has the file open.
-    if matches!(e.raw_os_error(), Some(32) | Some(33)) || e.kind() == std::io::ErrorKind::PermissionDenied {
+    if matches!(e.raw_os_error(), Some(32) | Some(33)) {
         return Error::GameRunning(format!("{} is in use by another program ({e})", path.display()));
     }
-    if e.raw_os_error() == Some(18) {
+    if e.kind() == std::io::ErrorKind::PermissionDenied {
+        if fs::metadata(lp(path)).is_ok_and(|m| m.permissions().readonly()) {
+            return Error::io(format!("{} is read-only and cannot be replaced", path.display()), e);
+        }
+        return Error::GameRunning(format!("{} is in use by another program ({e})", path.display()));
+    }
+    if e.kind() == std::io::ErrorKind::CrossesDevices
+        || e.raw_os_error() == Some(18)
+        || (cfg!(windows) && e.raw_os_error() == Some(17))
+    {
         return Error::Unsupported(format!(
             "{} is on a different file system than the instance folder; PackSync cannot replace it atomically",
             path.display()
@@ -1458,5 +1509,155 @@ mod tests {
         });
         assert!(matches!(r, Err(Error::Cancelled)), "{r:?}");
         assert_eq!(done.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn mixed_policy_is_enforced_by_path_even_if_manifest_omits_mx() {
+        let d = tempfile::tempdir().unwrap();
+        let mut policies = HashMap::new();
+        policies.insert(
+            "prism.instance_cfg".into(),
+            MixedPolicy {
+                id: "prism.instance_cfg".into(),
+                path: "instance.cfg".into(),
+                format: crate::mixed::MixedFormat::Ini,
+                portable_keys: Some(vec!["InstanceType".into()]),
+                local_keys: vec![],
+                local_sections: vec!["UI".into()],
+            },
+        );
+        policies.insert("minecraft.options_txt".into(), crate::mixed::options_txt_policy(".minecraft"));
+
+        let omitted_mx = Entry {
+            p: "instance.cfg".into(),
+            t: EntryType::File,
+            s: 40,
+            m: 0,
+            x: false,
+            h: Some(Hash::of(b"PreLaunchCommand=calc.exe\n")),
+            r: None,
+            mx: None,
+        };
+        let resolved = resolve_entry_policy(&policies, &omitted_mx).unwrap().expect("matched by path");
+        assert_eq!(resolved.id, "prism.instance_cfg");
+
+        let wrong_mx = Entry { mx: Some("minecraft.options_txt".into()), ..omitted_mx.clone() };
+        assert!(resolve_entry_policy(&policies, &wrong_mx).is_err());
+
+        // Assemble with resolved policy strips local/command keys even when local_current is None.
+        let blob_dir = d.path().join("blobs");
+        fs::create_dir_all(&blob_dir).unwrap();
+        let raw = b"[General]\nInstanceType=OneSix\nPreLaunchCommand=calc.exe\nOverrideCommands=true\n";
+        crate::remote::write_store_file(&blob_dir, Hash::of(raw), raw).unwrap();
+        let mut e = omitted_mx;
+        e.s = raw.len() as u64;
+        e.h = Some(Hash::of(raw));
+        let out = d.path().join("out/instance.cfg");
+        assemble(&e, None, &blob_dir, &out, Some(resolved), None, false).unwrap();
+        let written = fs::read_to_string(&out).unwrap();
+        assert!(written.contains("InstanceType=OneSix"), "{written}");
+        assert!(!written.contains("PreLaunchCommand"), "{written}");
+        assert!(!written.contains("OverrideCommands"), "{written}");
+    }
+
+    #[test]
+    fn case_insensitive_directory_recase_recreates_target_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::create_dir_all(root.join("Config")).unwrap();
+        fs::write(root.join("Config/a.cfg"), b"old").unwrap();
+
+        let mut local = LocalState::default();
+        local.files.insert(
+            "Config/a.cfg".into(),
+            LocalFile {
+                content: ContentInfo { size: 3, hash: Hash::of(b"old"), recipe: None, chunks: 1 },
+                stat: FileStat {
+                    kind: FileKind::File,
+                    size: 3,
+                    mtime_ns: 0,
+                    ctime_ns: None,
+                    file_id: None,
+                    executable: false,
+                },
+                mixed: None,
+            },
+        );
+
+        let mut target = crate::manifest::testutil::sample();
+        target.entries = vec![Entry::dir("config")];
+        target.finalize().unwrap();
+        let cfg = RestoreConfig { fold_override: Some(FoldMode::CaseInsensitive), ..Default::default() };
+        let p = plan(&target, SnapshotId(Hash::of(b"s1")), &local, root, &cfg).unwrap();
+
+        assert!(p.ops.iter().any(|op| matches!(op, JOp::Delete { p } if p == "Config/a.cfg")));
+        let rmdir_pos = p.ops.iter().position(|op| matches!(op, JOp::RmDir { p } if p == "Config")).unwrap();
+        let mkdir_pos = p.ops.iter().position(|op| matches!(op, JOp::MkDir { p } if p == "config")).unwrap();
+        assert!(rmdir_pos < mkdir_pos, "RmDir must run before MkDir: {:?}", p.ops);
+    }
+
+    #[test]
+    fn case_insensitive_file_rename_rolls_back_to_original_case() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::write(root.join("Foo.cfg"), b"orig").unwrap();
+
+        let mut local = LocalState::default();
+        local.files.insert(
+            "Foo.cfg".into(),
+            LocalFile {
+                content: ContentInfo { size: 4, hash: Hash::of(b"orig"), recipe: None, chunks: 1 },
+                stat: FileStat {
+                    kind: FileKind::File,
+                    size: 4,
+                    mtime_ns: 0,
+                    ctime_ns: None,
+                    file_id: None,
+                    executable: false,
+                },
+                mixed: None,
+            },
+        );
+
+        let mut target = crate::manifest::testutil::sample();
+        target.entries = vec![Entry {
+            p: "foo.cfg".into(),
+            t: EntryType::File,
+            s: 3,
+            m: 0,
+            x: false,
+            h: Some(Hash::of(b"new")),
+            r: None,
+            mx: None,
+        }];
+        target.finalize().unwrap();
+
+        let cfg = RestoreConfig { fold_override: Some(FoldMode::CaseInsensitive), ..Default::default() };
+        let p = plan(&target, SnapshotId(Hash::of(b"s2")), &local, root, &cfg).unwrap();
+        assert!(
+            p.ops.iter().any(|op| matches!(op, JOp::Write { p, existed: false } if p == "foo.cfg")),
+            "case-only replacement must mark Write existed=false: {:?}",
+            p.ops
+        );
+
+        let tx = TxId::new();
+        let txd = new_tx_dir(root, tx).unwrap();
+        let stage = crate::journal::stage_path(&txd, "foo.cfg");
+        fs::create_dir_all(stage.parent().unwrap()).unwrap();
+        fs::write(&stage, b"new").unwrap();
+        for op in &p.ops {
+            run_op(root, &txd, op).unwrap();
+        }
+        assert_eq!(fs::read(root.join("foo.cfg")).unwrap(), b"new");
+
+        crate::journal::rollback_ops(root, &txd, &p.ops, p.ops.len()).unwrap();
+        assert_eq!(fs::read(root.join("Foo.cfg")).unwrap(), b"orig");
+        let names: Vec<String> = fs::read_dir(root)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.eq_ignore_ascii_case("foo.cfg"))
+            .collect();
+        assert_eq!(names, vec!["Foo.cfg".to_string()]);
     }
 }

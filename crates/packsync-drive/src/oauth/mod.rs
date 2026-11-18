@@ -571,7 +571,21 @@ impl Authenticator {
             let rt = Secret::new(grant.refresh_token.clone());
             match self.token_request(&[("grant_type", "refresh_token"), ("refresh_token", rt.expose())], ctx) {
                 Ok(t) => {
+                    if let Some(new_rt) = t.refresh_token {
+                        grant.refresh_token = new_rt.expose().to_string();
+                        if let Some(s) = t.scopes {
+                            grant.scopes = s;
+                        }
+                        if let Err(e) = self.persist_grant(grant.clone(), Some((t.access_token.clone(), t.expires_in)))
+                        {
+                            tracing::warn!(target: "packsync_drive::oauth", error = %e, "could not persist rotated refresh token");
+                        } else {
+                            tracing::debug!(target: "packsync_drive::oauth", expires_in = t.expires_in, "access token refreshed and rotated refresh token saved");
+                            return Ok(t.access_token);
+                        }
+                    }
                     let mut st = self.state.lock();
+                    st.grant = Some(grant);
                     st.revoked = false;
                     st.access = Some(CachedToken {
                         token: t.access_token.clone(),
@@ -691,5 +705,50 @@ mod tests {
             connected_ms: 0,
         };
         assert!(!format!("{g:?}").contains("secret"));
+    }
+
+    #[test]
+    fn refresh_rotation_persists_new_refresh_token_to_store() {
+        let srv = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let addr = srv.server_addr().to_ip().unwrap();
+        let base = format!("http://{addr}");
+        let handle = std::thread::spawn(move || {
+            let req = srv.recv().unwrap();
+            let body = r#"{"access_token":"ya29.rotated_access_token_value","refresh_token":"1//0rotated_refresh_token_value","expires_in":3600,"token_type":"Bearer"}"#;
+            let mut resp = tiny_http::Response::from_string(body);
+            resp.add_header(tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap());
+            let _ = req.respond(resp);
+        });
+
+        let client = OAuthClientConfig {
+            client_id: "123-abc.apps.googleusercontent.com".into(),
+            client_secret: None,
+            endpoints: crate::config::OAuthEndpoints {
+                auth_url: format!("{base}/auth"),
+                token_url: format!("{base}/token"),
+                revoke_url: format!("{base}/revoke"),
+            },
+            source: crate::config::ClientConfigSource::Explicit,
+        };
+        let creds = std::sync::Arc::new(packsync_core::credentials::MemoryCredentialStore::default());
+        let auth = Authenticator::new(client.clone(), DriveSpace::VisibleFolder, AuthConfig::default(), creds.clone());
+        let initial = StoredGrant {
+            v: 1,
+            refresh_token: "1//0initial_refresh_token_value".into(),
+            scopes: vec![],
+            email: None,
+            display_name: None,
+            connected_ms: 0,
+        };
+        auth.persist_grant(initial, None).unwrap();
+
+        let tok = auth.access_token(&OpCtx::detached()).unwrap();
+        assert_eq!(tok.expose(), "ya29.rotated_access_token_value");
+        handle.join().unwrap();
+
+        let account = credential_account_for(&client.client_id);
+        let stored_raw = creds.get(&account).unwrap().unwrap();
+        let stored: StoredGrant = serde_json::from_str(stored_raw.expose()).unwrap();
+        assert_eq!(stored.refresh_token, "1//0rotated_refresh_token_value");
     }
 }

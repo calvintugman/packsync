@@ -244,6 +244,14 @@ impl FoldMode {
     }
 }
 
+/// Fold every segment of a forward-slash relative path for case- or normalization-insensitive comparisons.
+pub fn fold_path(p: &str, mode: FoldMode) -> String {
+    if mode == FoldMode::Sensitive {
+        return p.to_string();
+    }
+    p.split('/').map(|seg| mode.fold(seg)).collect::<Vec<_>>().join("/")
+}
+
 /// Entries that would map to the same name on a filesystem using `mode`. Only *files* and
 /// file-vs-directory clashes are collisions; two directories that merge are harmless.
 /// `entries` are `(path, is_dir)`.

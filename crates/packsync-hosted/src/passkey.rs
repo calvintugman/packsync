@@ -16,8 +16,9 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use packsync_core::progress::OpCtx;
 use packsync_core::storage::{StorageError, StorageResult};
 use serde::Deserialize;
+use zeroize::Zeroize;
 
-use crate::client::{HostedStorage, Http, classify};
+use crate::client::{HostedStorage, Http, check_endpoint, classify};
 use crate::{Credentials, b64};
 
 const PURPOSE: &str = "packsync 2026 passkey recovery blob";
@@ -27,6 +28,28 @@ const WAIT: Duration = Duration::from_secs(5 * 60);
 struct Answer {
     credential_id: String,
     secret: [u8; 32],
+}
+
+impl Drop for Answer {
+    fn drop(&mut self) {
+        self.credential_id.zeroize();
+        self.secret.zeroize();
+    }
+}
+
+fn valid_credential_id(id: &str) -> bool {
+    (16..=1400).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn sealer(secret: &[u8; 32]) -> XChaCha20Poly1305 {
@@ -87,19 +110,16 @@ fn ceremony(
     open_url: &dyn Fn(&str) -> std::io::Result<()>,
     ctx: &OpCtx,
 ) -> StorageResult<Answer> {
+    let endpoint = check_endpoint(endpoint)?;
     let server = tiny_http::Server::http("127.0.0.1:0")
         .map_err(|e| StorageError::Other(format!("could not listen for the browser's answer: {e}")))?;
     let port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
     let state = random_state();
     let cb = format!("http://127.0.0.1:{port}/passkey");
-    let mut url = format!(
-        "{}/passkey?mode={mode}&cb={}&state={state}&label={}",
-        endpoint.trim_end_matches('/'),
-        query_escape(&cb),
-        query_escape(label)
-    );
+    let mut url =
+        format!("{endpoint}/passkey#mode={mode}&cb={}&state={state}&label={}", query_escape(&cb), query_escape(label));
     if let Some(a) = account {
-        url.push_str(&format!("&user={a}"));
+        url.push_str(&format!("&user={}", query_escape(a)));
     }
     open_url(&url).map_err(|e| StorageError::Other(format!("could not open the browser: {e}")))?;
 
@@ -114,9 +134,8 @@ fn ceremony(
         error: Option<String>,
     }
     let cors = |r: tiny_http::Response<std::io::Cursor<Vec<u8>>>| {
-        let origin = endpoint.trim_end_matches('/').to_string();
         [
-            ("Access-Control-Allow-Origin", origin.as_str()),
+            ("Access-Control-Allow-Origin", endpoint.as_str()),
             ("Access-Control-Allow-Methods", "POST"),
             ("Access-Control-Allow-Headers", "content-type"),
             // Chrome asks before a public page may talk to this computer
@@ -144,10 +163,27 @@ fn ceremony(
             let _ = req.respond(cors(tiny_http::Response::from_data(Vec::new()).with_status_code(204)));
             continue;
         }
+        if req.method() != &tiny_http::Method::Post {
+            let _ = req.respond(cors(tiny_http::Response::from_data(b"{}".to_vec()).with_status_code(405)));
+            continue;
+        }
+        let is_json = req.headers().iter().any(|h| {
+            h.field.equiv("Content-Type")
+                && h.value.as_str().split(';').next().is_some_and(|v| v.trim().eq_ignore_ascii_case("application/json"))
+        });
+        let origin_ok = req
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Origin"))
+            .is_none_or(|h| h.value.as_str().trim_end_matches('/').eq_ignore_ascii_case(&endpoint));
+        if !is_json || !origin_ok {
+            let _ = req.respond(cors(tiny_http::Response::from_data(b"{}".to_vec()).with_status_code(403)));
+            continue;
+        }
         let mut body = String::new();
         let _ = std::io::Read::read_to_string(&mut std::io::Read::take(req.as_reader(), 16 * 1024), &mut body);
         let reply: Option<Reply> = serde_json::from_str(&body).ok();
-        let Some(reply) = reply.filter(|r| r.state == state) else {
+        let Some(reply) = reply.filter(|r| ct_eq(r.state.as_bytes(), state.as_bytes())) else {
             // not from the page this program opened: ignore it
             let _ = req.respond(cors(tiny_http::Response::from_data(b"{}".to_vec()).with_status_code(400)));
             continue;
@@ -163,6 +199,9 @@ fn ceremony(
         let (Some(id), Some(prf)) = (reply.credential_id, reply.prf) else {
             return Err(StorageError::Other("the browser's answer was incomplete; try again".into()));
         };
+        if !valid_credential_id(&id) {
+            return Err(StorageError::Other("the passkey returned an invalid credential ID".into()));
+        }
         let secret: [u8; 32] = b64()
             .decode(prf.trim())
             .ok()
@@ -204,8 +243,9 @@ pub fn recover_with_passkey(
     open_url: &dyn Fn(&str) -> std::io::Result<()>,
     ctx: &OpCtx,
 ) -> StorageResult<Credentials> {
-    let ans = ceremony(endpoint, "get", None, "", open_url, ctx)?;
-    let http = Http::new(endpoint)?;
+    let endpoint = check_endpoint(endpoint)?;
+    let http = Http::new(&endpoint)?;
+    let ans = ceremony(&endpoint, "get", None, "", open_url, ctx)?;
     let r = http.call(
         ctx,
         "fetching the passkey's key",
@@ -228,7 +268,7 @@ pub fn recover_with_passkey(
     let b: B = serde_json::from_slice(&r.body).map_err(|e| StorageError::Other(e.to_string()))?;
     let mut creds = open(&b.blob, &ans.credential_id, &ans.secret)?;
     // the service the blob names may be older than the one this program uses: keep the one in use
-    creds.account.endpoint = endpoint.trim_end_matches('/').to_string();
+    creds.account.endpoint = endpoint;
     Ok(creds)
 }
 
@@ -254,5 +294,26 @@ mod tests {
         assert_eq!(back.account.account, c.account.account);
         assert!(open(&blob, "cred-1", &[8; 32]).is_err(), "another passkey's secret");
         assert!(open(&blob, "cred-2", &[7; 32]).is_err(), "moved to another passkey's ID");
+    }
+
+    #[test]
+    fn recover_rejects_bad_endpoint_before_opening_browser() {
+        let called = std::sync::atomic::AtomicBool::new(false);
+        let err = recover_with_passkey(
+            "javascript:alert(1)",
+            &|_| {
+                called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            },
+            &OpCtx::detached(),
+        )
+        .unwrap_err();
+        assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(err.to_string().contains("https://"));
+        assert!(
+            recover_with_passkey("http://evil.example.com", &|_| panic!("must not open"), &OpCtx::detached()).is_err()
+        );
+        assert!(!valid_credential_id("../accounts"));
+        assert!(valid_credential_id("cred-AAAAAAAAAAAAAAAA"));
     }
 }

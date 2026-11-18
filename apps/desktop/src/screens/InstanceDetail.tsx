@@ -5,6 +5,7 @@ import { JobBar } from "../components/JobBar";
 import { PlayError, usePlay, useSyncNow, useUploadNow } from "../components/InstanceCard";
 import { ConflictDialog } from "../dialogs/ConflictDialog";
 import { CrashDialog } from "../dialogs/CrashDialog";
+import { UnknownDialog } from "../dialogs/UnknownDialog";
 import { formatBytes, formatDateTime, formatRelative, packLine, plural, sentence, worldName } from "../lib/format";
 import { canPlay, phaseInfo } from "../lib/phases";
 import { href, navigate } from "../lib/router";
@@ -72,7 +73,7 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
   const inst = useInstance(id);
   const revision = useRevision(id);
   const jobs = useRunningJobs(id);
-  const [dialog, setDialog] = useState<"conflict" | "crash" | "disable" | null>(null);
+  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | "disable" | null>(null);
   const sync = useSyncNow({ id, name: inst?.name ?? "" }, () => setDialog("conflict"));
   const play = usePlay({ id, name: inst?.name ?? "" });
   const snapshot = useAction(async () => {
@@ -142,6 +143,19 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
       {snapshot.error ? <ErrorNote error={snapshot.error} instanceId={id} /> : null}
       {upload.error ? <ErrorNote error={upload.error} instanceId={id} onRetry={() => void upload.run()} onSignIn={() => navigate({ name: "settings" })} /> : null}
 
+      {inst.unknown.length > 0 ? (
+        <Banner
+          tone="info"
+          title="New mod data found"
+          actions={
+            <Button size="sm" variant="primary" onClick={() => setDialog("unknown")}>
+              Review
+            </Button>
+          }
+        >
+          {plural(inst.unknown.length, "folder")} PackSync doesn't recognise yet, like <code>{inst.unknown[0]!.path}</code>. Choose what to sync to your other computers.
+        </Banner>
+      ) : null}
       {inst.phase === "conflict" ? (
         <Banner tone="danger" title="Two versions need your decision" actions={<Button size="sm" variant="primary" onClick={() => setDialog("conflict")}>Choose a version…</Button>}>
           {inst.state_detail ?? "This computer and the cloud both changed. PackSync never merges worlds automatically."}
@@ -194,13 +208,14 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
 
       <Tabs tabs={TABS} active={activeTab} onChange={(t) => navigate({ name: "instance", id, tab: t })}>
         {activeTab === "history" ? <HistoryTab instance={id} revision={revision} /> : null}
-        {activeTab === "rules" ? <RulesTab inst={inst} /> : null}
-        {activeTab === "hooks" ? <HooksTab inst={inst} /> : null}
+        {activeTab === "rules" ? <RulesTab inst={inst} revision={revision} /> : null}
+        {activeTab === "hooks" ? <HooksTab inst={inst} revision={revision} /> : null}
         {activeTab === "recovery" ? <RecoveryTab instance={id} revision={revision} /> : null}
       </Tabs>
 
       {dialog === "conflict" ? <ConflictDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "crash" ? <CrashDialog instance={inst} onClose={() => setDialog(null)} /> : null}
+      {dialog === "unknown" ? <UnknownDialog inst={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "disable" ? (
         <ConfirmDialog
           title={`Stop syncing ${inst.name}?`}

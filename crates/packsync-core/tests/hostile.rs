@@ -407,7 +407,13 @@ fn credentials_never_enter_a_snapshot_even_when_the_whole_folder_is_selected() {
     let p = a
         .engine
         .preview(
-            &PreviewRequest { root, launcher: "generic".into(), rules_overrides: rules.into(), estimate_upload: false },
+            &PreviewRequest {
+                root,
+                launcher: "generic".into(),
+                rules_overrides: rules.into(),
+                estimate_upload: false,
+                instance: None,
+            },
             &a.ctx(),
         )
         .unwrap();

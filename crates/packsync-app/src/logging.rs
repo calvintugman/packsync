@@ -32,7 +32,16 @@ pub fn build_filter(user: Option<&str>, verbose: bool) -> (EnvFilter, Vec<String
     let mut ignored = vec![];
     let mut dirs: Vec<String> = vec!["warn".into()];
     let base = if verbose { "debug" } else { "info" };
-    for krate in ["packsync_core", "packsync_drive", "packsync_prism", "packsync_app", "packsync"] {
+    for krate in [
+        "packsync_core",
+        "packsync_drive",
+        "packsync_hosted",
+        "packsync_s3",
+        "packsync_prism",
+        "packsync_app",
+        "packsync_desktop_lib",
+        "packsync",
+    ] {
         dirs.push(format!("{krate}={base}"));
     }
     if let Some(u) = user {

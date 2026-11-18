@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useStore } from "../state/context";
 import { Button, Field } from "../ui/controls";
 
-/** A folder path: a text field, plus a native "Browse…" button when the desktop shell can show one. */
+/** A file or folder path: a text field, plus a native "Browse…" button when the desktop shell can show one. */
 export function PathField({
   label,
   value,
@@ -10,7 +10,8 @@ export function PathField({
   hint,
   placeholder,
   error,
-  browseTitle = "Choose a folder",
+  kind = "folder",
+  browseTitle,
 }: {
   label: string;
   value: string;
@@ -18,10 +19,13 @@ export function PathField({
   hint?: ReactNode;
   placeholder?: string;
   error?: string | null;
+  kind?: "folder" | "file";
   browseTitle?: string;
 }) {
   const store = useStore();
-  const canBrowse = typeof store.transport.pickFolder === "function" && store.transport.kind === "tauri";
+  const pick = kind === "file" ? store.transport.pickFile : store.transport.pickFolder;
+  const canBrowse = typeof pick === "function" && store.transport.kind === "tauri";
+  const title = browseTitle ?? (kind === "file" ? "Choose a file" : "Choose a folder");
   return (
     <Field label={label} hint={hint} error={error}>
       {(id, d) => (
@@ -40,7 +44,7 @@ export function PathField({
             <Button
               icon="folder"
               onClick={async () => {
-                const p = await store.transport.pickFolder?.(browseTitle);
+                const p = await pick.call(store.transport, title);
                 if (p) onChange(p);
               }}
             >

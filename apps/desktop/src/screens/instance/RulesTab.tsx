@@ -7,9 +7,9 @@ import { Banner, Button, TextInput } from "../../ui/controls";
 import { ErrorNote } from "../../ui/ErrorNote";
 
 /** The rules that decide what is synced, and a way to ask "why is this file (not) synced?". */
-export function RulesTab({ inst }: { inst: InstanceStatus }) {
+export function RulesTab({ inst, revision = 0 }: { inst: InstanceStatus; revision?: number }) {
   const store = useStore();
-  const rules = useLoad(() => store.runJob("rules.show", { instance: inst.id }), inst.id);
+  const rules = useLoad(() => store.runJob("rules.show", { instance: inst.id }), `${inst.id}:${revision}`);
   const [path, setPath] = useState("");
   const [answer, setAnswer] = useState<RulesExplain | null>(null);
   const [preview, setPreview] = useState(false);
@@ -55,7 +55,7 @@ export function RulesTab({ inst }: { inst: InstanceStatus }) {
         {rules.loading && !rules.data ? <span className="muted">Loading…</span> : null}
         {rules.data ? <pre className="code" tabIndex={0} aria-label="Rules in effect" style={{ maxHeight: 420 }}>{rules.data.rules}</pre> : null}
       </div>
-      {preview ? <PreviewDialog root={inst.root} onClose={() => setPreview(false)} /> : null}
+      {preview ? <PreviewDialog root={inst.root} instance={inst.id} onClose={() => setPreview(false)} /> : null}
     </div>
   );
 }

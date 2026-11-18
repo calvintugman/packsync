@@ -86,6 +86,7 @@ export class AppStore {
   private readonly pollMs: number;
   private readonly keepJobs: number;
   private started = false;
+  private startSeq = 0;
 
   constructor(
     readonly transport: Transport,
@@ -116,6 +117,7 @@ export class AppStore {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    const seq = ++this.startSeq;
     this.unsubscribe = this.transport.subscribe(
       (ev) => this.onEvent(ev),
       (c) => {
@@ -126,20 +128,25 @@ export class AppStore {
     );
     try {
       await this.refreshAll();
+      if (!this.started || seq !== this.startSeq) return;
       this.set({ status: "ready", loadError: null });
     } catch (e) {
+      if (!this.started || seq !== this.startSeq) return;
       this.set({ status: "failed", loadError: ApiError.from(e) });
     }
     if (this.pollMs > 0) {
+      if (this.poll) clearInterval(this.poll);
       this.poll = setInterval(() => void this.refreshQuiet(), this.pollMs);
     }
     if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this.onVisible);
       document.addEventListener("visibilitychange", this.onVisible);
     }
   }
 
   stop(): void {
     this.started = false;
+    this.startSeq += 1;
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.poll) clearInterval(this.poll);
@@ -250,7 +257,11 @@ export class AppStore {
       }
       case "job": {
         const { type: _t, ...job } = ev;
+        const known = this.state.jobs[job.id];
+        if (known && FINISHED(known) && !FINISHED(job)) break;
         this.set((s) => {
+          const prev = s.jobs[job.id];
+          if (prev && FINISHED(prev) && !FINISHED(job)) return {};
           const progress = { ...s.progress };
           if (FINISHED(job)) delete progress[job.id];
           return { jobs: this.trimJobs({ ...s.jobs, [job.id]: job }), progress };
@@ -325,6 +336,13 @@ export class AppStore {
   ): Promise<Result<K>> {
     const id = await this.transport.startJob(method, params);
     this.jobArgs.set(id, { method, params });
+    if (this.jobArgs.size > 100) {
+      for (const oldId of this.jobArgs.keys()) {
+        if (this.jobArgs.size <= 100) break;
+        if (oldId === id || this.state.jobs[oldId]?.state === "running") continue;
+        this.jobArgs.delete(oldId);
+      }
+    }
     opts.onStart?.(id);
     const job = await this.waitFor(id);
     if (job.state === "succeeded") return job.result as Result<K>;

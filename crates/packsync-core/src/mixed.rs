@@ -40,16 +40,108 @@ pub struct MixedPolicy {
 }
 
 impl MixedPolicy {
+    fn is_ini(&self) -> bool {
+        self.format == MixedFormat::Ini
+    }
+
     fn key_is_portable(&self, section: &str, key: &str) -> bool {
-        if self.local_sections.iter().any(|s| s == section) {
+        let eq = |a: &str, b: &str| if self.is_ini() { a.eq_ignore_ascii_case(b) } else { a == b };
+        if self.local_sections.iter().any(|s| eq(s, section)) {
             return false;
         }
         let qualified = format!("{section}/{key}");
-        let matches = |list: &[String]| list.iter().any(|k| k == key || *k == qualified);
+        let matches = |list: &[String]| list.iter().any(|k| eq(k, key) || eq(k, &qualified));
         match &self.portable_keys {
             Some(allow) => matches(allow),
             None => !matches(&self.local_keys),
         }
+    }
+
+    fn canonical_section(&self, section: &str) -> String {
+        if self.is_ini() && section.eq_ignore_ascii_case("general") {
+            "General".to_string()
+        } else if self.is_ini() {
+            let qualified_prefix = format!("{section}/");
+            if let Some(allow) = &self.portable_keys {
+                for entry in allow {
+                    if let Some((sec, _)) = entry.split_once('/')
+                        && entry.len() >= qualified_prefix.len()
+                        && sec.eq_ignore_ascii_case(section)
+                    {
+                        return sec.to_string();
+                    }
+                }
+            }
+            section.to_string()
+        } else {
+            section.to_string()
+        }
+    }
+
+    fn canonical_key<'a>(&'a self, section: &str, key: &'a str) -> &'a str {
+        if !self.is_ini() {
+            return key;
+        }
+        let Some(allow) = &self.portable_keys else {
+            return key;
+        };
+        let qualified = format!("{section}/{key}");
+        for entry in allow {
+            if let Some((sec, k)) = entry.split_once('/') {
+                if sec.eq_ignore_ascii_case(section) && k.eq_ignore_ascii_case(key) {
+                    return k;
+                }
+            } else if entry.eq_ignore_ascii_case(key) || entry.eq_ignore_ascii_case(&qualified) {
+                return entry;
+            }
+        }
+        key
+    }
+}
+
+/// Split text on `\r\n`, `\n`, or bare `\r` so Qt INI `\r`-terminated lines cannot be smuggled
+/// inside a `\n`-delimited line.
+struct SplitLines<'a> {
+    rest: &'a str,
+}
+
+impl<'a> Iterator for SplitLines<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.rest.is_empty() {
+            return None;
+        }
+        let bytes = self.rest.as_bytes();
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' {
+                let (head, tail) = self.rest.split_at(i + 1);
+                self.rest = tail;
+                return Some(head);
+            }
+            if b == b'\r' {
+                let end = if bytes.get(i + 1) == Some(&b'\n') { i + 2 } else { i + 1 };
+                let (head, tail) = self.rest.split_at(end);
+                self.rest = tail;
+                return Some(head);
+            }
+        }
+        let all = self.rest;
+        self.rest = "";
+        Some(all)
+    }
+}
+
+fn split_lines(s: &str) -> SplitLines<'_> {
+    SplitLines { rest: s }
+}
+
+fn push_lf_line(out: &mut String, line: &str) {
+    if line.ends_with('\n') {
+        out.push_str(line);
+    } else {
+        out.push_str(line.trim_end_matches('\r'));
+        out.push('\n');
     }
 }
 
@@ -65,6 +157,7 @@ enum Line<'a> {
 
 fn classify<'a>(fmt: MixedFormat, line: &'a str) -> Line<'a> {
     let t = line.trim_end_matches(['\r', '\n']);
+    let t = t.strip_prefix('\u{FEFF}').unwrap_or(t);
     match fmt {
         MixedFormat::KeyValueColon => match t.split_once(':') {
             Some((k, _)) if !k.is_empty() && !k.contains(char::is_whitespace) => Line::Pair { key: k },
@@ -73,7 +166,7 @@ fn classify<'a>(fmt: MixedFormat, line: &'a str) -> Line<'a> {
         MixedFormat::Ini => {
             let trimmed = t.trim();
             if trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2 {
-                Line::Section(&trimmed[1..trimmed.len() - 1])
+                Line::Section(trimmed[1..trimmed.len() - 1].trim())
             } else if trimmed.starts_with(';') || trimmed.starts_with('#') {
                 Line::Other
             } else {
@@ -101,14 +194,17 @@ pub fn project(policy: &MixedPolicy, bytes: &[u8]) -> Result<Vec<u8>> {
         use std::collections::BTreeMap;
         let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut section = "General".to_string();
-        for line in s.split_inclusive('\n') {
+        for line in split_lines(s) {
             match classify(MixedFormat::Ini, line) {
-                Line::Section(n) => section = n.to_string(),
+                Line::Section(n) => section = policy.canonical_section(n),
                 Line::Pair { key } => {
                     if policy.key_is_portable(&section, key) {
-                        let mut l = line.trim_end_matches(['\r', '\n']).to_string();
-                        l.push('\n');
-                        sections.entry(section.clone()).or_default().insert(key.to_string(), l);
+                        let ckey = policy.canonical_key(&section, key);
+                        let trimmed = line.trim_end_matches(['\r', '\n']);
+                        let trimmed = trimmed.strip_prefix('\u{FEFF}').unwrap_or(trimmed);
+                        let val = trimmed.split_once('=').map(|(_, v)| v).unwrap_or("");
+                        let l = format!("{ckey}={val}\n");
+                        sections.entry(section.clone()).or_default().insert(ckey.to_string(), l);
                     }
                 }
                 Line::Other => {}
@@ -124,7 +220,7 @@ pub fn project(policy: &MixedPolicy, bytes: &[u8]) -> Result<Vec<u8>> {
         return Ok(out.into_bytes());
     }
     let mut out = String::with_capacity(s.len());
-    for line in s.split_inclusive('\n') {
+    for line in split_lines(s) {
         match classify(policy.format, line) {
             Line::Pair { key } => {
                 if policy.key_is_portable("General", key) {
@@ -157,20 +253,17 @@ pub fn merge(policy: &MixedPolicy, portable: &[u8], local: Option<&[u8]>) -> Res
 fn merge_kv(policy: &MixedPolicy, portable: &str, local: &str) -> Result<Vec<u8>> {
     // Portable file order wins; local-only keys from the local file are appended afterwards.
     let mut out = String::new();
-    for line in portable.split_inclusive('\n') {
+    for line in split_lines(portable) {
         out.push_str(line);
     }
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    for line in local.split_inclusive('\n') {
+    for line in split_lines(local) {
         if let Line::Pair { key } = classify(MixedFormat::KeyValueColon, line)
             && !policy.key_is_portable("General", key)
         {
-            out.push_str(line);
-            if !line.ends_with('\n') {
-                out.push('\n');
-            }
+            push_lf_line(&mut out, line);
         }
     }
     Ok(out.into_bytes())
@@ -180,7 +273,7 @@ fn merge_kv(policy: &MixedPolicy, portable: &str, local: &str) -> Result<Vec<u8>
 fn ini_pairs(s: &str) -> Vec<(String, String, &str)> {
     let mut section = "General".to_string();
     let mut out = Vec::new();
-    for line in s.split_inclusive('\n') {
+    for line in split_lines(s) {
         match classify(MixedFormat::Ini, line) {
             Line::Section(n) => section = n.to_string(),
             Line::Pair { key } => out.push((section.clone(), key.to_string(), line)),
@@ -192,70 +285,62 @@ fn ini_pairs(s: &str) -> Vec<(String, String, &str)> {
 
 fn merge_ini(policy: &MixedPolicy, portable: &str, local: &str) -> Result<Vec<u8>> {
     use std::collections::BTreeMap;
-    // portable values to apply: (section,key) → raw line
-    let want: BTreeMap<(String, String), &str> = ini_pairs(portable).into_iter().map(|(s, k, l)| ((s, k), l)).collect();
+    // portable values to apply: (lower_section, lower_key) → (canonical_section, raw line)
+    let want: BTreeMap<(String, String), (String, &str)> = ini_pairs(portable)
+        .into_iter()
+        .map(|(s, k, l)| ((s.to_ascii_lowercase(), k.to_ascii_lowercase()), (s, l)))
+        .collect();
 
     let mut out = String::new();
-    let mut section = "General".to_string();
+    let mut section = "general".to_string();
     let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
-    let mut sections_present: Vec<String> = Vec::new();
     let mut last_section_end: BTreeMap<String, usize> = BTreeMap::new();
 
-    for line in local.split_inclusive('\n') {
+    for line in split_lines(local) {
         match classify(MixedFormat::Ini, line) {
             Line::Section(n) => {
-                section = n.to_string();
-                sections_present.push(section.clone());
-                out.push_str(line);
-                if !line.ends_with('\n') {
-                    out.push('\n');
-                }
+                section = n.to_ascii_lowercase();
+                push_lf_line(&mut out, line);
                 last_section_end.insert(section.clone(), out.len());
             }
             Line::Pair { key } => {
                 if policy.key_is_portable(&section, key) {
-                    if let Some(new_line) = want.get(&(section.clone(), key.to_string())) {
-                        out.push_str(new_line);
-                        if !new_line.ends_with('\n') {
-                            out.push('\n');
-                        }
-                        seen.insert((section.clone(), key.to_string()));
+                    let lk = (section.clone(), key.to_ascii_lowercase());
+                    if let Some((_, new_line)) = want.get(&lk) {
+                        push_lf_line(&mut out, new_line);
+                        seen.insert(lk);
                     }
                     // portable key absent from the snapshot: the snapshot removed it → drop it
                 } else {
-                    out.push_str(line);
-                    if !line.ends_with('\n') {
-                        out.push('\n');
-                    }
+                    push_lf_line(&mut out, line);
                 }
                 last_section_end.insert(section.clone(), out.len());
             }
             Line::Other => {
-                out.push_str(line);
-                if !line.ends_with('\n') {
-                    out.push('\n');
-                }
+                push_lf_line(&mut out, line);
                 last_section_end.insert(section.clone(), out.len());
             }
         }
     }
     // Portable keys the local file did not have yet: insert at the end of their section.
-    let mut by_section: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for ((s, k), l) in &want {
-        if !seen.contains(&(s.clone(), k.clone())) {
-            by_section.entry(s.as_str()).or_default().push(l);
+    let mut by_section: BTreeMap<(&str, &str), Vec<&str>> = BTreeMap::new();
+    for ((ls, lk), (orig_s, l)) in &want {
+        if !seen.contains(&(ls.clone(), lk.clone())) {
+            by_section.entry((ls.as_str(), orig_s.as_str())).or_default().push(l);
         }
     }
     // Insert in reverse byte order so earlier offsets stay valid.
     let mut inserts: Vec<(usize, String)> = Vec::new();
     let mut appended = String::new();
-    for (s, lines) in by_section {
-        let block: String =
-            lines.iter().map(|l| if l.ends_with('\n') { l.to_string() } else { format!("{l}\n") }).collect();
-        if let Some(&pos) = last_section_end.get(s) {
+    for ((ls, orig_s), lines) in by_section {
+        let block: String = lines
+            .iter()
+            .map(|l| if l.ends_with('\n') { l.to_string() } else { format!("{}\n", l.trim_end_matches('\r')) })
+            .collect();
+        if let Some(&pos) = last_section_end.get(ls) {
             inserts.push((pos, block));
         } else {
-            appended.push_str(&format!("\n[{s}]\n{block}"));
+            appended.push_str(&format!("\n[{orig_s}]\n{block}"));
         }
     }
     inserts.sort_by_key(|(p, _)| std::cmp::Reverse(*p));
@@ -412,5 +497,20 @@ mod tests {
     #[test]
     fn rejects_non_utf8() {
         assert!(project(&kv(), &[0xff, 0xfe, 0x00]).is_err());
+    }
+
+    #[test]
+    fn ini_bare_cr_and_case_insensitivity_do_not_smuggle_local_keys() {
+        let p = ini();
+        let hostile = b"\xEF\xBB\xBF[general]\nnotes=hello\rOverrideCommands=true\rPreLaunchCommand=calc.exe\nINSTANCETYPE=OneSix\n[ui]\nfoo=bar\n";
+        let out = String::from_utf8(merge(&p, hostile, Some(b"[general]\nJavaPath=/jdk\n")).unwrap()).unwrap();
+        assert!(!out.contains("OverrideCommands"), "{out}");
+        assert!(!out.contains("PreLaunchCommand"), "{out}");
+        assert!(!out.contains('\r'), "bare CR must not remain in merged INI: {out:?}");
+        assert!(out.contains("InstanceType=OneSix"), "{out}");
+        assert!(out.contains("notes=hello"), "{out}");
+        assert!(out.contains("JavaPath=/jdk"), "{out}");
+        let proj = String::from_utf8(project(&p, hostile).unwrap()).unwrap();
+        assert_eq!(project(&p, out.as_bytes()).unwrap(), proj.as_bytes());
     }
 }

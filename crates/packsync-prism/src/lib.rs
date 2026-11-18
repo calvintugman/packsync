@@ -20,4 +20,5 @@ pub mod rules;
 #[cfg(any(test, feature = "testkit"))]
 pub mod testkit;
 
+pub use hooks::is_flatpak_instance_root;
 pub use launcher::{Exe, KIND, LaunchCommand, PrismLauncher};

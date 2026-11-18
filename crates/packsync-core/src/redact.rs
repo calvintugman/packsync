@@ -4,9 +4,17 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use zeroize::Zeroize;
+
 /// Wraps a secret string. Never prints its content; call [`Secret::expose`] deliberately.
 #[derive(Clone, Default)]
 pub struct Secret(String);
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
 
 impl Secret {
     pub fn new(s: impl Into<String>) -> Self {
@@ -50,8 +58,8 @@ const SECRET_KEYS: &[&str] = &[
     "secret",
 ];
 
-/// Bare token prefixes that identify secrets even without a key (Google access `ya29.`, refresh `1//`).
-const TOKEN_PREFIXES: &[&str] = &["ya29.", "1//0", "GOCSPX-"];
+/// Bare token prefixes that identify secrets even without a key (Google tokens and PackSync recovery keys).
+const TOKEN_PREFIXES: &[&str] = &["ya29.", "1//0", "GOCSPX-", "packsync1-"];
 
 /// Redact secrets from free-form text. Handles `key=value` / `key: value` / `"key":"value"`
 /// pairs (including URL query strings, so resumable session URIs lose their `upload_id`) and
@@ -209,6 +217,10 @@ mod tests {
         assert!(!r.contains("GOCSPX"));
         assert!(!r.contains("zzzz"));
         assert!(r.contains("state=ok"));
+
+        let r = redact("recovery key was packsync1-eyJlIjoiaHR0cHM6Ly9leGFtcGxlLmNvbSJ9 here");
+        assert!(!r.contains("packsync1-"), "{r}");
+        assert!(r.contains("<redacted>"), "{r}");
     }
 
     #[test]

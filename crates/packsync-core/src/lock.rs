@@ -26,6 +26,10 @@ pub struct InstanceLock {
 }
 
 impl InstanceLock {
+    fn info_path(lock_path: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.info", lock_path.display()))
+    }
+
     /// Try to take the lock without waiting; `Err(Busy)` names the holder when it can be read.
     pub fn try_acquire(dir: &Path, instance: InstanceId, operation: &str) -> Result<InstanceLock> {
         Self::try_acquire_kind(dir, instance, "", operation)
@@ -51,8 +55,12 @@ impl InstanceLock {
         match file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
-                let holder = fs::read_to_string(&path)
+                // Read companion metadata first: on Windows an exclusive file lock also blocks
+                // other handles from reading bytes out of the locked file itself.
+                let info_p = Self::info_path(&path);
+                let holder = fs::read_to_string(&info_p)
                     .ok()
+                    .or_else(|| fs::read_to_string(&path).ok())
                     .and_then(|s| serde_json::from_str::<LockInfo>(&s).ok())
                     .map(|i| format!("{} (process {})", i.operation, i.pid))
                     .unwrap_or_else(|| "another PackSync operation".to_string());
@@ -63,6 +71,7 @@ impl InstanceLock {
         let info =
             LockInfo { pid: std::process::id(), operation: operation.to_string(), started_ms: crate::db::now_ms() };
         let json = serde_json::to_vec(&info)?;
+        let _ = fs::write(Self::info_path(&path), &json);
         let _ = file
             .set_len(0)
             .and_then(|_| file.seek(SeekFrom::Start(0)))
@@ -90,6 +99,7 @@ impl InstanceLock {
 
 impl Drop for InstanceLock {
     fn drop(&mut self) {
+        let _ = fs::remove_file(Self::info_path(&self.path));
         let _ = self.file.unlock();
     }
 }

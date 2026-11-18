@@ -6,7 +6,7 @@ import { CLI_BIN, DESKTOP_DIR, DIST, E2E_BIN, REPO_ROOT } from "./paths";
 export default function globalSetup(): void {
   if (!process.env.PACKSYNC_E2E_SKIP_BUILD) {
     if (!existsSync(DIST)) {
-      execFileSync("npx", ["vite", "build"], { cwd: DESKTOP_DIR, stdio: "inherit" });
+      execFileSync("npx", ["vite", "build"], { cwd: DESKTOP_DIR, stdio: "inherit", shell: process.platform === "win32" });
     }
     execFileSync("cargo", ["build", "-p", "packsync-e2e", "-p", "packsync-cli"], { cwd: REPO_ROOT, stdio: "inherit" });
   }

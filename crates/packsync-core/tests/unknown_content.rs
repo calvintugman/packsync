@@ -96,6 +96,7 @@ fn answers_given_before_the_first_sync_are_part_of_the_first_snapshot() {
                 launcher: "generic".into(),
                 rules_overrides: String::new(),
                 estimate_upload: false,
+                instance: None,
             },
             &a.ctx(),
         )

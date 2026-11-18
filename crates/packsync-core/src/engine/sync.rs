@@ -492,7 +492,7 @@ impl Engine {
             db: &self.db,
             state_dir: &self.cfg.state_dir,
             device: self.device(),
-            concurrency: self.cfg.upload_concurrency,
+            concurrency: self.upload_concurrency(),
         };
         let mut summary = UploadSummary::default();
         let mut repaired = false;
@@ -716,13 +716,9 @@ impl Engine {
         let fresh = self.instance(inst.id)?;
         let (policies, local) = self.restore_scan(&fresh, &target, ctx)?;
         let idle = || self.ensure_idle(&fresh);
-        let env = RestoreEnv {
-            db: &self.db,
-            remote: &remote,
-            policies: &policies,
-            cfg: &self.cfg.restore,
-            writers: Some(&idle),
-        };
+        let restore_cfg = self.restore_cfg();
+        let env =
+            RestoreEnv { db: &self.db, remote: &remote, policies: &policies, cfg: &restore_cfg, writers: Some(&idle) };
         let reason = format!("fast-forward to snapshot {}", to.short());
         let rep = restore::restore_in_place(
             &env,
@@ -983,7 +979,7 @@ impl Engine {
                     db: &self.db,
                     state_dir: &self.cfg.state_dir,
                     device: self.device(),
-                    concurrency: self.cfg.upload_concurrency,
+                    concurrency: self.upload_concurrency(),
                 };
                 // read in parallel with the upload: a cleanup elsewhere records itself in HEAD before it
                 // deletes anything, and this save may rely on data it deleted. Without a recent full look at

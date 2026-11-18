@@ -114,7 +114,7 @@ export function RestoreNewDialog({ cloud, onClose }: { cloud: CloudInstance; onC
             <TextInput label="Minimum memory (MB)" inputMode="numeric" value={minMem} onChange={(e) => setMinMem(e.target.value)} />
             <TextInput label="Maximum memory (MB)" inputMode="numeric" value={maxMem} onChange={(e) => setMaxMem(e.target.value)} />
           </div>
-          <PathField label="Java executable" value={javaPath} onChange={setJavaPath} placeholder="Use Prism's default" browseTitle="Choose the Java folder" />
+          <PathField kind="file" label="Java executable" value={javaPath} onChange={setJavaPath} placeholder="Use Prism's default" browseTitle="Choose the Java executable" />
         </div>
       </details>
       {run.busy ? <JobBar jobId={jobId} /> : null}

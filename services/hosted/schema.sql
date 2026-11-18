@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   used INTEGER NOT NULL DEFAULT 0,
   quota INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS accounts_used ON accounts(used);
 CREATE TABLE IF NOT EXISTS registrations (
   ip_hash TEXT NOT NULL,
   day INTEGER NOT NULL,
@@ -19,6 +20,8 @@ CREATE TABLE IF NOT EXISTS pairings (
   created_ms INTEGER NOT NULL,
   a TEXT, b TEXT, c TEXT, d TEXT
 );
+CREATE INDEX IF NOT EXISTS pairings_by_account ON pairings(account);
+CREATE INDEX IF NOT EXISTS pairings_by_created ON pairings(created_ms);
 -- Passkey recovery: the account's credentials and encryption key, sealed with a key only the passkey can
 -- produce (WebAuthn PRF). The service cannot open it; it only hands it to whoever names the passkey.
 CREATE TABLE IF NOT EXISTS passkeys (
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS passkeys (
   label TEXT NOT NULL,
   created_ms INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS passkeys_by_account ON passkeys(account);
 -- The size of every stored object. Space is charged and released from this, in one transaction per
 -- change, so overlapping writes or deletes of the same object never count it twice.
 CREATE TABLE IF NOT EXISTS objects (

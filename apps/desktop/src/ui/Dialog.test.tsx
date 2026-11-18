@@ -80,4 +80,13 @@ describe("Dialog", () => {
     rerender(<button>opener</button>);
     expect(screen.getByRole("button", { name: "opener" })).toBeTruthy();
   });
+
+  it("wraps Shift+Tab from dialog root to the last control", async () => {
+    const u = userEvent.setup();
+    render(<Harness onClose={() => {}} />);
+    const d = screen.getByRole("dialog", { name: "Hello" });
+    expect(d).toHaveFocus();
+    await u.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Confirm" })).toHaveFocus();
+  });
 });

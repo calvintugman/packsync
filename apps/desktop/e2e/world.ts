@@ -75,8 +75,11 @@ export class World {
   }
 
   async stop(): Promise<void> {
-    this.child.kill("SIGKILL");
-    await new Promise((r) => this.child.once("exit", r));
+    if (this.child.exitCode === null && this.child.signalCode === null) {
+      const exited = new Promise((r) => this.child.once("exit", r));
+      this.child.kill("SIGKILL");
+      await exited;
+    }
     rmSync(this.info.dir, { recursive: true, force: true });
   }
 }

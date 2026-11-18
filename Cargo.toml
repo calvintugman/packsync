@@ -19,7 +19,7 @@ edition = "2024"
 rust-version = "1.89"
 license = "MIT"
 authors = ["PackSync contributors"]
-repository = ""          # intentionally blank: set when you publish the repository
+repository = "https://github.com/calvintugman/packsync"
 publish = false
 
 [workspace.dependencies]
@@ -45,7 +45,7 @@ fs4 = "1"
 filetime = "0.2"
 file-id = "0.2"
 unicode-normalization = "0.1"
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 fastrand = "2"
@@ -68,6 +68,7 @@ base64 = "0.23"
 keyring = "4"
 oauth2 = "5"
 webbrowser = "1"
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 
 # workspace-internal crates
 packsync-core = { path = "crates/packsync-core" }

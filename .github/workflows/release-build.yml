@@ -1,27 +1,24 @@
-name: Release build (manual, unsigned, nothing is published)
+name: Release build
 
-# Builds installers for each platform and keeps them as artifacts of THIS run only.
-# It never creates a GitHub Release, never uploads anywhere else and never signs anything: code signing
-# needs a certificate that belongs to whoever distributes the build.
+# Builds Linux and Windows release archives and (on v* tag pushes) publishes them to GitHub Releases.
+# Unsigned: code signing requires a certificate held by whoever distributes the build.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  bundle:
-    name: Installers (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: Build (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - name: "Linux: system libraries for the web view"
-        if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev libxdo-dev libssl-dev patchelf
@@ -37,20 +34,171 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Build the command-line tool and place it as the app's sidecar
-        shell: bash
         run: |
           cargo build --release -p packsync-cli
           triple=$(rustc -vV | sed -n 's/^host: //p')
           mkdir -p apps/desktop/src-tauri/binaries
-          ext=""; [ "${{ matrix.os }}" = "windows-latest" ] && ext=".exe"
-          cp "target/release/packsync$ext" "apps/desktop/src-tauri/binaries/packsync-$triple$ext"
-      - name: Build the installers
+          cp target/release/packsync "apps/desktop/src-tauri/binaries/packsync-$triple"
+      - name: Build the desktop app and Debian package
         working-directory: apps/desktop
         run: |
           npm ci
-          npm run tauri build -- --config src-tauri/tauri.bundle.conf.json
+          npm run tauri build -- -b deb -c src-tauri/tauri.bundle.conf.json
+      - name: Package Linux release archives
+        run: |
+          ver=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          pkg="packsync-${ver}-linux-x86_64"
+          stage="dist-release/${pkg}"
+          mkdir -p "$stage"
+          install -m 755 target/release/packsync "$stage/packsync"
+          install -m 755 apps/desktop/src-tauri/target/release/packsync-desktop "$stage/packsync-desktop"
+          install -m 755 scripts/install-linux.sh "$stage/install.sh"
+          install -m 644 apps/desktop/src-tauri/icons/128x128.png "$stage/icon-128.png"
+          install -m 644 "apps/desktop/src-tauri/icons/128x128@2x.png" "$stage/icon-256.png"
+          install -m 644 LICENSE "$stage/LICENSE.txt"
+          sed 's/^          //' > "$stage/README.txt" <<EOF
+          PackSync ${ver} (Linux, x86_64)
+          Continue your Minecraft modpack on any computer: syncs Prism Launcher instances (mods, configs, worlds).
+
+          Install
+            Unpack this archive and run ./install.sh to install for the current user (~/.local/opt/packsync,
+            application menu entry, and packsync linked into ~/.local/bin).
+            Requires WebKitGTK 4.1 on your system (libwebkit2gtk-4.1-0 on Debian/Ubuntu, webkit2gtk-4.1 on Arch).
+
+          Getting started
+            First computer:   open PackSync, press "Start on this computer", then pick your instances.
+            Other computers:  on the first one, Settings > Storage > "Show a pairing code";
+                              on the new one, "Join from another computer" and type the code.
+            Then add a passkey (Settings > Storage) so you can get back in if you ever lose every computer.
+
+          Everything is encrypted on your computer before upload. Command line: packsync --help
+          Source: https://github.com/calvintugman/packsync    Licence: MIT (LICENSE.txt)
+          EOF
+          tar -C dist-release -czf "dist-release/${pkg}.tar.gz" "$pkg"
+          rm -rf "$stage"
+          cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb "dist-release/packsync_${ver}_amd64.deb"
       - uses: actions/upload-artifact@v4
         with:
-          name: packsync-${{ matrix.os }}-installers-unsigned
-          path: apps/desktop/src-tauri/target/release/bundle/
+          name: packsync-linux-x86_64
+          path: dist-release/*
           retention-days: 7
+
+  windows:
+    name: Build (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Build the command-line tool
+        run: cargo build --release -p packsync-cli
+      - name: Build the desktop app (unsigned)
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npm run tauri build -- --no-bundle
+      - name: Package portable Windows zip
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packsync-windows-x86_64
+          path: dist-release/*.zip
+          retention-days: 7
+
+  publish:
+    name: Package checksums & release
+    runs-on: ubuntu-latest
+    needs: [linux, windows]
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dist-release
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist-release
+          sha256sum packsync-*-linux-x86_64.tar.gz packsync-*-windows-x86_64.zip packsync_*_amd64.deb > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packsync-release-bundle
+          path: dist-release/*
+          retention-days: 14
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import textwrap
+
+          with open("apps/desktop/src-tauri/tauri.conf.json", "r", encoding="utf-8") as f:
+              ver = json.load(f)["version"]
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          tag_ver = tag.removeprefix("v")
+
+          with open("CHANGELOG.md", "r", encoding="utf-8") as f:
+              changelog = f.read()
+
+          sections = re.split(r"(?m)^## ", changelog)
+          body_section = ""
+          first_section = ""
+          for s in sections[1:]:
+              lines = s.splitlines()
+              heading = lines[0].strip()
+              content = "\n".join(lines[1:]).strip()
+              if not first_section:
+                  first_section = content
+              if heading == tag_ver:
+                  body_section = content
+                  break
+          changes = body_section or first_section
+
+          footer = "Pre-release. Checksums in `SHA256SUMS`." if "-" in tag else "Checksums in `SHA256SUMS`."
+
+          header = textwrap.dedent(f"""\
+              Continue your Minecraft modpack on any computer. PackSync syncs Prism Launcher instances (mods, configs and single-player worlds) between your computers, end-to-end encrypted.
+
+              **Downloads**
+              - **Linux:** `packsync-{ver}-linux-x86_64.tar.gz` — unpack, run `./install.sh`, open PackSync from your app menu. Debian/Ubuntu can use `packsync_{ver}_amd64.deb`.
+              - **Windows:** `packsync-{ver}-windows-x86_64.zip` — unzip to a permanent folder, run `packsync-desktop.exe`. Not code-signed yet: SmartScreen → "More info" → "Run anyway".
+
+              **Getting started:** press *Start on this computer* on your first PC; on the others choose *Join from another computer* and type the code the first one shows. Add a passkey (Settings → Storage) so you can get back in if you lose every computer.
+
+              ### Changes in {tag_ver}
+          """)
+          notes = f"{header}\n{changes}\n\n{footer}\n"
+          with open("release-notes.md", "w", encoding="utf-8") as f:
+              f.write(notes)
+          PY
+          tag="$GITHUB_REF_NAME"
+          prerelease_flag=""
+          if [[ "$tag" == *-* ]]; then
+            prerelease_flag="--prerelease"
+          fi
+          title="PackSync ${tag#v}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --title "$title" --notes-file release-notes.md ${prerelease_flag}
+            gh release upload "$tag" dist-release/* --clobber
+          else
+            gh release create "$tag" dist-release/* --title "$title" --notes-file release-notes.md ${prerelease_flag}
+          fi

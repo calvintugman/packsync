@@ -56,6 +56,17 @@ impl AppPaths {
         a
     }
 
+    /// Explicit `--config-dir` and `--state-dir` flags for sandboxed launchers (Flatpak) whose
+    /// environment XDG paths differ from the host's platform defaults.
+    pub fn hook_args_explicit(&self) -> Vec<String> {
+        vec![
+            "--config-dir".to_string(),
+            self.config_dir.to_string_lossy().into_owned(),
+            "--state-dir".to_string(),
+            self.state_dir.to_string_lossy().into_owned(),
+        ]
+    }
+
     /// Everything below one root directory (tests, portable setups).
     pub fn under(root: &Path) -> AppPaths {
         AppPaths {

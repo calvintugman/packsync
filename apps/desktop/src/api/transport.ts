@@ -12,6 +12,8 @@ export interface Transport {
   subscribe(onEvent: (ev: AppEvent) => void, onStatus?: (s: ConnectionStatus) => void): () => void;
   /** Native folder picker, when the shell has one. */
   pickFolder?(title: string): Promise<string | null>;
+  /** Native file picker, when the shell has one. */
+  pickFile?(title: string): Promise<string | null>;
 }
 
 // ------------------------------------------------------------------------------------ HTTP (dev bridge)
@@ -111,6 +113,10 @@ export class HttpTransport implements Transport {
   async pickFolder(): Promise<string | null> {
     return null; // a browser cannot show a native folder picker with a real path
   }
+
+  async pickFile(): Promise<string | null> {
+    return null;
+  }
 }
 
 // ------------------------------------------------------------------------------------ Tauri
@@ -157,6 +163,12 @@ export class TauriTransport implements Transport {
   async pickFolder(title: string): Promise<string | null> {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const r = await open({ directory: true, multiple: false, title });
+    return typeof r === "string" ? r : null;
+  }
+
+  async pickFile(title: string): Promise<string | null> {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const r = await open({ directory: false, multiple: false, title });
     return typeof r === "string" ? r : null;
   }
 }

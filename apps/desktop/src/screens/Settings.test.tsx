@@ -52,4 +52,25 @@ describe("SettingsScreen", () => {
     await u.click(Array.from(section.querySelectorAll("button")).find((b) => b.textContent === "Save")!);
     expect(await screen.findByText(/must be between 1 and 32/)).toBeInTheDocument();
   });
+
+  it("shows PackSync cloud pairing and passkey actions directly when connected", async () => {
+    const t = baseTransport({
+      storage: {
+        kind: "hosted",
+        connected: true,
+        detail: "PackSync cloud, end-to-end encrypted",
+        account: null,
+        space: null,
+        needs_reconnect: false,
+        oauth_client_configured: false,
+        oauth_client_source: null,
+        credential_store: null,
+        problem: null,
+        setup_hint: null,
+      },
+    });
+    await renderWithStore(<SettingsScreen />, t);
+    expect(await screen.findByRole("button", { name: "Show a pairing code" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add a passkey" })).toBeInTheDocument();
+  });
 });

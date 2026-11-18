@@ -32,7 +32,11 @@ export const PASSKEY_PAGE = `<!doctype html>
 </main>
 <script>
 (() => {
-  const q = new URLSearchParams(location.search);
+  const rawParams = location.hash.startsWith("#") ? location.hash.slice(1) : location.search;
+  if (location.hash) {
+    try { history.replaceState(null, "", location.pathname); } catch {}
+  }
+  const q = new URLSearchParams(rawParams);
   const mode = q.get("mode"), cb = q.get("cb") || "", state = q.get("state") || "", label = q.get("label") || "this computer";
   const account = q.get("user") || "";
   const $ = (id) => document.getElementById(id);

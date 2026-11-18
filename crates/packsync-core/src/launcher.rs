@@ -140,6 +140,9 @@ pub struct HookSpec {
     /// installation does not use the platform default directories).
     #[serde(default)]
     pub extra_args: Vec<String>,
+    /// Wrap the command in `flatpak-spawn --host` when Prism runs inside its Flatpak sandbox.
+    #[serde(default)]
+    pub flatpak_host_spawn: bool,
 }
 
 /// One change a hook installation or removal would make (shown to the user before applying).

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Diagnostics, OfflinePolicy, Settings, StorageTest } from "../api/types";
 import { PathField } from "../components/PathField";
+import { HostedSetup } from "../components/HostedSetup";
 import { StorageSetup } from "../components/StorageSetup";
 import { GcDialog } from "../dialogs/GcDialog";
 import { formatBytes } from "../lib/format";
@@ -90,6 +91,7 @@ function CloudSection() {
         ) : null}
       </div>
       {changing ? <StorageSetup onConnected={() => setChanging(false)} /> : null}
+      {!changing && storage?.kind === "hosted" && storage.connected ? <HostedSetup /> : null}
       {disconnect ? (
         <ConfirmDialog
           title="Disconnect from the cloud?"
@@ -147,7 +149,14 @@ function LauncherSection({ settings }: { settings: Settings }) {
           ["Data folders", info?.prism.data_dirs.length ? info.prism.data_dirs.map((d) => <div key={d}><code>{d}</code></div>) : "None found"],
         ]}
       />
-      <PathField label="Prism executable (only if it was not found)" value={exe} onChange={setExe} placeholder="Leave empty to detect it" browseTitle="Choose the Prism executable folder" />
+      <PathField
+        kind="file"
+        label="Prism executable (only if it was not found)"
+        value={exe}
+        onChange={setExe}
+        placeholder="Leave empty to detect it"
+        browseTitle="Choose the Prism executable"
+      />
       <label className="field">
         <span className="field-label">Prism data folders (one per line)</span>
         <textarea className="textarea" value={dirs} onChange={(e) => setDirs(e.target.value)} spellCheck={false} placeholder="Leave empty to detect them" />
@@ -234,6 +243,7 @@ function CliPath({ settings }: { settings: Settings }) {
   return (
     <div className="col">
       <PathField
+        kind="file"
         label="PackSync command-line tool (used by the hooks)"
         value={path}
         onChange={setPath}

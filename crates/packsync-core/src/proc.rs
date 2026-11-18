@@ -59,6 +59,27 @@ pub fn find_writers(root: &Path, extra_patterns: &[String], ignore_pids: &[u32])
     writers_in(&process_table(), root, extra_patterns, ignore_pids)
 }
 
+/// Check whether `needle` appears in `haystack` ending at an argument or path delimiter so that
+/// e.g. `/games/pack` does not falsely match `/games/pack2` or `/games/pack-test`.
+fn contains_path_boundary(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let bytes = haystack.as_bytes();
+    let mut start = 0;
+    while let Some(rel) = haystack[start..].find(needle) {
+        let end = start + rel + needle.len();
+        let after_ok = end == haystack.len() || matches!(bytes[end], b'/' | b'\\' | b' ' | b'"' | b'\'' | b';' | b':');
+        let before_ok = start + rel == 0
+            || matches!(bytes[start + rel - 1], b'/' | b'\\' | b' ' | b'"' | b'\'' | b'=' | b':' | b';');
+        if before_ok && after_ok {
+            return true;
+        }
+        start += rel + 1;
+    }
+    false
+}
+
 fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids: &[u32]) -> Vec<Writer> {
     let me = std::process::id();
     let mut roots = vec![norm(&root.to_string_lossy())];
@@ -90,7 +111,7 @@ fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids:
         }
         if reason.is_none() {
             let joined = norm(&cmd.join(" "));
-            if let Some(r) = roots.iter().find(|r| joined.contains(r.as_str())) {
+            if let Some(r) = roots.iter().find(|r| contains_path_boundary(&joined, r)) {
                 reason = Some(format!("command line mentions the instance ({r})"));
             } else if let Some(pat) = patterns.iter().find(|pat| joined.contains(pat.as_str())) {
                 reason = Some(format!("command line matches launcher pattern ({pat})"));
@@ -183,5 +204,13 @@ mod tests {
         std::fs::create_dir_all(&w).unwrap();
         std::fs::write(w.join("session.lock"), b"x").unwrap();
         assert!(world_locks_held(d.path()).is_empty());
+    }
+
+    #[test]
+    fn cmdline_path_matching_respects_boundaries() {
+        assert!(contains_path_boundary("java -djava.library.path=/games/pack/natives", "/games/pack"));
+        assert!(contains_path_boundary("java \"/games/pack\"", "/games/pack"));
+        assert!(!contains_path_boundary("java -djava.library.path=/games/pack2/natives", "/games/pack"));
+        assert!(!contains_path_boundary("java -djava.library.path=/games/pack-test/natives", "/games/pack"));
     }
 }

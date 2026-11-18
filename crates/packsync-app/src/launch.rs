@@ -240,10 +240,13 @@ impl App {
     ) -> Result<(Option<ReconcileReport>, bool)> {
         let policy = self.settings().hook_offline_policy;
         // the fast path: one read says the cloud is where this computer left it
-        let first = match self.engine().cloud_unchanged(id, ctx) {
-            Ok(true) if let Some(head) = self.engine().instance(id)?.base_snapshot => {
-                return Ok((Some(ReconcileReport::UpToDate { head }), false));
-            }
+        let cloud_unchanged = self.engine().cloud_unchanged(id, ctx);
+        if let Ok(true) = cloud_unchanged
+            && let Some(head) = self.engine().instance(id)?.base_snapshot
+        {
+            return Ok((Some(ReconcileReport::UpToDate { head }), false));
+        }
+        let first = match cloud_unchanged {
             // that read already found the cloud unreachable: asking again only delays the game
             Err(e) if is_connectivity_error(&e) => Err(e),
             _ => {

@@ -46,6 +46,19 @@ describe("CrashDialog", () => {
     expect(t.calls.find((c) => c.method === "crash.discard")?.params).toEqual({ instance: instance().id });
     expect(t.count("crash.promote")).toBe(0);
   });
+
+  it("warns instead of claiming success when promoting a crash save did not upload", async () => {
+    const u = userEvent.setup();
+    const t = baseTransport();
+    t.on("instance.history", () => [crashEntry]);
+    t.on("crash.promote", () => ({ snapshot: "s", upload: { error: { code: "offline", message: "off", advice: null, exit_code: 1 } } }));
+    const onClose = vi.fn();
+    const { store } = await renderWithStore(<CrashDialog instance={instance({ phase: "crash_pending", state: "crash_pending" })} onClose={onClose} />, t);
+    expect(await screen.findByText("Crash save")).toBeInTheDocument();
+    await u.click(screen.getByRole("button", { name: "Apply this choice" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(store.getState().toasts.at(-1)?.level).toBe("warn");
+  });
 });
 
 const plan = (over: Partial<HookPlan> = {}): HookPlan => ({

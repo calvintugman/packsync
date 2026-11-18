@@ -29,6 +29,7 @@ spake2.workspace = true
 getrandom.workspace = true
 md-5.workspace = true
 tiny_http.workspace = true
+zeroize.workspace = true
 
 [[example]]
 name = "mock-hosted-server"
