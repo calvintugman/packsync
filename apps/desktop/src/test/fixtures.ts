@@ -80,13 +80,14 @@ export function settings(over: Partial<Settings> = {}): Settings {
 
 export function appInfo(over: Partial<AppInfo> = {}): AppInfo {
   return {
-    version: "0.1.0",
+    version: "0.2.0",
     os: "linux",
     arch: "x86_64",
     paths: { config: "/home/me/.config/packsync", state: "/home/me/.local/state/packsync" },
     device: { id: "dev-1", name: "Desktop" },
     storage: storage(),
     prism: { executable: "/usr/bin/prismlauncher", data_dirs: ["/home/me/prism"] },
+    minecraft_profile: null,
     running_jobs: 0,
     ...over,
   };

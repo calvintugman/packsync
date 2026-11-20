@@ -1,5 +1,6 @@
 //! An in-process server with the hosted service's API (`services/hosted/src/index.ts`), for tests and
-//! local demos: accounts with quotas, objects with conditional writes and ranges, pairing mailboxes.
+//! local demos: accounts with quotas, multi-session Microsoft device-code auth, objects with
+//! conditional writes and ranges, and pairing mailboxes.
 //! It follows the Worker's rules; the Worker itself is checked against the same client with
 //! `PACKSYNC_TEST_HOSTED_URL` (see `tests/service.rs`).
 
@@ -7,11 +8,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use base64::Engine as _;
 use md5::{Digest as _, Md5};
 use parking_lot::Mutex;
 use sha2::Sha256;
 
 type Answer = (u16, Vec<(String, String)>, Vec<u8>);
+
+const MOCK_CLIENT_ID: &str = "mock-packsync-client-id";
+const MOCK_TENANT_ID: &str = "00000000-0000-0000-0000-000000000000";
 
 struct Object {
     data: Vec<u8>,
@@ -20,7 +25,8 @@ struct Object {
 }
 
 struct Account {
-    token: String,
+    tokens: Vec<String>,
+    master_key: Option<[u8; 32]>,
     used: u64,
     quota: u64,
 }
@@ -32,15 +38,45 @@ struct Pairing {
     slots: HashMap<char, String>,
 }
 
-#[derive(Default)]
+struct MockDeviceCode {
+    pending_polls: usize,
+    slow_down: bool,
+}
+
 struct State {
     accounts: HashMap<String, Account>,
+    /// `<tid>:<sub>` → account ID
+    ms_accounts: HashMap<String, String>,
     /// `<account>/<key>` → object
     objects: BTreeMap<String, Object>,
     pairings: HashMap<String, Pairing>,
     next_nameplate: u32,
-    /// credential ID → (account, sealed blob)
-    passkeys: HashMap<String, (String, String)>,
+    auth_configured: bool,
+    mock_subject: String,
+    mock_gamertag: String,
+    mock_pending_polls: usize,
+    mock_slow_down: bool,
+    mock_token_error: Option<String>,
+    mock_device_codes: HashMap<String, MockDeviceCode>,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            accounts: HashMap::new(),
+            ms_accounts: HashMap::new(),
+            objects: BTreeMap::new(),
+            pairings: HashMap::new(),
+            next_nameplate: 1000,
+            auth_configured: true,
+            mock_subject: "mock-ms-user-1".into(),
+            mock_gamertag: "MockPlayer".into(),
+            mock_pending_polls: 0,
+            mock_slow_down: false,
+            mock_token_error: None,
+            mock_device_codes: HashMap::new(),
+        }
+    }
 }
 
 pub struct MockService {
@@ -74,6 +110,12 @@ fn random_id(n: usize) -> String {
     b.iter().map(|x| abc[(x % 32) as usize] as char).collect()
 }
 
+fn random_token() -> String {
+    let mut t = [0u8; 32];
+    getrandom::getrandom(&mut t).expect("random");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(t)
+}
+
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -89,10 +131,19 @@ fn percent_decode(s: &str) -> String {
             i += 3;
             continue;
         }
-        out.push(b[i]);
+        out.push(if b[i] == b'+' { b' ' } else { b[i] });
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn parse_form(body: &[u8]) -> HashMap<String, String> {
+    let text = String::from_utf8_lossy(body);
+    text.split('&')
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.split_once('='))
+        .map(|(k, v)| (percent_decode(k), percent_decode(v)))
+        .collect()
 }
 
 impl MockService {
@@ -104,9 +155,10 @@ impl MockService {
     pub fn start_with(page_cap: usize) -> MockService {
         let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").expect("bind the mock service"));
         let port = server.server_addr().to_ip().expect("ip listener").port();
+        let url = format!("http://127.0.0.1:{port}");
         let mut m = MockService {
-            url: format!("http://127.0.0.1:{port}"),
-            state: Arc::new(Mutex::new(State { next_nameplate: 1000, ..Default::default() })),
+            url: url.clone(),
+            state: Arc::new(Mutex::new(State::default())),
             stop: Arc::new(AtomicBool::new(false)),
             requests: Arc::new(AtomicU64::new(0)),
             pairing_offer_writes: Arc::new(AtomicU64::new(0)),
@@ -116,7 +168,7 @@ impl MockService {
             page_cap,
         };
         for _ in 0..12 {
-            let (server, state, stop, requests, offer_writes, quota, cap) = (
+            let (server, state, stop, requests, offer_writes, quota, cap, base_url) = (
                 m.server.clone(),
                 m.state.clone(),
                 m.stop.clone(),
@@ -124,6 +176,7 @@ impl MockService {
                 m.pairing_offer_writes.clone(),
                 m.quota.clone(),
                 m.page_cap,
+                url.clone(),
             );
             m.workers.push(std::thread::spawn(move || {
                 while !stop.load(Ordering::SeqCst) {
@@ -145,7 +198,7 @@ impl MockService {
                         .map(|h| (h.field.as_str().as_str().to_ascii_lowercase(), h.value.as_str().to_string()))
                         .collect();
                     let method = req.method().as_str().to_string();
-                    let (status, hs, out) = handle(&state, &quota, cap, &method, req.url(), &headers, body);
+                    let (status, hs, out) = handle(&state, &quota, cap, &base_url, &method, req.url(), &headers, body);
                     // tiny_http leaves the body out of HEAD answers but keeps its Content-Length
                     let mut resp = tiny_http::Response::from_data(out).with_status_code(status);
                     for (k, v) in hs {
@@ -162,6 +215,33 @@ impl MockService {
 
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Set the Microsoft user identity returned by the mock device-code flow from now on.
+    pub fn set_mock_microsoft_user(&self, subject: &str, gamertag: &str) {
+        let mut st = self.state.lock();
+        st.mock_subject = subject.to_string();
+        st.mock_gamertag = gamertag.to_string();
+    }
+
+    /// Toggle whether Microsoft auth is configured on the mock service (`503 auth_not_configured`).
+    pub fn set_mock_auth_configured(&self, configured: bool) {
+        self.state.lock().auth_configured = configured;
+    }
+
+    /// Require `polls` `authorization_pending` answers before issuing the mock `id_token`.
+    pub fn set_mock_pending_polls(&self, polls: usize) {
+        self.state.lock().mock_pending_polls = polls;
+    }
+
+    /// Trigger one `slow_down` response during token polling.
+    pub fn set_mock_slow_down(&self, enable: bool) {
+        self.state.lock().mock_slow_down = enable;
+    }
+
+    /// Force an OAuth2 error (e.g. `access_denied`, `expired_token`) on the next token poll.
+    pub fn set_mock_token_error(&self, error: Option<&str>) {
+        self.state.lock().mock_token_error = error.map(str::to_string);
     }
 
     /// Space each account may use from now on (new and existing accounts).
@@ -209,7 +289,7 @@ fn authenticate(st: &State, headers: &HashMap<String, String>) -> Result<String,
         return Err(err(401, "unauthorized", "missing or malformed credentials"));
     };
     match st.accounts.get(id) {
-        Some(a) if a.token == token => Ok(id.to_string()),
+        Some(a) if a.tokens.iter().any(|t| t == token) => Ok(id.to_string()),
         _ => Err(err(401, "unauthorized", "unknown account or wrong token")),
     }
 }
@@ -223,10 +303,12 @@ fn obj_headers(o: &Object) -> Vec<(String, String)> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle(
     state: &Mutex<State>,
     quota: &AtomicU64,
     page_cap: usize,
+    base_url: &str,
     method: &str,
     url: &str,
     headers: &HashMap<String, String>,
@@ -240,13 +322,174 @@ fn handle(
         .collect();
     let mut st = state.lock();
     match (method, path) {
+        ("GET", "/privacy") | ("GET", "/terms") => (
+            200,
+            vec![("Content-Type".into(), "text/html; charset=utf-8".into())],
+            b"<!doctype html><html><body><h1>PackSync Privacy &amp; Terms</h1></body></html>".to_vec(),
+        ),
+        ("GET", "/v1/auth/config") => {
+            if !st.auth_configured {
+                return err(503, "auth_not_configured", "Microsoft sign-in is not configured on this server");
+            }
+            json(
+                200,
+                serde_json::json!({
+                    "microsoft_client_id": MOCK_CLIENT_ID,
+                    "device_code_url": format!("{base_url}/mock-ms/devicecode"),
+                    "token_url": format!("{base_url}/mock-ms/token"),
+                    "scope": "openid profile offline_access",
+                    "privacy_url": format!("{base_url}/privacy"),
+                    "terms_url": format!("{base_url}/terms"),
+                }),
+            )
+        }
+        ("POST", "/mock-ms/devicecode") => {
+            let form = parse_form(&body);
+            if form.get("client_id").map(String::as_str) != Some(MOCK_CLIENT_ID) {
+                return json(400, serde_json::json!({ "error": "invalid_client" }));
+            }
+            let device_code = random_id(32);
+            let user_code = format!("{}-{}", random_id(4).to_ascii_uppercase(), random_id(4).to_ascii_uppercase());
+            let pending = st.mock_pending_polls;
+            let slow = st.mock_slow_down;
+            st.mock_device_codes
+                .insert(device_code.clone(), MockDeviceCode { pending_polls: pending, slow_down: slow });
+            json(
+                200,
+                serde_json::json!({
+                    "device_code": device_code,
+                    "user_code": user_code,
+                    "verification_uri": "https://microsoft.com/link",
+                    "expires_in": 900,
+                    "interval": 1,
+                    "message": "Enter the code at https://microsoft.com/link",
+                }),
+            )
+        }
+        ("POST", "/mock-ms/token") => {
+            let form = parse_form(&body);
+            let Some(code) = form.get("device_code") else {
+                return json(400, serde_json::json!({ "error": "invalid_request" }));
+            };
+            if form.get("client_id").map(String::as_str) != Some(MOCK_CLIENT_ID) {
+                return json(400, serde_json::json!({ "error": "invalid_client" }));
+            }
+            if let Some(e) = st.mock_token_error.take() {
+                st.mock_device_codes.remove(code);
+                return json(400, serde_json::json!({ "error": e }));
+            }
+            let Some(dc) = st.mock_device_codes.get_mut(code) else {
+                return json(400, serde_json::json!({ "error": "bad_verification_code" }));
+            };
+            if dc.slow_down {
+                dc.slow_down = false;
+                return json(400, serde_json::json!({ "error": "slow_down" }));
+            }
+            if dc.pending_polls > 0 {
+                dc.pending_polls -= 1;
+                return json(400, serde_json::json!({ "error": "authorization_pending" }));
+            }
+            st.mock_device_codes.remove(code);
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            let hdr = b64.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+            let payload = serde_json::json!({
+                "sub": st.mock_subject,
+                "tid": MOCK_TENANT_ID,
+                "name": st.mock_gamertag,
+                "aud": MOCK_CLIENT_ID,
+            })
+            .to_string();
+            let id_token = format!("{hdr}.{}.mock-sig", b64.encode(payload.as_bytes()));
+            json(
+                200,
+                serde_json::json!({
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "id_token": id_token,
+                }),
+            )
+        }
+        ("POST", "/v1/auth/microsoft") => {
+            if !st.auth_configured {
+                return err(503, "auth_not_configured", "Microsoft sign-in is not configured on this server");
+            }
+            let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+            let Some(jwt) = v["id_token"].as_str() else {
+                return err(400, "bad_request", "id_token is required");
+            };
+            let mut parts = jwt.split('.');
+            let (Some(_), Some(payload_b64), Some(_), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return err(401, "invalid_token", "malformed Microsoft ID token");
+            };
+            let Ok(payload_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload_b64) else {
+                return err(401, "invalid_token", "malformed Microsoft ID token");
+            };
+            let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&payload_bytes) else {
+                return err(401, "invalid_token", "malformed Microsoft ID token");
+            };
+            let Some(sub) = claims["sub"].as_str().filter(|s| !s.is_empty()) else {
+                return err(401, "invalid_token", "missing subject claim");
+            };
+            let Some(tid) = claims["tid"].as_str().filter(|s| !s.is_empty()) else {
+                return err(401, "invalid_token", "missing tenant claim");
+            };
+            if claims["aud"].as_str() != Some(MOCK_CLIENT_ID) {
+                return err(401, "invalid_token", "audience mismatch");
+            }
+            let display_name = claims["name"].as_str().map(str::to_string);
+            let ms_key = format!("{tid}:{sub}");
+            let session_token = random_token();
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+            if let Some(acct_id) = st.ms_accounts.get(&ms_key).cloned() {
+                let acct = st.accounts.get_mut(&acct_id).expect("ms_accounts points to existing account");
+                acct.tokens.push(session_token.clone());
+                if acct.tokens.len() > 10 {
+                    let drop_n = acct.tokens.len() - 10;
+                    acct.tokens.drain(0..drop_n);
+                }
+                let mk = acct.master_key.expect("microsoft account has master_key");
+                json(
+                    200,
+                    serde_json::json!({
+                        "account": acct_id,
+                        "token": session_token,
+                        "master_key": b64.encode(mk),
+                        "quota": acct.quota,
+                        "display_name": display_name,
+                        "created": false,
+                    }),
+                )
+            } else {
+                let acct_id = random_id(26);
+                let mut mk = [0u8; 32];
+                getrandom::getrandom(&mut mk).expect("random");
+                let q = quota.load(Ordering::SeqCst);
+                st.accounts.insert(
+                    acct_id.clone(),
+                    Account { tokens: vec![session_token.clone()], master_key: Some(mk), used: 0, quota: q },
+                );
+                st.ms_accounts.insert(ms_key, acct_id.clone());
+                json(
+                    201,
+                    serde_json::json!({
+                        "account": acct_id,
+                        "token": session_token,
+                        "master_key": b64.encode(mk),
+                        "quota": q,
+                        "display_name": display_name,
+                        "created": true,
+                    }),
+                )
+            }
+        }
         ("POST", "/v1/accounts") => {
             let id = random_id(26);
-            let mut t = [0u8; 32];
-            getrandom::getrandom(&mut t).expect("random");
-            let token = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, t);
+            let token = random_token();
             let q = quota.load(Ordering::SeqCst);
-            st.accounts.insert(id.clone(), Account { token: token.clone(), used: 0, quota: q });
+            st.accounts
+                .insert(id.clone(), Account { tokens: vec![token.clone()], master_key: None, used: 0, quota: q });
             json(201, serde_json::json!({ "account": id, "token": token, "quota": q }))
         }
         ("DELETE", "/v1/accounts") => {
@@ -256,6 +499,8 @@ fn handle(
             };
             let prefix = format!("{id}/");
             st.objects.retain(|k, _| !k.starts_with(&prefix));
+            st.pairings.retain(|_, p| p.account != id);
+            st.ms_accounts.retain(|_, acct_id| acct_id != &id);
             st.accounts.remove(&id);
             json(200, serde_json::json!({ "ok": true }))
         }
@@ -380,29 +625,6 @@ fn handle(
                         a.used = a.used.saturating_sub(o.data.len() as u64);
                     }
                     json(200, serde_json::json!({ "ok": true }))
-                }
-                _ => err(405, "method", "method not allowed"),
-            }
-        }
-        (_, p) if p.starts_with("/v1/passkeys/") => {
-            let cid = p["/v1/passkeys/".len()..].to_string();
-            match method {
-                "GET" => match st.passkeys.get(&cid) {
-                    Some((_, blob)) => json(200, serde_json::json!({ "blob": blob })),
-                    None => err(404, "not_found", "this passkey is not registered with PackSync"),
-                },
-                "PUT" => {
-                    let id = match authenticate(&st, headers) {
-                        Ok(id) => id,
-                        Err(a) => return a,
-                    };
-                    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
-                    let Some(blob) = v["blob"].as_str() else { return err(400, "bad_blob", "not a sealed blob") };
-                    if st.passkeys.get(&cid).is_some_and(|(a, _)| *a != id) {
-                        return err(409, "taken", "another account's passkey");
-                    }
-                    st.passkeys.insert(cid, (id, blob.to_string()));
-                    json(201, serde_json::json!({ "ok": true }))
                 }
                 _ => err(405, "method", "method not allowed"),
             }

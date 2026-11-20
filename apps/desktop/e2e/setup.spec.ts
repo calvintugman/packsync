@@ -1,14 +1,14 @@
 import { card, expect, expectCardPhase, openApp, test } from "./world";
 
-test("first run: start the PackSync cloud, preview an instance and start syncing", async ({ page, world }) => {
+test("first run: sign in with Minecraft, preview an instance and start syncing", async ({ page, world }) => {
   await openApp(page, world);
 
   // nothing is connected and nothing synced: the app starts with the setup
   await expect(page.getByRole("heading", { name: "Your modpacks, on every computer" })).toBeVisible();
-  await page.getByRole("button", { name: "Start on this computer" }).click();
+  await page.getByRole("button", { name: "Sign in with Minecraft" }).click();
 
-  // step 2: Prism instances were found
-  await expect(page.getByRole("heading", { name: "Choose what to sync" })).toBeVisible();
+  // step 2: Prism instances were found once device-code sign-in completes against the mock service
+  await expect(page.getByRole("heading", { name: "Choose what to sync" })).toBeVisible({ timeout: 15_000 });
   const list = page.getByRole("list", { name: "Prism instances" });
   await expect(list.getByRole("listitem")).toHaveCount(2);
   await list.getByRole("listitem").filter({ hasText: "Skyblock Pack" }).getByRole("button", { name: /Preview and start/ }).click();
@@ -35,7 +35,8 @@ test("first run: start the PackSync cloud, preview an instance and start syncing
 
 test("the other Prism instance is offered under 'Not syncing yet' and can be added later", async ({ page, world }) => {
   await openApp(page, world);
-  await page.getByRole("button", { name: "Start on this computer" }).click();
+  await page.getByRole("button", { name: "Sign in with Minecraft" }).click();
+  await expect(page.getByRole("heading", { name: "Choose what to sync" })).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "Finish" }).click();
 
   await expect(page.getByText("No instances are synced yet")).toBeVisible();
@@ -48,7 +49,7 @@ test("the other Prism instance is offered under 'Not syncing yet' and can be add
 
 test("Google Drive: without an OAuth client the app explains what is needed instead of failing", async ({ page, world }) => {
   await openApp(page, world);
-  await page.getByRole("button", { name: "Use my own Google Drive instead" }).click();
+  await page.getByRole("button", { name: "Google Drive" }).click();
   await expect(page.getByText(/unencrypted/)).toBeVisible();
   await page.getByRole("button", { name: "Sign in with Google" }).click();
   await expect(page.getByRole("heading", { name: "PackSync needs a Google OAuth client" })).toBeVisible();

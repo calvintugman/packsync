@@ -54,6 +54,8 @@ pub struct App {
     storage_wrapper: Option<StorageWrapper>,
     /// A pairing code shown and waiting for the other computer ([`App::hosted_pair_start`]).
     pairing: parking_lot::Mutex<Option<packsync_hosted::pairing::PairingOffer>>,
+    /// An in-flight Microsoft device-code sign-in waiting to complete ([`App::hosted_login_start`]).
+    pending_login: parking_lot::Mutex<Option<packsync_hosted::msauth::PendingDeviceLogin>>,
     bus: EventBus,
     jobs: JobRunner,
 }
@@ -120,6 +122,7 @@ impl App {
             prism_fixed,
             storage_wrapper: opts.storage_wrapper,
             pairing: parking_lot::Mutex::new(None),
+            pending_login: parking_lot::Mutex::new(None),
             bus,
             jobs,
         });
@@ -353,8 +356,20 @@ impl App {
     /// Use `c` from now on: check the connection first so a bad configuration never clobbers the
     /// existing storage, then write the secret to the credential store and update settings.
     fn save_hosted(&self, c: &packsync_hosted::Credentials, ctx: &OpCtx) -> Result<StorageStatus> {
-        let setting =
-            StorageSetting::Hosted { endpoint: c.account.endpoint.clone(), account: c.account.account.clone() };
+        self.save_hosted_with_name(c, None, ctx)
+    }
+
+    fn save_hosted_with_name(
+        &self,
+        c: &packsync_hosted::Credentials,
+        display_name: Option<String>,
+        ctx: &OpCtx,
+    ) -> Result<StorageStatus> {
+        let setting = StorageSetting::Hosted {
+            endpoint: c.account.endpoint.clone(),
+            account: c.account.account.clone(),
+            display_name,
+        };
         let mut probe = self.settings();
         probe.storage = setting.clone();
         probe.validate()?;
@@ -368,6 +383,72 @@ impl App {
         if let Some(p) = up.storage_problem {
             return Err(Error::Config(p));
         }
+        Ok(self.storage_status())
+    }
+
+    /// Start Microsoft / Minecraft device-code sign-in for the PackSync cloud.
+    pub fn hosted_login_start(
+        &self,
+        endpoint: Option<&str>,
+        opener: Option<&dyn UrlOpener>,
+        ctx: &OpCtx,
+    ) -> Result<packsync_hosted::msauth::DeviceLoginPrompt> {
+        let ep = self.hosted_endpoint(endpoint)?;
+        let pending = packsync_hosted::msauth::start_device_login(&ep, ctx)?;
+        let prompt = pending.prompt().clone();
+        *self.pending_login.lock() = Some(pending);
+        if let Some(open) = opener
+            && let Err(e) = open.open(&prompt.verification_uri)
+        {
+            tracing::warn!(target: "packsync_app", error = %e, "could not open verification URL in browser");
+        }
+        Ok(prompt)
+    }
+
+    /// Wait for the Microsoft device-code sign-in started by [`App::hosted_login_start`] and
+    /// connect this computer to the PackSync cloud account.
+    pub fn hosted_login_wait(&self, ctx: &OpCtx) -> Result<StorageStatus> {
+        let pending = self
+            .pending_login
+            .lock()
+            .take()
+            .ok_or_else(|| Error::Config("no Microsoft sign-in is in progress; start sign-in first".into()))?;
+        let outcome = pending.wait(ctx)?;
+        self.save_hosted_with_name(&outcome.credentials, outcome.display_name, ctx)
+    }
+
+    /// Permanently delete the connected PackSync cloud account, all cloud data, and local credentials.
+    /// Also removes local sync registrations bound to the deleted account without touching local files.
+    pub fn hosted_delete_account(&self, ctx: &OpCtx) -> Result<StorageStatus> {
+        let c = self.hosted_credentials()?;
+        let hosted = packsync_hosted::HostedStorage::new(c.account.clone())?;
+        let raw_id = packsync_core::storage::Storage::provider_id(&hosted);
+        let enc_id = format!("{raw_id}+e2e");
+        let active_id = self.engine.storage_id();
+        hosted.delete_account(ctx)?;
+        if let Ok(rows) = self.engine.instances() {
+            for row in rows {
+                let matches_deleted = row
+                    .provider_id
+                    .as_deref()
+                    .is_some_and(|p| p == raw_id || p == enc_id || active_id.as_deref() == Some(p));
+                if matches_deleted {
+                    if let Ok(plan) = self.hooks_plan_remove(row.id)
+                        && !plan.changes.is_empty()
+                        && plan.blockers.is_empty()
+                    {
+                        let _ = self.hooks_apply(row.id, &plan);
+                    }
+                    if self.engine.disable_sync(row.id).is_ok() {
+                        self.bus.emit(AppEvent::InstanceChanged { instance: row.id });
+                    }
+                }
+            }
+        }
+        let _ = self.creds.delete(&StorageSetting::hosted_secret_account(&c.account.account));
+        *self.pairing.lock() = None;
+        *self.pending_login.lock() = None;
+        self.update_settings(|s| s.storage = StorageSetting::None)?;
         Ok(self.storage_status())
     }
 
@@ -398,7 +479,7 @@ impl App {
 
     fn hosted_credentials(&self) -> Result<packsync_hosted::Credentials> {
         match self.settings().storage {
-            StorageSetting::Hosted { endpoint, account } => {
+            StorageSetting::Hosted { endpoint, account, .. } => {
                 provider::hosted_credentials(&*self.creds, &endpoint, &account)
             }
             _ => Err(Error::Config("this computer does not use the PackSync cloud".into())),
@@ -423,30 +504,6 @@ impl App {
             .take()
             .ok_or_else(|| Error::Config("no pairing code is being shown; make one first".into()))?;
         offer.wait(ctx).map_err(Error::from)
-    }
-
-    /// Protect the account with a passkey (opens the browser): if every computer is lost, the passkey
-    /// alone gets back in.
-    pub fn hosted_add_passkey(&self, opener: &dyn UrlOpener, ctx: &OpCtx) -> Result<()> {
-        let c = self.hosted_credentials()?;
-        let hosted = packsync_hosted::HostedStorage::new(c.account.clone())?;
-        let label = self.engine.device().1;
-        let open = |url: &str| opener.open(url).map_err(std::io::Error::other);
-        packsync_hosted::passkey::add_passkey(&hosted, &c, &label, &open, ctx)?;
-        Ok(())
-    }
-
-    /// Any computer: get back into the PackSync cloud with a passkey (opens the browser).
-    pub fn hosted_recover_passkey(
-        &self,
-        endpoint: Option<&str>,
-        opener: &dyn UrlOpener,
-        ctx: &OpCtx,
-    ) -> Result<StorageStatus> {
-        let ep = self.hosted_endpoint(endpoint)?;
-        let open = |url: &str| opener.open(url).map_err(std::io::Error::other);
-        let c = packsync_hosted::passkey::recover_with_passkey(&ep, &open, ctx)?;
-        self.save_hosted(&c, ctx)
     }
 
     /// The text that restores access without pairing. A secret: show it only when asked.

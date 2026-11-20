@@ -36,6 +36,7 @@ const fn m(name: &'static str, long: bool, doc: &'static str) -> MethodInfo {
 
 pub const METHODS: &[MethodInfo] = &[
     m("app.info", false, "Version, paths, this computer, storage and launcher summary."),
+    m("app.open_url", false, "{url}: open a trusted https:// or loopback URL in the system browser."),
     m("settings.get", false, "Current settings."),
     m("settings.update", false, "Change settings: {patch: {…}} (unknown keys are refused)."),
     m("device.rename", false, "{name}"),
@@ -43,6 +44,11 @@ pub const METHODS: &[MethodInfo] = &[
     m("storage.use_local", false, "{path}: use a folder as the cloud (testing)."),
     m("storage.use_google", false, "{space}: select Google Drive (sign in separately)."),
     m("storage.google_login", true, "Sign in with Google in the system browser."),
+    m(
+        "storage.use_r2",
+        true,
+        "{account_id, bucket, prefix?, access_key_id, secret_access_key}: configure Cloudflare R2.",
+    ),
     m("storage.disconnect", false, "{revoke}: forget the connection (cloud data is not touched)."),
     m("storage.test", true, "Check that the connection works."),
     m("storage.usage", false, "How much of the account's storage is used (one cheap request)."),
@@ -56,12 +62,13 @@ pub const METHODS: &[MethodInfo] = &[
     m("storage.hosted_recover", true, "{key}: use the PackSync cloud with a recovery key."),
     m("storage.hosted_pair_start", false, "Make a pairing code for another computer: {code}."),
     m("storage.hosted_pair_wait", true, "Wait (up to 10 minutes) until another computer joined with the code."),
-    m("storage.passkey_add", true, "Protect the PackSync cloud with a passkey (opens the browser)."),
     m(
-        "storage.passkey_recover",
-        true,
-        "{service?}: get back into the PackSync cloud with a passkey (opens the browser).",
+        "storage.hosted_login_start",
+        false,
+        "{service?, open_browser?}: start Microsoft device-code sign-in for the PackSync cloud.",
     ),
+    m("storage.hosted_login_wait", true, "Wait until Microsoft device-code sign-in completes."),
+    m("storage.hosted_delete_account", true, "Permanently delete the PackSync cloud account and all cloud data."),
     m("storage.hosted_recovery_key", false, "The recovery key (a secret: show it only when asked): {key}."),
     m("launcher.discover", false, "Prism instances found on this computer."),
     m("launcher.describe", false, "{launcher, path}: validate a manually selected folder."),
@@ -99,6 +106,8 @@ pub const METHODS: &[MethodInfo] = &[
     m("jobs.list", false, "Background jobs."),
     m("jobs.cancel", false, "{job}"),
     m("events.recent", false, "{instance?, limit?}: recent log entries."),
+    m("events.clear", false, "Clear local detailed log entries."),
+    m("events.export", false, "{path, limit?}: write recent redacted log entries to a JSON file."),
     m("diagnostics.report", true, "{online?}: installation checks (redacted)."),
 ];
 
@@ -157,6 +166,7 @@ fn app_info(app: &App) -> Value {
             },
             "data_dirs": prism.data_dirs(),
         },
+        "minecraft_profile": prism.active_minecraft_profile(),
         "running_jobs": app.jobs().running(),
     })
 }
@@ -175,11 +185,71 @@ fn settings_patch(app: &App, patch: &serde_json::Map<String, Value>) -> Result<V
     Ok(json!({ "settings": up.settings, "storage_problem": up.storage_problem }))
 }
 
+fn validate_external_url(url: &str) -> Result<()> {
+    if url.is_empty() || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(Error::invalid("url", "URL cannot be empty or contain whitespace"));
+    }
+    let (is_http, rest) = if let Some(r) = url.strip_prefix("https://") {
+        (false, r)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (true, r)
+    } else {
+        return Err(Error::invalid("url", "only https:// or localhost http:// URLs are allowed"));
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') || authority.contains('\\') {
+        return Err(Error::invalid("url", "URL has an invalid authority"));
+    }
+    let (host, port_opt) = if let Some(after_open) = authority.strip_prefix('[') {
+        let Some((h, tail)) = after_open.split_once(']') else {
+            return Err(Error::invalid("url", "URL has an invalid IPv6 host"));
+        };
+        if let Some(p) = tail.strip_prefix(':') {
+            (h, Some(p))
+        } else if tail.is_empty() {
+            (h, None)
+        } else {
+            return Err(Error::invalid("url", "URL has an invalid authority"));
+        }
+    } else {
+        match authority.split_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        return Err(Error::invalid("url", "URL host cannot be empty"));
+    }
+    if let Some(port) = port_opt
+        && (port.is_empty()
+            || !port.bytes().all(|b| b.is_ascii_digit())
+            || port.parse::<u16>().ok().is_none_or(|n| n == 0))
+    {
+        return Err(Error::invalid("url", "URL has an invalid port"));
+    }
+    if is_http && !(host == "127.0.0.1" || host.eq_ignore_ascii_case("localhost")) {
+        return Err(Error::invalid("url", "plain http:// URLs are only allowed for 127.0.0.1 or localhost"));
+    }
+    Ok(())
+}
+
 /// Run one method. Long-running methods block until done; prefer [`start_job`] for those.
 pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<Value> {
     let e = app.engine();
     match method {
         "app.info" => Ok(app_info(app)),
+        "app.open_url" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct A {
+                url: String,
+            }
+            let a: A = p(&params)?;
+            validate_external_url(&a.url)?;
+            use packsync_drive::oauth::UrlOpener as _;
+            let opened = packsync_drive::oauth::SystemBrowser { print_fallback: false }.open(&a.url).is_ok();
+            Ok(json!({ "opened": opened }))
+        }
         "settings.get" => ser(&app.settings()),
         "settings.update" => {
             #[derive(Deserialize)]
@@ -227,6 +297,24 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             let info = app.google_login(&opener, ctx)?;
             Ok(json!({ "account": info, "status": app.storage_status() }))
         }
+        "storage.use_r2" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct A {
+                account_id: String,
+                bucket: String,
+                #[serde(default = "default_r2_prefix")]
+                prefix: String,
+                access_key_id: String,
+                secret_access_key: String,
+            }
+            fn default_r2_prefix() -> String {
+                "packsync".into()
+            }
+            let a: A = p(&params)?;
+            let secret = packsync_core::redact::Secret::new(a.secret_access_key);
+            ser(&app.use_r2(&a.account_id, &a.bucket, &a.prefix, &a.access_key_id, &secret, ctx)?)
+        }
         "storage.disconnect" => {
             #[derive(Deserialize)]
             struct A {
@@ -270,19 +358,52 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
             app.hosted_pair_wait(ctx)?;
             Ok(json!({ "joined": true }))
         }
-        "storage.passkey_add" => {
-            app.hosted_add_passkey(&packsync_drive::oauth::SystemBrowser { print_fallback: false }, ctx)?;
-            Ok(json!({ "added": true }))
-        }
-        "storage.passkey_recover" => {
-            #[derive(Deserialize, Default)]
+        "storage.hosted_login_start" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
             struct A {
                 #[serde(default)]
                 service: Option<String>,
+                #[serde(default = "default_open_browser")]
+                open_browser: bool,
+            }
+            impl Default for A {
+                fn default() -> Self {
+                    Self { service: None, open_browser: true }
+                }
+            }
+            fn default_open_browser() -> bool {
+                true
             }
             let a: A = if params.is_null() { A::default() } else { p(&params)? };
             let opener = packsync_drive::oauth::SystemBrowser { print_fallback: false };
-            ser(&app.hosted_recover_passkey(a.service.as_deref(), &opener, ctx)?)
+            let opener_opt: Option<&dyn packsync_drive::oauth::UrlOpener> =
+                if a.open_browser { Some(&opener) } else { None };
+            let prompt = app.hosted_login_start(a.service.as_deref(), opener_opt, ctx)?;
+            Ok(json!({
+                "user_code": prompt.user_code,
+                "verification_uri": prompt.verification_uri,
+                "expires_in": prompt.expires_in,
+                "privacy_url": prompt.privacy_url,
+            }))
+        }
+        "storage.hosted_login_wait" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Empty {}
+            if !params.is_null() {
+                let _: Empty = p(&params)?;
+            }
+            ser(&app.hosted_login_wait(ctx)?)
+        }
+        "storage.hosted_delete_account" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Empty {}
+            if !params.is_null() {
+                let _: Empty = p(&params)?;
+            }
+            ser(&app.hosted_delete_account(ctx)?)
         }
         "storage.hosted_recovery_key" => Ok(json!({ "key": app.hosted_recovery_key()?.expose() })),
         "storage.test" => app.test_storage(ctx),
@@ -599,6 +720,60 @@ pub fn call(app: &Arc<App>, method: &str, params: Value, ctx: &OpCtx) -> Result<
                 .map(|r| json!({ "ts_ms": r.ts_ms, "instance": r.instance_id, "level": r.level, "code": r.code, "message": r.message }))
                 .collect::<Vec<_>>()))
         }
+        "events.clear" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Empty {}
+            if !params.is_null() {
+                let _: Empty = p(&params)?;
+            }
+            let cleared = e.db().events_clear()?;
+            Ok(json!({ "cleared": cleared }))
+        }
+        "events.export" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct A {
+                path: std::path::PathBuf,
+                #[serde(default)]
+                limit: Option<usize>,
+            }
+            let a: A = p(&params)?;
+            if a.path.as_os_str().is_empty() || a.path.is_dir() {
+                return Err(Error::invalid("path", "choose a JSON file path"));
+            }
+            let limit = a.limit.unwrap_or(500).min(5000);
+            let rows = e.db().events_recent(None, limit)?;
+            let count = rows.len();
+            let (dev_id, dev_name) = e.device();
+            let exported_at_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let payload = json!({
+                "exported_at_ms": exported_at_ms,
+                "version": env!("CARGO_PKG_VERSION"),
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+                "device": { "id": dev_id, "name": dev_name },
+                "count": count,
+                "events": rows
+                    .into_iter()
+                    .map(|r| json!({
+                        "ts_ms": r.ts_ms,
+                        "instance": r.instance_id,
+                        "level": r.level,
+                        "code": r.code,
+                        "message": r.message,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            let mut bytes = serde_json::to_vec_pretty(&payload)?;
+            bytes.push(b'\n');
+            packsync_core::fsutil::write_atomic(&a.path, &bytes)
+                .map_err(|err| Error::io(format!("writing {}", a.path.display()), err))?;
+            Ok(json!({ "path": a.path, "count": count }))
+        }
         "diagnostics.report" => {
             #[derive(Deserialize, Default)]
             struct A {
@@ -621,4 +796,32 @@ pub fn start_job(app: &Arc<App>, method: &str, params: Value) -> Result<JobId> {
     let (a, name) = (app.clone(), method.to_string());
     let key_params = params.clone();
     app.jobs().start_with_params(method, inst, key_params, move |ctx| call(&a, &name, params, ctx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn external_url_allows_only_https_and_loopback_http() {
+        assert!(validate_external_url("https://microsoft.com/link").is_ok());
+        assert!(validate_external_url("https://packsync.example.workers.dev/privacy").is_ok());
+        assert!(validate_external_url("http://127.0.0.1:8787/privacy").is_ok());
+        assert!(validate_external_url("http://localhost:8787/terms").is_ok());
+
+        for bad in [
+            "",
+            "http://example.com/phish",
+            "http://127.0.0.1.evil.com/",
+            "http://localhost.evil.com/",
+            "https://user:pass@evil.com/",
+            "https://evil.com\\path",
+            "https://example.com/a\nb",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>alert(1)</script>",
+        ] {
+            assert!(validate_external_url(bad).is_err(), "{bad:?} must be rejected");
+        }
+    }
 }

@@ -22,3 +22,10 @@ pub mod testkit;
 
 pub use hooks::is_flatpak_instance_root;
 pub use launcher::{Exe, KIND, LaunchCommand, PrismLauncher};
+
+/// Active Minecraft player profile read from Prism's `accounts.json`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MinecraftProfile {
+    pub name: String,
+    pub uuid: String,
+}

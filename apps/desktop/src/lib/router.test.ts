@@ -7,6 +7,7 @@ describe("routes", () => {
     expect(parseRoute("#/")).toEqual({ name: "instances" });
     expect(parseRoute("#/cloud")).toEqual({ name: "cloud" });
     expect(parseRoute("#/activity")).toEqual({ name: "activity" });
+    expect(parseRoute("#/about")).toEqual({ name: "about" });
     expect(parseRoute("#/settings")).toEqual({ name: "settings" });
     expect(parseRoute("#/setup")).toEqual({ name: "setup" });
     expect(parseRoute("#/instance/abc")).toEqual({ name: "instance", id: "abc", tab: null });
@@ -23,6 +24,7 @@ describe("routes", () => {
     for (const r of [
       { name: "instances" as const },
       { name: "cloud" as const },
+      { name: "about" as const },
       { name: "instance" as const, id: "a b", tab: "history" },
       { name: "instance" as const, id: "x", tab: null },
     ]) {

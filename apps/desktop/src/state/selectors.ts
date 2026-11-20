@@ -33,6 +33,9 @@ const LABELS: Record<string, string> = {
 
 const PLAIN: Record<string, string> = {
   "storage.google_login": "Signing in to Google",
+  "storage.hosted_login_wait": "Signing in with Minecraft",
+  "storage.hosted_delete_account": "Deleting PackSync Cloud account",
+  "storage.use_r2": "Connecting Cloudflare R2",
   "storage.test": "Testing the cloud connection",
   "cloud.instances": "Looking up instances in the cloud",
   "gc.plan": "Planning a cloud cleanup",

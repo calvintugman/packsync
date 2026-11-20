@@ -73,22 +73,36 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
                 writeln!(w, "Recovered: this computer uses your PackSync cloud again.")
             })
         }
-        StorageCmd::PasskeyAdd => {
-            cx.out.note("Opening your browser: create a passkey for PackSync (fingerprint, face, PIN or your phone).");
-            cx.app.hosted_add_passkey(&SystemBrowser { print_fallback: true }, &ctx)?;
-            cx.out.emit(&serde_json::json!({ "added": true }), |w| {
-                writeln!(w, "Passkey added. If you ever lose every computer: `packsync storage passkey-recover`.")
-            })
-        }
-        StorageCmd::PasskeyRecover { service, no_browser } => {
-            let opener: Box<dyn UrlOpener> =
-                if no_browser { Box::new(PrintUrl) } else { Box::new(SystemBrowser { print_fallback: true }) };
-            cx.out.note("Opening your browser: use your PackSync passkey.");
-            let s = cx.app.hosted_recover_passkey(service.as_deref(), &*opener, &ctx)?;
+        StorageCmd::Login { service, no_browser } => {
+            let prompt = cx.app.hosted_login_start(service.as_deref(), None, &ctx)?;
+            cx.out.note(format!(
+                "To sign in, open:\n\n  {}\n\nand enter the code: {}\n\nPrivacy policy: {}",
+                prompt.verification_uri, prompt.user_code, prompt.privacy_url
+            ));
+            if !no_browser {
+                let _ = SystemBrowser { print_fallback: false }.open(&prompt.verification_uri);
+            }
+            let s = cx.app.hosted_login_wait(&ctx)?;
             cx.out.emit(&s, |w| {
                 print_status(w, &s)?;
-                writeln!(w, "You're back in. `packsync cloud` lists your instances.")
+                writeln!(
+                    w,
+                    "Signed in to the PackSync cloud. Any computer signed in with this Microsoft account syncs automatically."
+                )
             })
+        }
+        StorageCmd::DeleteAccount => {
+            if !matches!(cx.app.settings().storage, StorageSetting::Hosted { .. }) {
+                return Err(Error::Config("this computer does not use the PackSync cloud".into()));
+            }
+            if !cx
+                .out
+                .confirm("Permanently delete your PackSync cloud account and all cloud data? This cannot be undone.")?
+            {
+                return Err(Error::Cancelled);
+            }
+            let s = cx.app.hosted_delete_account(&ctx)?;
+            cx.out.emit(&s, |w| writeln!(w, "PackSync cloud account and data deleted."))
         }
         StorageCmd::RecoveryKey => {
             let key = cx.app.hosted_recovery_key()?;
@@ -152,9 +166,8 @@ pub fn storage(cx: &Cx, c: StorageCmd) -> Result<()> {
         StorageCmd::Disconnect { revoke } => {
             let hosted = matches!(cx.app.settings().storage, StorageSetting::Hosted { .. });
             let question = if hosted {
-                "Disconnect from the PackSync cloud? This computer forgets its key. Cloud data is not touched, \
-                 but you need another paired computer or the recovery key (`packsync storage recovery-key`) \
-                 to get back in."
+                "Disconnect from the PackSync cloud? This computer forgets its local credentials. Cloud data is not \
+                 touched; sign in again with `packsync storage login` (or use a paired computer / recovery key)."
             } else {
                 "Disconnect the storage? Cloud data is not touched; syncing stops until you connect again."
             };

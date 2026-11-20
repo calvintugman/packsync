@@ -8,6 +8,7 @@ use packsync_core::error::{Error, Result};
 use packsync_core::launcher::*;
 use packsync_core::mixed::MixedPolicy;
 
+use crate::MinecraftProfile;
 use crate::discovery::{INSTANCE_CFG, instances_dir, list_instance_dirs};
 use crate::env::{FLATPAK_APP_ID, Os, PrismEnv, same_dir};
 use crate::hooks;
@@ -192,6 +193,63 @@ impl PrismLauncher {
             args.push(p.clone());
         }
         Ok(LaunchCommand { program, args, env: req.env.clone() })
+    }
+
+    /// Read the active Microsoft (`MSA`) Minecraft profile from `<data_dir>/accounts.json`
+    /// without storing or exposing any authentication tokens.
+    pub fn active_minecraft_profile(&self) -> Option<MinecraftProfile> {
+        const MAX_ACCOUNTS_JSON: usize = 512 * 1024;
+        #[derive(serde::Deserialize)]
+        struct AccountsFile {
+            #[serde(default)]
+            accounts: Vec<AccountEntry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct AccountEntry {
+            #[serde(default)]
+            active: bool,
+            #[serde(rename = "type", default)]
+            kind: String,
+            #[serde(default)]
+            profile: Option<ProfileEntry>,
+        }
+        #[derive(serde::Deserialize)]
+        struct ProfileEntry {
+            #[serde(default)]
+            id: String,
+            #[serde(default)]
+            name: String,
+        }
+
+        for dd in self.data_dirs() {
+            let path = dd.join("accounts.json");
+            let Ok(Some(bytes)) = crate::files::read_bounded_opt(&path, MAX_ACCOUNTS_JSON) else {
+                continue;
+            };
+            let Ok(doc) = serde_json::from_slice::<AccountsFile>(&bytes) else {
+                continue;
+            };
+            drop(bytes);
+            for acct in doc.accounts {
+                if !acct.active || acct.kind != "MSA" {
+                    continue;
+                }
+                let Some(profile) = acct.profile else {
+                    continue;
+                };
+                let name = profile.name.trim();
+                let uuid = profile.id.trim();
+                if name.is_empty()
+                    || uuid.is_empty()
+                    || name.chars().any(char::is_control)
+                    || uuid.chars().any(char::is_control)
+                {
+                    continue;
+                }
+                return Some(MinecraftProfile { name: name.to_string(), uuid: uuid.to_string() });
+            }
+        }
+        None
     }
 }
 
@@ -731,5 +789,64 @@ mod tests {
             assert!(!cfg.contains(forbidden), "{forbidden} leaked into restored instance.cfg:\n{cfg}");
         }
         assert!(cfg.contains("name=Safe Pack"), "{cfg}");
+    }
+
+    #[test]
+    fn reads_active_msa_minecraft_profile_without_touching_tokens() {
+        let t = tempfile::tempdir().unwrap();
+        let dd = data_dir(t.path());
+        let l = launcher(&dd);
+        assert_eq!(l.active_minecraft_profile(), None);
+
+        // Inactive MSA + active Offline returns None.
+        std::fs::write(
+            dd.join("accounts.json"),
+            serde_json::json!({
+                "accounts": [
+                    {
+                        "active": false,
+                        "type": "MSA",
+                        "profile": { "id": "11112222333344445555666677778888", "name": "InactivePlayer" },
+                        "ygg": { "token": "SECRET-TOKEN-1" }
+                    },
+                    {
+                        "active": true,
+                        "type": "Offline",
+                        "profile": { "id": "99990000", "name": "OfflineGuy" }
+                    }
+                ],
+                "formatVersion": 3
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(l.active_minecraft_profile(), None);
+
+        // Active MSA extracts only name + uuid.
+        std::fs::write(
+            dd.join("accounts.json"),
+            serde_json::json!({
+                "accounts": [
+                    {
+                        "active": true,
+                        "type": "MSA",
+                        "profile": { "id": "069a79f444e94726a5befca90e38aaf5", "name": "Notch" },
+                        "msa": { "refresh_token": "SECRET-MSA" },
+                        "ygg": { "token": "SECRET-YGG" }
+                    }
+                ],
+                "formatVersion": 3
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            l.active_minecraft_profile(),
+            Some(MinecraftProfile { name: "Notch".into(), uuid: "069a79f444e94726a5befca90e38aaf5".into() })
+        );
+
+        // Oversized (> 512 KiB) accounts.json is safely ignored.
+        std::fs::write(dd.join("accounts.json"), vec![b' '; 600 * 1024]).unwrap();
+        assert_eq!(l.active_minecraft_profile(), None);
     }
 }

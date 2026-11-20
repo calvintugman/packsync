@@ -8,6 +8,7 @@ use packsync_core::storage::*;
 use packsync_core::testkit::conformance::{ConformanceOptions, assert_conformance};
 use packsync_hosted::client::HostedStorage;
 use packsync_hosted::mock::MockService;
+use packsync_hosted::msauth::start_device_login;
 use packsync_hosted::pairing::{PairingOffer, join};
 use packsync_hosted::{Credentials, EncryptedStorage, MasterKey, create_account, open_storage};
 
@@ -137,6 +138,81 @@ fn pairing_shares_the_account_and_a_wrong_code_shares_nothing() {
     );
 }
 
+#[test]
+fn microsoft_login_shares_account_across_pcs_isolates_users_and_cleans_up_on_delete() {
+    let m = MockService::start();
+    let ctx = OpCtx::detached();
+
+    // User 1 signs in on PC #1.
+    m.set_mock_microsoft_user("ms-user-alpha", "AlphaCrafter");
+    let pending1 = start_device_login(m.url(), &ctx).unwrap();
+    assert!(!pending1.prompt().user_code.is_empty());
+    assert_eq!(pending1.prompt().privacy_url, format!("{}/privacy", m.url()));
+    let pc1 = pending1.wait(&ctx).unwrap();
+    assert!(pc1.created);
+    assert_eq!(pc1.display_name.as_deref(), Some("AlphaCrafter"));
+    let (st1, hosted1) = open_storage(&pc1.credentials).unwrap();
+    st1.put("instances/x/HEAD.json", PutSource::Bytes(b"{\"v\":10}"), &PutOptions::if_version(None), &ctx).unwrap();
+
+    // User 1 signs in on PC #2: receives the same account ID and master_key, with a distinct session token.
+    let pending2 = start_device_login(m.url(), &ctx).unwrap();
+    let pc2 = pending2.wait(&ctx).unwrap();
+    assert!(!pc2.created);
+    assert_eq!(pc2.credentials.account.account, pc1.credentials.account.account);
+    assert_eq!(pc2.credentials.key.as_bytes(), pc1.credentials.key.as_bytes());
+    assert_ne!(pc2.credentials.account.token.expose(), pc1.credentials.account.token.expose());
+    let (st2, hosted2) = open_storage(&pc2.credentials).unwrap();
+    assert_eq!(st2.get_bytes("instances/x/HEAD.json", 1000, &ctx).unwrap(), b"{\"v\":10}");
+
+    // User 2 signs in: gets an isolated account and distinct master_key, and cannot read User 1's objects.
+    m.set_mock_microsoft_user("ms-user-beta", "BetaBuilder");
+    let user2 = start_device_login(m.url(), &ctx).unwrap().wait(&ctx).unwrap();
+    assert!(user2.created);
+    assert_eq!(user2.display_name.as_deref(), Some("BetaBuilder"));
+    assert_ne!(user2.credentials.account.account, pc1.credentials.account.account);
+    assert_ne!(user2.credentials.key.as_bytes(), pc1.credentials.key.as_bytes());
+    let (st_u2, hosted_u2) = open_storage(&user2.credentials).unwrap();
+    assert!(st_u2.list("instances/", &ctx).unwrap().is_empty());
+    assert!(st_u2.get_bytes("instances/x/HEAD.json", 1000, &ctx).is_err());
+
+    // User 1 deletes their account from PC #1: all sessions (PC #1 and PC #2) stop working immediately,
+    // while User 2's account remains unaffected.
+    hosted1.delete_account(&ctx).unwrap();
+    assert!(matches!(hosted1.usage(&ctx), Err(StorageError::Auth(_))));
+    assert!(matches!(hosted2.usage(&ctx), Err(StorageError::Auth(_))));
+    assert!(st2.get_bytes("instances/x/HEAD.json", 1000, &ctx).is_err());
+    assert_eq!(hosted_u2.usage(&ctx).unwrap().used, 0);
+
+    // Re-signing in as User 1 creates a brand new account and master_key.
+    m.set_mock_microsoft_user("ms-user-alpha", "AlphaCrafter");
+    let fresh = start_device_login(m.url(), &ctx).unwrap().wait(&ctx).unwrap();
+    assert!(fresh.created);
+    assert_ne!(fresh.credentials.account.account, pc1.credentials.account.account);
+    assert_ne!(fresh.credentials.key.as_bytes(), pc1.credentials.key.as_bytes());
+}
+
+#[test]
+fn mock_privacy_terms_and_auth_config_errors_behave_as_expected() {
+    let m = MockService::start();
+    let ctx = OpCtx::detached();
+    for path in ["/privacy", "/terms"] {
+        let mut resp = ureq::get(&format!("{}{path}", m.url())).call().unwrap();
+        assert_eq!(resp.status(), 200);
+        let html = resp.body_mut().read_to_string().unwrap();
+        assert!(html.contains("PackSync"), "{path}: {html}");
+    }
+
+    m.set_mock_auth_configured(false);
+    let err = start_device_login(m.url(), &ctx).unwrap_err();
+    assert!(err.to_string().contains("not configured"), "{err}");
+
+    m.set_mock_auth_configured(true);
+    m.set_mock_token_error(Some("access_denied"));
+    let pending = start_device_login(m.url(), &ctx).unwrap();
+    let err = pending.wait(&ctx).unwrap_err();
+    assert!(matches!(err, StorageError::Auth(_)), "{err:?}");
+}
+
 /// The same checks against the Worker (`services/hosted`, `npm run dev`).
 #[test]
 fn against_the_real_service_when_running() {
@@ -148,98 +224,7 @@ fn against_the_real_service_when_running() {
     assert_conformance(&HostedStorage::new(c.account.clone()).unwrap(), opts());
     let (st, hosted) = open_storage(&c).unwrap();
     assert_conformance(&*st, opts());
-    // a passkey's sealed key is stored and handed back by the real service
-    let fresh = create_account(&url, &OpCtx::detached()).unwrap();
-    let (_, h2) = open_storage(&fresh).unwrap();
-    packsync_hosted::passkey::add_passkey(
-        &h2,
-        &fresh,
-        "test",
-        &fake_browser("cred-REALSERVICE00000", [9; 32]),
-        &OpCtx::detached(),
-    )
-    .unwrap();
-    let back = packsync_hosted::passkey::recover_with_passkey(
-        &url,
-        &fake_browser("cred-REALSERVICE00000", [9; 32]),
-        &OpCtx::detached(),
-    )
-    .unwrap();
-    assert_eq!(back.key.as_bytes(), fresh.key.as_bytes());
-    h2.delete_account(&OpCtx::detached()).unwrap();
     hosted.delete_account(&OpCtx::detached()).unwrap();
     pair(&url);
     wrong_code(&url);
-}
-
-/// Plays the passkey page's part: like the browser after the person used their passkey, it posts the
-/// passkey's ID and PRF secret to the one-off address on this computer named in the page's URL.
-fn fake_browser(credential_id: &'static str, secret: [u8; 32]) -> impl Fn(&str) -> std::io::Result<()> {
-    move |url: &str| {
-        use base64::Engine as _;
-        let q = url.split_once('#').or_else(|| url.split_once('?')).unwrap().1;
-        let get = |k: &str| {
-            q.split('&').find_map(|kv| kv.strip_prefix(&format!("{k}="))).map(|v| {
-                let mut out = String::new();
-                let b = v.as_bytes();
-                let mut i = 0;
-                while i < b.len() {
-                    if b[i] == b'%' {
-                        out.push(u8::from_str_radix(&v[i + 1..i + 3], 16).unwrap() as char);
-                        i += 3;
-                    } else {
-                        out.push(b[i] as char);
-                        i += 1;
-                    }
-                }
-                out
-            })
-        };
-        let (cb, state) = (get("cb").unwrap(), get("state").unwrap());
-        let prf = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            let body = serde_json::json!({ "state": state, "credential_id": credential_id, "prf": prf }).to_string();
-            let _ = ureq::post(&cb).header("content-type", "application/json").send(body.as_str());
-        });
-        Ok(())
-    }
-}
-
-#[test]
-fn a_passkey_gets_you_back_in_when_every_computer_is_gone() {
-    let m = MockService::start();
-    let ctx = OpCtx::detached();
-    let owner = create_account(m.url(), &ctx).unwrap();
-    let (st, hosted) = open_storage(&owner).unwrap();
-    st.put("instances/x/HEAD.json", PutSource::Bytes(b"{\"v\":2}"), &PutOptions::if_version(None), &ctx).unwrap();
-    packsync_hosted::passkey::add_passkey(
-        &hosted,
-        &owner,
-        "desktop",
-        &fake_browser("cred-AAAAAAAAAAAAAAAA", [42; 32]),
-        &ctx,
-    )
-    .unwrap();
-
-    // a new computer, nothing paired: the passkey alone brings the account and its key back
-    let back =
-        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-AAAAAAAAAAAAAAAA", [42; 32]), &ctx)
-            .unwrap();
-    assert_eq!(back.account.account, owner.account.account);
-    assert_eq!(back.key.as_bytes(), owner.key.as_bytes());
-    let (st2, _) = open_storage(&back).unwrap();
-    assert_eq!(st2.get_bytes("instances/x/HEAD.json", 100, &ctx).unwrap(), b"{\"v\":2}");
-
-    // another passkey (or a forged answer) opens nothing
-    let e =
-        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-AAAAAAAAAAAAAAAA", [1; 32]), &ctx)
-            .unwrap_err()
-            .to_string();
-    assert!(e.contains("does not open"), "{e}");
-    let e =
-        packsync_hosted::passkey::recover_with_passkey(m.url(), &fake_browser("cred-unknown-0000000", [42; 32]), &ctx)
-            .unwrap_err()
-            .to_string();
-    assert!(e.contains("not registered"), "{e}");
 }

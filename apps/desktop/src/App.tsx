@@ -4,77 +4,79 @@ import { BRAND } from "./brand";
 import { needsAttention } from "./lib/phases";
 import { navigate, parseRoute, useRouteHash } from "./lib/router";
 import type { Route } from "./lib/router";
+import { AboutScreen } from "./screens/About";
 import { ActivityScreen } from "./screens/Activity";
 import { CloudScreen } from "./screens/Cloud";
 import { InstanceDetailScreen } from "./screens/InstanceDetail";
 import { InstancesScreen } from "./screens/Instances";
 import { SettingsScreen } from "./screens/Settings";
 import { SetupScreen } from "./screens/Setup";
+import { ConnectionCard } from "./components/ConnectionCard";
 import { useAppState, useStore } from "./state/context";
-import { Banner, Button, Spinner, StatusDot } from "./ui/controls";
+import { Banner, Button, Spinner } from "./ui/controls";
 import { ErrorNote } from "./ui/ErrorNote";
 import { Icon } from "./ui/Icon";
 import type { IconName } from "./ui/Icon";
 import { Toasts } from "./ui/Toasts";
 
-const NAV: { name: Exclude<Route["name"], "instance" | "setup">; href: string; label: string; icon: IconName }[] = [
-  { name: "instances", href: "#/", label: "Instances", icon: "layers" },
-  { name: "cloud", href: "#/cloud", label: "Cloud", icon: "cloud" },
+type NavRouteName = Exclude<Route["name"], "instance" | "setup">;
+
+const PRIMARY_NAV: { name: NavRouteName; href: string; label: string; icon: IconName }[] = [
+  { name: "instances", href: "#/", label: "Instances", icon: "grid" },
   { name: "activity", href: "#/activity", label: "Activity", icon: "activity" },
-  { name: "settings", href: "#/settings", label: "Settings", icon: "sliders" },
+  { name: "cloud", href: "#/cloud", label: "Cloud", icon: "cloud" },
+  { name: "about", href: "#/about", label: "About", icon: "sparkles" },
 ];
+
+const SETTINGS_NAV: { name: NavRouteName; href: string; label: string; icon: IconName } = {
+  name: "settings",
+  href: "#/settings",
+  label: "Settings",
+  icon: "sliders",
+};
 
 function Sidebar({ route }: { route: Route }) {
   const instances = useAppState((s) => s.instances);
   const jobs = useAppState((s) => s.jobs);
-  const storage = useAppState((s) => s.storage);
-  const info = useAppState((s) => s.info);
   const attention = instances.filter(needsAttention).length;
   const running = Object.values(jobs).filter((j) => j.state === "running").length;
   const active = route.name === "instance" ? "instances" : route.name;
-  const tone = storage?.connected ? "ok" : storage?.needs_reconnect || storage?.problem ? "danger" : "neutral";
+
+  const renderLink = (n: { name: NavRouteName; href: string; label: string; icon: IconName }) => (
+    <a
+      key={n.name}
+      className="nav-link"
+      href={n.href}
+      title={n.label}
+      aria-current={active === n.name ? "page" : undefined}
+    >
+      <Icon name={n.icon} size={20} />
+      <span className="sr-only">{n.label}</span>
+      {n.name === "instances" && attention > 0 ? (
+        <span className="nav-badge" aria-label={`${attention} need attention`}>
+          {attention}
+        </span>
+      ) : null}
+      {n.name === "activity" && running > 0 ? (
+        <span className="nav-badge info" aria-label={`${running} running`}>
+          {running}
+        </span>
+      ) : null}
+    </a>
+  );
+
   return (
     <nav className="sidebar" aria-label="Main">
       <div className="brand">
-        <span className="brand-mark" aria-hidden="true">
-          <Icon name="box" size={17} />
-        </span>
-        {BRAND.name}
-      </div>
-      {NAV.map((n) => (
-        <a key={n.name} className="nav-link" href={n.href} aria-current={active === n.name ? "page" : undefined}>
-          <Icon name={n.icon} />
-          {n.label}
-          {n.name === "instances" && attention > 0 ? (
-            <span className="nav-badge" aria-label={`${attention} need attention`}>
-              {attention}
-            </span>
-          ) : null}
-          {n.name === "activity" && running > 0 ? (
-            <span className="nav-badge info" aria-label={`${running} running`}>
-              {running}
-            </span>
-          ) : null}
+        <a className="brand-link" href="#/" title={BRAND.name}>
+          <span className="brand-mark" aria-hidden="true">
+            <Icon name="box" size={18} />
+          </span>
+          <span className="sr-only">{BRAND.name}</span>
         </a>
-      ))}
-      <div className="sidebar-foot" aria-label="Connection">
-        <div className="row" style={{ gap: 8 }}>
-          <StatusDot tone={tone} />
-          <strong className="truncate">{storage?.kind === "hosted" ? "PackSync cloud" : storage?.kind === "google" ? "Google Drive" : storage?.kind === "r2" ? "Cloudflare R2" : storage?.kind === "local" ? "Folder" : "No cloud"}</strong>
-        </div>
-        <div className="muted truncate" title={storage?.detail}>
-          {storage?.connected
-            ? storage.kind === "hosted"
-              ? "End-to-end encrypted"
-              : (storage.account ?? storage.detail)
-            : storage?.needs_reconnect
-              ? "Sign in again"
-              : "Not connected"}
-        </div>
-        <div className="faint truncate" style={{ marginTop: 6 }}>
-          <Icon name="computer" size={13} /> {info?.device.name ?? "This computer"}
-        </div>
       </div>
+      <div className="nav-group">{PRIMARY_NAV.map(renderLink)}</div>
+      <div className="nav-footer">{renderLink(SETTINGS_NAV)}</div>
     </nav>
   );
 }
@@ -89,6 +91,8 @@ function Screen({ route }: { route: Route }): ReactNode {
       return <CloudScreen />;
     case "activity":
       return <ActivityScreen />;
+    case "about":
+      return <AboutScreen />;
     case "settings":
       return <SettingsScreen />;
     case "setup":
@@ -158,6 +162,11 @@ export function App() {
             <Banner tone="warn" title="Lost contact with PackSync">
               Retrying… What you see may be out of date.
             </Banner>
+          </div>
+        ) : null}
+        {route.name !== "instances" ? (
+          <div className={`topbar ${route.name === "about" ? "floating" : ""}`}>
+            <ConnectionCard compact />
           </div>
         ) : null}
         <Screen route={route} />

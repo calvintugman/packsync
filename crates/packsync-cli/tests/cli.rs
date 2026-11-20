@@ -17,6 +17,10 @@ fn help_and_version_work_without_any_setup() {
         assert!(text.contains(cmd), "help lists {cmd}");
     }
     assert!(!text.contains("dev-bridge") && !text.contains("pre-launch"), "internal commands are hidden");
+    let out = std::process::Command::new(BIN).args(["storage", "--help"]).output().unwrap();
+    let storage_help = String::from_utf8_lossy(&out.stdout);
+    assert!(storage_help.contains("login") && storage_help.contains("delete-account"), "{storage_help}");
+    assert!(!storage_help.to_lowercase().contains("passkey"), "{storage_help}");
 }
 
 #[test]
@@ -143,6 +147,8 @@ fn errors_are_machine_readable_with_stable_codes_and_exit_codes() {
     let b = w.dev("laptop");
     let r = b.run(&["--json", "storage", "disconnect", "--yes"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
+    let r = b.run(&["--json", "storage", "delete-account", "--yes"]);
+    assert_eq!(r.error_code(), "config");
     let r = b.run(&["--json", "cloud"]);
     assert_eq!(r.error_code(), "config");
     assert!(r.json()["error"]["message"].as_str().unwrap().contains("no cloud storage"));

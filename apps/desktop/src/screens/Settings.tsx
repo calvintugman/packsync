@@ -5,6 +5,7 @@ import { HostedSetup } from "../components/HostedSetup";
 import { StorageSetup } from "../components/StorageSetup";
 import { GcDialog } from "../dialogs/GcDialog";
 import { formatBytes } from "../lib/format";
+import { href } from "../lib/router";
 import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Checkbox, Choice, Kv, Pill, TextInput } from "../ui/controls";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -39,7 +40,12 @@ function ThisComputer() {
         }}
       >
         <div className="grow">
-          <TextInput label="Name" value={name} onChange={(e) => setName(e.target.value)} hint="Shown in History and when another computer might be playing the same instance." />
+          <TextInput
+            label="Name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            hint="Shown in History and when another computer might be playing the same instance."
+          />
         </div>
         <Button type="submit" busy={rename.busy} disabled={!name.trim() || name.trim() === info?.device.name}>
           Rename
@@ -75,7 +81,9 @@ function CloudSection() {
       {test ? (
         <Banner tone="ok" title="The connection works">
           {test.provider} · {test.instances_in_cloud} instance{test.instances_in_cloud === 1 ? "" : "s"} in the cloud
-          {test.quota ? ` · ${formatBytes(test.quota.used)} used${test.quota.total ? ` of ${formatBytes(test.quota.total)}` : ""}` : ""}
+          {test.quota
+            ? ` · ${formatBytes(test.quota.used)} used${test.quota.total ? ` of ${formatBytes(test.quota.total)}` : ""}`
+            : ""}
         </Banner>
       ) : null}
       {run.error ? <ErrorNote error={run.error} /> : null}
@@ -83,7 +91,9 @@ function CloudSection() {
         <Button busy={run.busy} disabled={!storage?.connected} onClick={() => void run.run()}>
           Test the connection
         </Button>
-        <Button onClick={() => setChanging((v) => !v)}>{changing ? "Hide" : storage?.kind === "none" ? "Connect…" : "Change or sign in again…"}</Button>
+        <Button onClick={() => setChanging((v) => !v)}>
+          {changing ? "Hide" : storage?.kind === "none" ? "Connect…" : "Change or sign in again…"}
+        </Button>
         {storage && storage.kind !== "none" ? (
           <Button variant="ghost" onClick={() => setDisconnect(true)}>
             Disconnect…
@@ -106,17 +116,20 @@ function CloudSection() {
           }}
         >
           <p>
-            PackSync forgets the connection on this computer. <strong>Nothing is deleted</strong> — not your local files and not what is
-            stored in the cloud. Snapshots keep being saved here and upload once you reconnect.
+            PackSync forgets the connection on this computer. <strong>Nothing is deleted</strong> — not your local files
+            and not what is stored in the cloud. Snapshots keep being saved here and upload once you reconnect.
           </p>
           {storage?.kind === "hosted" ? (
             <p>
-              <strong>Save your recovery key first</strong> (Settings → Storage) unless another computer still uses the PackSync cloud:
-              this computer forgets its key, and without a paired computer or the recovery key your cloud data cannot be read.
+              You can sign back in on this or any other computer later using the same Minecraft / Microsoft account.
             </p>
           ) : null}
           {storage?.kind === "google" ? (
-            <Checkbox checked={revoke} onChange={setRevoke} hint="Asks Google to cancel the permission you gave PackSync.">
+            <Checkbox
+              checked={revoke}
+              onChange={setRevoke}
+              hint="Asks Google to cancel the permission you gave PackSync."
+            >
               Also revoke PackSync's access at Google
             </Checkbox>
           ) : null}
@@ -135,7 +148,10 @@ function LauncherSection({ settings }: { settings: Settings }) {
     await store.call("settings.update", {
       patch: {
         prism_executable: exe.trim() || null,
-        prism_data_dirs: dirs.split("\n").map((d) => d.trim()).filter(Boolean),
+        prism_data_dirs: dirs
+          .split("\n")
+          .map((d) => d.trim())
+          .filter(Boolean),
       },
     });
     await Promise.all([store.refreshSettings(), store.refreshInfo()]);
@@ -146,7 +162,16 @@ function LauncherSection({ settings }: { settings: Settings }) {
       <Kv
         rows={[
           ["Found", info?.prism.executable ? <code key="e">{info.prism.executable}</code> : "Not found"],
-          ["Data folders", info?.prism.data_dirs.length ? info.prism.data_dirs.map((d) => <div key={d}><code>{d}</code></div>) : "None found"],
+          [
+            "Data folders",
+            info?.prism.data_dirs.length
+              ? info.prism.data_dirs.map((d) => (
+                  <div key={d}>
+                    <code>{d}</code>
+                  </div>
+                ))
+              : "None found",
+          ],
         ]}
       />
       <PathField
@@ -159,7 +184,13 @@ function LauncherSection({ settings }: { settings: Settings }) {
       />
       <label className="field">
         <span className="field-label">Prism data folders (one per line)</span>
-        <textarea className="textarea" value={dirs} onChange={(e) => setDirs(e.target.value)} spellCheck={false} placeholder="Leave empty to detect them" />
+        <textarea
+          className="textarea"
+          value={dirs}
+          onChange={(e) => setDirs(e.target.value)}
+          spellCheck={false}
+          placeholder="Leave empty to detect them"
+        />
       </label>
       {save.error ? <ErrorNote error={save.error} /> : null}
       <div className="row">
@@ -196,8 +227,16 @@ function PlaySection({ settings }: { settings: Settings }) {
         </legend>
         {(
           [
-            ["play_local", "Play from this computer", "The game starts with the local copy. Your progress is saved and uploaded later."],
-            ["block", "Don't start the game", "Safer if you often play on several computers: you never play an out-of-date copy."],
+            [
+              "play_local",
+              "Play from this computer",
+              "The game starts with the local copy. Your progress is saved and uploaded later.",
+            ],
+            [
+              "block",
+              "Don't start the game",
+              "Safer if you often play on several computers: you never play an out-of-date copy.",
+            ],
           ] as [OfflinePolicy, string, string][]
         ).map(([v, t, d]) => (
           <Choice
@@ -275,8 +314,20 @@ function AdvancedSection({ settings }: { settings: Settings }) {
   return (
     <Section id="s-advanced" title="Advanced">
       <div className="row">
-        <TextInput label="Parallel uploads" inputMode="numeric" value={conc} onChange={(e) => setConc(e.target.value)} hint="1–32. More is faster on a fast connection." />
-        <TextInput label="Keep recovery points (days)" inputMode="numeric" value={days} onChange={(e) => setDays(e.target.value)} hint="How long files replaced by a restore are kept." />
+        <TextInput
+          label="Parallel uploads"
+          inputMode="numeric"
+          value={conc}
+          onChange={(e) => setConc(e.target.value)}
+          hint="1–32. More is faster on a fast connection."
+        />
+        <TextInput
+          label="Keep recovery points (days)"
+          inputMode="numeric"
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          hint="How long files replaced by a restore are kept."
+        />
       </div>
       {save.error ? <ErrorNote error={save.error} /> : null}
       <div className="row">
@@ -294,7 +345,8 @@ function CleanupSection() {
   return (
     <Section id="s-cleanup" title="Cloud cleanup">
       <p className="muted">
-        Free space by removing leftovers of interrupted uploads, and optionally releasing old snapshots. Always previewed, never automatic.
+        Free space by removing leftovers of interrupted uploads, and optionally releasing old snapshots. Always
+        previewed, never automatic.
       </p>
       <div className="row">
         <Button disabled={!storage?.connected} onClick={() => setOpen(true)}>
@@ -313,7 +365,9 @@ function DiagnosticsSection() {
     setReport(await store.runJob("diagnostics.report", { online }));
   });
   const text = report
-    ? [...report.checks.map((c) => `${c.ok ? "OK  " : "FAIL"} ${c.name}: ${c.detail}`), "", ...report.recent_events].join("\n")
+    ? [...report.checks.map((c) => `${c.ok ? "OK  " : "FAIL"} ${c.name}: ${c.detail}`), "", ...report.recent_events].join(
+        "\n",
+      )
     : "";
   return (
     <Section id="s-diag" title="Diagnostics">
@@ -365,9 +419,19 @@ export function SettingsScreen() {
       </div>
       <ThisComputer />
       <CloudSection />
-      {settings ? <LauncherSection key={`${settings.prism_executable}|${settings.prism_data_dirs.join()}`} settings={settings} /> : null}
+      {settings ? (
+        <LauncherSection
+          key={`${settings.prism_executable}|${settings.prism_data_dirs.join()}`}
+          settings={settings}
+        />
+      ) : null}
       {settings ? <PlaySection settings={settings} /> : null}
-      {settings ? <AdvancedSection key={`${settings.upload_concurrency}|${settings.recovery_point_days}`} settings={settings} /> : null}
+      {settings ? (
+        <AdvancedSection
+          key={`${settings.upload_concurrency}|${settings.recovery_point_days}`}
+          settings={settings}
+        />
+      ) : null}
       <CleanupSection />
       <DiagnosticsSection />
       <Section id="s-about" title="About">
@@ -381,9 +445,14 @@ export function SettingsScreen() {
           ]}
         />
         <p className="muted">
-          PackSync is not affiliated with Mojang, Microsoft, Prism Launcher or Google. In the PackSync cloud your files are
-          encrypted on your computer; in Google Drive, a folder or R2 they are stored unencrypted.
+          PackSync is not affiliated with Mojang, Microsoft, Prism Launcher or Google. In the PackSync cloud your files
+          are encrypted on your computer; in Google Drive, a folder or R2 they are stored unencrypted.
         </p>
+        <div className="row">
+          <a className="btn" href={href({ name: "about" })}>
+            About the developer →
+          </a>
+        </div>
       </Section>
     </div>
   );

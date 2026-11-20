@@ -31,6 +31,27 @@ fn the_ui_journey_through_json_only() {
     let info = call(app, "app.info", Value::Null);
     assert_eq!(info["device"]["name"], "desktop");
     assert_eq!(info["storage"]["kind"], "local");
+    assert_eq!(info["minecraft_profile"], Value::Null);
+
+    // active MSA profile from Prism's accounts.json appears in app.info without secrets
+    std::fs::write(
+        a.data_dir.join("accounts.json"),
+        json!({
+            "accounts": [{
+                "active": true,
+                "type": "MSA",
+                "profile": { "id": "069a79f444e94726a5befca90e38aaf5", "name": "Steve" },
+                "msa": { "refresh_token": "SECRET-TOKEN" }
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let info_with_profile = call(app, "app.info", Value::Null);
+    assert_eq!(
+        info_with_profile["minecraft_profile"],
+        json!({ "name": "Steve", "uuid": "069a79f444e94726a5befca90e38aaf5" })
+    );
 
     // settings: typos are refused, valid patches apply and persist
     let err = rpc::call(app, "settings.update", json!({ "patch": { "upload_concurency": 3 } }), &OpCtx::detached())
@@ -289,4 +310,78 @@ fn the_packsync_cloud_through_json_as_the_desktop_sends_it() {
     assert!(key.starts_with("packsync1-"));
     let c = w.device("third");
     assert_eq!(job(&c.app, "storage.hosted_recover", json!({ "key": key }))["kind"], "hosted");
+}
+
+#[test]
+fn hosted_microsoft_login_delete_account_and_open_url_through_rpc() {
+    let service = packsync_hosted::mock::MockService::start();
+    service.set_mock_microsoft_user("rpc-user-1", "RpcPlayer");
+    let w = World::new();
+    let a = w.device("desktop");
+    let b = w.device("laptop");
+
+    // null params must be accepted by hosted_login_start (never "invalid request")
+    if let Err(e) = rpc::call(&a.app, "storage.hosted_login_start", Value::Null, &OpCtx::detached()) {
+        assert_ne!(e.code().as_str(), "invalid", "null parameters must be accepted: {e}");
+    }
+
+    let prompt = call(&a.app, "storage.hosted_login_start", json!({ "service": service.url(), "open_browser": false }));
+    assert!(!prompt["user_code"].as_str().unwrap().is_empty());
+    assert_eq!(prompt["verification_uri"], "https://microsoft.com/link");
+    assert!(prompt["expires_in"].as_u64().unwrap() > 0);
+    assert_eq!(prompt["privacy_url"], format!("{}/privacy", service.url()));
+
+    let status_a = job(&a.app, "storage.hosted_login_wait", Value::Null);
+    assert_eq!(status_a["kind"], "hosted");
+    assert_eq!(status_a["connected"], true);
+    let settings_a = call(&a.app, "settings.get", Value::Null);
+    assert_eq!(settings_a["storage"]["display_name"], "RpcPlayer");
+
+    // Second computer signing in with the same Microsoft user gets the same account.
+    call(&b.app, "storage.hosted_login_start", json!({ "service": service.url(), "open_browser": false }));
+    let status_b = job(&b.app, "storage.hosted_login_wait", json!({}));
+    assert_eq!(status_b["kind"], "hosted");
+    assert_eq!(status_b["account"], status_a["account"]);
+
+    // Sync an instance under the hosted account so we can verify delete-account clears its stale registration.
+    let root = packsync_prism::testkit::make_instance(&a.data_dir, "Hosted Pack", &spec());
+    let enabled = job(&a.app, "instances.enable", json!({ "path": root }));
+    assert_eq!(enabled["upload"]["remaining"], 0);
+    assert_eq!(call(&a.app, "instances.list", Value::Null).as_array().unwrap().len(), 1);
+
+    // Deleting the cloud account disconnects desktop, clears local sync registrations tied to it
+    // (without deleting the instance folder on disk), and revokes laptop's session.
+    let deleted = job(&a.app, "storage.hosted_delete_account", Value::Null);
+    assert_eq!(deleted["kind"], "none");
+    assert_eq!(deleted["connected"], false);
+    assert!(call(&a.app, "instances.list", Value::Null).as_array().unwrap().is_empty());
+    assert!(root.is_dir(), "local Minecraft instance files must never be deleted");
+
+    // Re-signing in with Microsoft creates a clean account and allows re-enabling the same folder.
+    call(&a.app, "storage.hosted_login_start", json!({ "service": service.url(), "open_browser": false }));
+    let re_status = job(&a.app, "storage.hosted_login_wait", Value::Null);
+    assert_eq!(re_status["connected"], true);
+    let re_enabled = job(&a.app, "instances.enable", json!({ "path": root }));
+    assert_eq!(re_enabled["upload"]["remaining"], 0);
+
+    let laptop_test = rpc::call(&b.app, "storage.test", Value::Null, &OpCtx::detached()).unwrap_err();
+    assert!(matches!(laptop_test.code().as_str(), "auth_required" | "auth_revoked"), "{laptop_test}");
+
+    // app.open_url rejects unsafe schemes and non-loopback http://.
+    for bad in ["javascript:alert(1)", "http://evil.example.com", "file:///etc/passwd"] {
+        let err = rpc::call(&a.app, "app.open_url", json!({ "url": bad }), &OpCtx::detached()).unwrap_err();
+        assert_eq!(err.code().as_str(), "invalid", "{bad}: {err}");
+    }
+
+    // events.export writes redacted JSON and events.clear empties the local log table.
+    a.app.engine().db().event(None, "info", "test_event", "sync complete");
+    let out_path = w.dir.path().join("exported-logs.json");
+    let exported = call(&a.app, "events.export", json!({ "path": out_path }));
+    assert!(exported["count"].as_u64().unwrap() >= 1);
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(doc["count"], exported["count"]);
+    assert!(doc["events"].as_array().unwrap().iter().any(|ev| ev["code"] == "test_event"));
+    let cleared = call(&a.app, "events.clear", Value::Null);
+    assert!(cleared["cleared"].as_u64().unwrap() >= 1);
+    assert!(call(&a.app, "events.recent", Value::Null).as_array().unwrap().is_empty());
 }

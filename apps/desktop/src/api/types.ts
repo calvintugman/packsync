@@ -158,7 +158,19 @@ export type StorageSetting =
   | { kind: "local"; path: string }
   | { kind: "google"; space: string; account?: string | null }
   | { kind: "r2"; account_id: string; bucket: string; prefix: string; access_key_id: string }
-  | { kind: "hosted"; endpoint: string; account: string };
+  | { kind: "hosted"; endpoint: string; account: string; display_name?: string | null };
+
+export interface MinecraftProfile {
+  name: string;
+  uuid: string;
+}
+
+export interface HostedLoginPrompt {
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  privacy_url: string;
+}
 
 export interface Settings {
   version: number;
@@ -188,6 +200,7 @@ export interface AppInfo {
   device: { id: string; name: string };
   storage: StorageStatus;
   prism: { executable: string | null; data_dirs: string[] };
+  minecraft_profile: MinecraftProfile | null;
   running_jobs: number;
 }
 

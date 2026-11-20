@@ -1,7 +1,7 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { baseTransport, settings } from "../test/fixtures";
+import { appInfo, baseTransport, settings } from "../test/fixtures";
 import { renderWithStore } from "../test/render";
 import { SettingsScreen } from "./Settings";
 
@@ -53,13 +53,13 @@ describe("SettingsScreen", () => {
     expect(await screen.findByText(/must be between 1 and 32/)).toBeInTheDocument();
   });
 
-  it("shows PackSync cloud pairing and passkey actions directly when connected", async () => {
+  it("shows PackSync cloud account status and deletion directly when connected", async () => {
     const t = baseTransport({
       storage: {
         kind: "hosted",
         connected: true,
         detail: "PackSync cloud, end-to-end encrypted",
-        account: null,
+        account: "acct_abc",
         space: null,
         needs_reconnect: false,
         oauth_client_configured: false,
@@ -69,8 +69,9 @@ describe("SettingsScreen", () => {
         setup_hint: null,
       },
     });
+    t.on("app.info", () => appInfo({ minecraft_profile: { name: "Alex", uuid: "123" } }));
     await renderWithStore(<SettingsScreen />, t);
-    expect(await screen.findByRole("button", { name: "Show a pairing code" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add a passkey" })).toBeInTheDocument();
+    expect(await screen.findByText(/Alex/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete cloud account & data…" })).toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ export type Route =
   | { name: "instance"; id: string; tab: string | null }
   | { name: "cloud" }
   | { name: "activity" }
+  | { name: "about" }
   | { name: "settings" }
   | { name: "setup" };
 
@@ -19,6 +20,8 @@ export function parseRoute(hash: string): Route {
       return { name: "cloud" };
     case "activity":
       return { name: "activity" };
+    case "about":
+      return { name: "about" };
     case "settings":
       return { name: "settings" };
     case "setup":

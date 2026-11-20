@@ -20,7 +20,7 @@ test("the main screens have no detectable accessibility violations", async ({ pa
   await expect(card(page, NAME)).toBeVisible();
   await expectAccessible(page, "instances");
 
-  for (const hash of [`#/instance/${id}/history`, `#/instance/${id}/rules`, `#/instance/${id}/hooks`, `#/instance/${id}/recovery`, "#/cloud", "#/activity", "#/settings"]) {
+  for (const hash of [`#/instance/${id}/history`, `#/instance/${id}/rules`, `#/instance/${id}/hooks`, `#/instance/${id}/recovery`, "#/cloud", "#/activity", "#/about", "#/settings"]) {
     await page.evaluate((h) => (window.location.hash = h), hash);
     await expect(page.getByRole("main")).toBeVisible();
     await page.waitForTimeout(300);

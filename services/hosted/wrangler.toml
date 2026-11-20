@@ -5,6 +5,9 @@ compatibility_date = "2026-10-01"
 # only the main address serves the API (no per-version preview addresses)
 preview_urls = false
 
+[triggers]
+crons = ["17 3 * * *"]
+
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "packsync-hosted"
@@ -16,11 +19,24 @@ database_name = "packsync-hosted"
 database_id = "432232b2-d537-4696-a68c-af0286074698"
 
 [vars]
-# space each account may use (bytes): 20 GiB
-ACCOUNT_QUOTA_BYTES = "21474836480"
+# space each account may use (bytes): 5 GiB
+ACCOUNT_QUOTA_BYTES = "5368709120"
 # space all accounts together may use (bytes): 200 GiB. Uploads beyond it are refused.
 TOTAL_QUOTA_BYTES = "214748364800"
 # new accounts per network address per day
-REGISTRATIONS_PER_DAY = "5"
+REGISTRATIONS_PER_DAY = "2"
+# new accounts across the entire service per day
+GLOBAL_REGISTRATIONS_PER_DAY = "40"
 # largest single upload (bytes); Workers accept request bodies up to 100 MB
 MAX_OBJECT_BYTES = "90000000"
+# maximum stored objects per account
+MAX_OBJECTS_PER_ACCOUNT = "10000"
+# daily R2 operation caps per account
+MAX_WRITES_PER_DAY = "3000"
+MAX_READS_PER_DAY = "25000"
+# delete accounts inactive for this many days (0-byte empty accounts are purged after 7 days)
+INACTIVE_DAYS = "180"
+# require Microsoft/Minecraft sign-in instead of anonymous account creation
+ALLOW_ANONYMOUS_ACCOUNTS = "false"
+# Paste your Microsoft Entra Public Client ID here (see setup.sh)
+MICROSOFT_CLIENT_ID = "4015ec71-17ad-4a7d-a0c2-2b7f8d606a49"

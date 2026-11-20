@@ -57,8 +57,8 @@ struct Args {
     /// Start with the shared cloud already connected on the desktop (skips the setup wizard).
     #[arg(long)]
     connected: bool,
-    /// With `--connected`: the shared cloud is the (stand-in) PackSync cloud, both computers paired,
-    /// instead of a shared folder — what a person sees after setup.
+    /// With `--connected`: the shared cloud is the (stand-in) PackSync cloud, both computers signed in
+    /// to the same mock Microsoft account, instead of a shared folder — what a person sees after setup.
     #[arg(long)]
     hosted: bool,
 }
@@ -302,9 +302,10 @@ pub fn main() {
     make_instance(&desktop.data_dir, "Vanilla Plus", &spec(2));
     if args.connected && args.hosted {
         let ctx = OpCtx::detached();
-        desktop.app.hosted_start(None, &ctx).expect("start the PackSync cloud on the desktop");
-        let key = desktop.app.hosted_recovery_key().expect("the account's key");
-        laptop.app.hosted_recover(&key, &ctx).expect("the laptop joins the same account");
+        desktop.app.hosted_login_start(None, None, &ctx).expect("start PackSync cloud sign-in on the desktop");
+        desktop.app.hosted_login_wait(&ctx).expect("finish PackSync cloud sign-in on the desktop");
+        laptop.app.hosted_login_start(None, None, &ctx).expect("start PackSync cloud sign-in on the laptop");
+        laptop.app.hosted_login_wait(&ctx).expect("finish PackSync cloud sign-in on the laptop");
     } else if args.connected {
         desktop.app.use_local_storage(&cloud).expect("connect the desktop to the cloud");
     }

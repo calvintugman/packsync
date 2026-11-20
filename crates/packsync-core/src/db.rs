@@ -1246,6 +1246,10 @@ impl Db {
             Ok(rows)
         })
     }
+
+    pub fn events_clear(&self) -> Result<usize> {
+        self.with(|c| Ok(c.execute("DELETE FROM events", [])?))
+    }
 }
 
 /// The DB doubles as the persistent store for resumable transfers (Drive session URIs, offsets).
@@ -1915,6 +1919,8 @@ mod tests {
         db.event(None, "warn", "x", "failed PUT https://x/upload?upload_id=SECRETVALUE123 now");
         let ev = db.events_recent(None, 10).unwrap();
         assert!(!ev[0].message.contains("SECRETVALUE123"), "{}", ev[0].message);
+        assert_eq!(db.events_clear().unwrap(), 1);
+        assert!(db.events_recent(None, 10).unwrap().is_empty());
     }
 
     #[test]

@@ -15,6 +15,7 @@ import type {
   HistoryEntry,
   HookPlan,
   HookState,
+  HostedLoginPrompt,
   InstanceId,
   InstanceStatus,
   JobInfo,
@@ -58,12 +59,18 @@ type Inst = { instance: InstanceId };
 /** Every method of `packsync-app::rpc`, with its parameters and result. `long` methods run as jobs. */
 export interface Methods {
   "app.info": M<void, AppInfo>;
+  "app.open_url": M<{ url: string }, { opened: boolean }>;
   "settings.get": M<void, Settings>;
   "settings.update": M<{ patch: Partial<Settings> }, SettingsUpdate>;
   "device.rename": M<{ name: string }, { id: string; name: string }>;
   "storage.status": M<void, StorageStatus>;
   "storage.use_local": M<{ path: string }, StorageStatus>;
   "storage.use_google": M<{ space?: "visible_folder" | "app_data" }, StorageStatus>;
+  "storage.use_r2": M<
+    { account_id: string; bucket: string; prefix?: string; access_key_id: string; secret_access_key: string },
+    StorageStatus,
+    true
+  >;
   "storage.google_login": M<void, { account: AccountInfo; status: StorageStatus }, true>;
   "storage.disconnect": M<{ revoke?: boolean }, StorageStatus>;
   "storage.test": M<void, StorageTest, true>;
@@ -75,8 +82,9 @@ export interface Methods {
   "storage.hosted_pair_start": M<void, { code: string }>;
   "storage.hosted_pair_wait": M<void, { joined: boolean }, true>;
   "storage.hosted_recovery_key": M<void, { key: string }>;
-  "storage.passkey_add": M<void, { added: boolean }, true>;
-  "storage.passkey_recover": M<{ service?: string } | void, StorageStatus, true>;
+  "storage.hosted_login_start": M<{ service?: string; open_browser?: boolean } | void, HostedLoginPrompt>;
+  "storage.hosted_login_wait": M<void, StorageStatus, true>;
+  "storage.hosted_delete_account": M<void, StorageStatus, true>;
   "launcher.discover": M<void, DiscoveredView[]>;
   "launcher.describe": M<{ launcher?: string; path: string }, DiscoveredInstance>;
   "instances.list": M<{ online?: boolean } | void, InstanceStatus[]>;
@@ -117,6 +125,8 @@ export interface Methods {
   "jobs.list": M<void, JobInfo[]>;
   "jobs.cancel": M<{ job: string }, { cancelled: boolean }>;
   "events.recent": M<{ instance?: InstanceId; limit?: number } | void, LogEntry[]>;
+  "events.clear": M<void, { cleared: number }>;
+  "events.export": M<{ path: string; limit?: number }, { path: string; count: number }>;
   "diagnostics.report": M<{ online?: boolean } | void, Diagnostics, true>;
 }
 
@@ -128,14 +138,15 @@ export type Result<K extends MethodName> = Methods[K]["result"];
 
 /** The `long` flag of every method, as the server reports it at `/api/methods`. Kept in step by a test. */
 export const LONG_METHODS: readonly LongMethodName[] = [
+  "storage.use_r2",
   "storage.google_login",
   "storage.test",
   "storage.hosted_start",
   "storage.hosted_join",
   "storage.hosted_recover",
   "storage.hosted_pair_wait",
-  "storage.passkey_add",
-  "storage.passkey_recover",
+  "storage.hosted_login_wait",
+  "storage.hosted_delete_account",
   "instances.preview",
   "instances.enable",
   "instance.changes",
@@ -163,12 +174,14 @@ export const LONG_METHODS: readonly LongMethodName[] = [
 
 export const ALL_METHODS: readonly MethodName[] = [
   "app.info",
+  "app.open_url",
   "settings.get",
   "settings.update",
   "device.rename",
   "storage.status",
   "storage.use_local",
   "storage.use_google",
+  "storage.use_r2",
   "storage.google_login",
   "storage.disconnect",
   "storage.test",
@@ -180,8 +193,9 @@ export const ALL_METHODS: readonly MethodName[] = [
   "storage.hosted_pair_start",
   "storage.hosted_pair_wait",
   "storage.hosted_recovery_key",
-  "storage.passkey_add",
-  "storage.passkey_recover",
+  "storage.hosted_login_start",
+  "storage.hosted_login_wait",
+  "storage.hosted_delete_account",
   "launcher.discover",
   "launcher.describe",
   "instances.list",
@@ -218,6 +232,8 @@ export const ALL_METHODS: readonly MethodName[] = [
   "jobs.list",
   "jobs.cancel",
   "events.recent",
+  "events.clear",
+  "events.export",
   "diagnostics.report",
 ];
 

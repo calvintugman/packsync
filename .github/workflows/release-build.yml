@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PACKSYNC_HOSTED_URL: https://packsync.calvintugman.workers.dev
+
 jobs:
   linux:
     name: Build (ubuntu-latest)
@@ -66,10 +69,11 @@ jobs:
             Requires WebKitGTK 4.1 on your system (libwebkit2gtk-4.1-0 on Debian/Ubuntu, webkit2gtk-4.1 on Arch).
 
           Getting started
-            First computer:   open PackSync, press "Start on this computer", then pick your instances.
-            Other computers:  on the first one, Settings > Storage > "Show a pairing code";
-                              on the new one, "Join from another computer" and type the code.
-            Then add a passkey (Settings > Storage) so you can get back in if you ever lose every computer.
+            First computer:   open PackSync, choose PackSync Cloud -> "Sign in with Minecraft",
+                              enter the shown code at microsoft.com/link, then pick your instances.
+            Other computers:  sign in with the same Minecraft (Microsoft) account to reconnect to
+                              your encrypted vault automatically.
+            Or switch storage in Settings > Cloud to Google Drive, Cloudflare R2, or a synced folder.
 
           Everything is encrypted on your computer before upload. Command line: packsync --help
           Source: https://github.com/calvintugman/packsync    Licence: MIT (LICENSE.txt)
@@ -182,7 +186,7 @@ jobs:
               - **Linux:** `packsync-{ver}-linux-x86_64.tar.gz` — unpack, run `./install.sh`, open PackSync from your app menu. Debian/Ubuntu can use `packsync_{ver}_amd64.deb`.
               - **Windows:** `packsync-{ver}-windows-x86_64.zip` — unzip to a permanent folder, run `packsync-desktop.exe`. Not code-signed yet: SmartScreen → "More info" → "Run anyway".
 
-              **Getting started:** press *Start on this computer* on your first PC; on the others choose *Join from another computer* and type the code the first one shows. Add a passkey (Settings → Storage) so you can get back in if you lose every computer.
+              **Getting started:** choose *Sign in with Minecraft* on each computer and approve the code at `microsoft.com/link` to share your encrypted vault automatically across PCs, or connect Google Drive, Cloudflare R2, or a synced folder in *Settings → Cloud*. See `PRIVACY.md` for hosted service limits and retention.
 
               ### Changes in {tag_ver}
           """)

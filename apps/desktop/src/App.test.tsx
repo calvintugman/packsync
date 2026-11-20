@@ -4,7 +4,7 @@ import { App } from "./App";
 import { ApiError } from "./api/errors";
 import { StoreProvider } from "./state/context";
 import { AppStore } from "./state/store";
-import { baseTransport, instance, storage, withPhase } from "./test/fixtures";
+import { appInfo, baseTransport, instance, storage, withPhase } from "./test/fixtures";
 
 afterEach(() => {
   window.location.hash = "";
@@ -67,10 +67,26 @@ describe("App", () => {
     expect(screen.queryByText("Lost contact with PackSync")).toBeNull();
   });
 
-  it("shows where the cloud connection stands in the sidebar", async () => {
+  it("shows where the cloud connection stands in the overview rail", async () => {
     mount(baseTransport({ storage: storage({ kind: "google", account: "me@example.com", detail: "me@example.com" }) }));
     const foot = await screen.findByLabelText("Connection");
     expect(foot).toHaveTextContent("Google Drive");
     expect(foot).toHaveTextContent("me@example.com");
+  });
+
+  it("shows the Connection card on settings and navigates to About", async () => {
+    const t = baseTransport({ storage: storage({ kind: "hosted", account: "acct_1", detail: "PackSync cloud" }) });
+    t.on("app.info", () => appInfo({ minecraft_profile: { name: "Steve", uuid: "uuid-1" } }));
+    window.location.hash = "#/settings";
+    mount(t);
+    const conn = await screen.findByLabelText("Connection");
+    expect(conn).toHaveTextContent("PackSync cloud");
+    expect(conn).toHaveTextContent("Steve");
+
+    window.location.hash = "#/about";
+    await act(async () => {
+      window.dispatchEvent(new HashChangeEvent("hashchange"));
+    });
+    expect(await screen.findByRole("heading", { name: "calvintugman" })).toBeInTheDocument();
   });
 });

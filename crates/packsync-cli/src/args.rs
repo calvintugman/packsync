@@ -420,18 +420,17 @@ pub enum StorageCmd {
     },
     /// Use the PackSync cloud with a recovery key (when no paired computer is at hand). Asks for it.
     Recover,
-    /// Protect your PackSync cloud with a passkey (opens the browser). If every computer is lost, the
-    /// passkey alone gets you back in.
-    PasskeyAdd,
-    /// Get back into your PackSync cloud with a passkey (opens the browser).
-    PasskeyRecover {
+    /// Sign in to the PackSync cloud with your Microsoft / Minecraft account (device-code login).
+    Login {
         /// The service's address (default: the one built into this program).
         #[arg(long)]
         service: Option<String>,
-        /// Print the address instead of opening a browser.
+        /// Print the sign-in address instead of opening a browser.
         #[arg(long)]
         no_browser: bool,
     },
+    /// Permanently delete your PackSync cloud account and all data stored in it.
+    DeleteAccount,
     /// Print the recovery key: it restores access on a new computer if all others are lost. Anyone
     /// who has it can read your data; keep it like a password.
     RecoveryKey,

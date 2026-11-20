@@ -34,13 +34,16 @@ pub enum StorageSetting {
         prefix: String,
         access_key_id: String,
     },
-    /// The PackSync service: nothing to set up, end-to-end encrypted. The account's token and
-    /// encryption key are kept in the OS credential store under [`StorageSetting::hosted_secret_account`].
+    /// The PackSync service: end-to-end encrypted. The account's token and encryption key are kept
+    /// in the OS credential store under [`StorageSetting::hosted_secret_account`].
     Hosted {
         /// The service's address (`https://…`).
         endpoint: String,
         /// The account ID (not a secret).
         account: String,
+        /// Display name from Microsoft / Minecraft sign-in (not a secret).
+        #[serde(default)]
+        display_name: Option<String>,
     },
 }
 
@@ -163,7 +166,7 @@ impl Settings {
                 return Err(Error::Config(format!("{prefix:?} is not a valid prefix (letters, digits, . _ -)")));
             }
         }
-        if let StorageSetting::Hosted { endpoint, account } = &self.storage {
+        if let StorageSetting::Hosted { endpoint, account, .. } = &self.storage {
             let trimmed = endpoint.trim().trim_end_matches('/');
             let valid = if let Some(rest) = trimmed.strip_prefix("https://") {
                 !rest.is_empty() && !rest.contains('/') && !rest.contains('@')
@@ -230,6 +233,7 @@ mod tests {
             storage: StorageSetting::Hosted {
                 endpoint: "http://evil.example.com".into(),
                 account: "abcdefghijklmnopqrstuvwxyz".into(),
+                display_name: None,
             },
             ..Settings::default()
         };
@@ -238,9 +242,24 @@ mod tests {
             storage: StorageSetting::Hosted {
                 endpoint: "http://127.0.0.1:8787".into(),
                 account: "abcdefghijklmnopqrstuvwxyz".into(),
+                display_name: Some("MockPlayer".into()),
             },
             ..Settings::default()
         };
         assert!(local_http.validate().is_ok());
+
+        // Legacy settings JSON without `display_name` deserializes cleanly.
+        let legacy: Settings = serde_json::from_str(
+            r#"{"version":1,"storage":{"kind":"hosted","endpoint":"https://packsync.example","account":"abcdefghijklmnopqrstuvwxyz"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            legacy.storage,
+            StorageSetting::Hosted {
+                endpoint: "https://packsync.example".into(),
+                account: "abcdefghijklmnopqrstuvwxyz".into(),
+                display_name: None,
+            }
+        );
     }
 }

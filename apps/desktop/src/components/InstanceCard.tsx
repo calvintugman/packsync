@@ -1,6 +1,7 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { ApiError } from "../api/errors";
-import type { InstanceStatus } from "../api/types";
+import type { InstanceStatus, SyncPhase } from "../api/types";
 import { describeLaunch, describeSync, describeUpload } from "../lib/describe";
 import { formatBytes, formatRelative, packLine, plural, sentence, worldsLine } from "../lib/format";
 import { canPlay, phaseInfo } from "../lib/phases";
@@ -45,7 +46,17 @@ export function usePlay(inst: { id: string; name: string }) {
 }
 
 /** What to offer when Play failed: for "the cloud can't be reached", the explicit choice to play offline. */
-export function PlayError({ error, play, inst }: { error: ApiError | null; play: ReturnType<typeof usePlay>; inst: { id: string } }) {
+export function PlayError({
+  error,
+  play,
+  inst,
+  extraActions,
+}: {
+  error: ApiError | null;
+  play: ReturnType<typeof usePlay>;
+  inst: { id: string };
+  extraActions?: ReactNode;
+}) {
   if (!error) return null;
   const offline = error.code === "offline" || error.code === "storage_unavailable";
   return (
@@ -54,10 +65,15 @@ export function PlayError({ error, play, inst }: { error: ApiError | null; play:
       instanceId={inst.id}
       onRetry={() => void play.run()}
       actions={
-        offline ? (
-          <Button size="sm" variant="primary" onClick={() => void play.run({ skipSync: true })}>
-            Play from this computer anyway
-          </Button>
+        offline || extraActions ? (
+          <>
+            {offline ? (
+              <Button size="sm" variant="primary" onClick={() => void play.run({ skipSync: true })}>
+                Play from this computer anyway
+              </Button>
+            ) : null}
+            {extraActions}
+          </>
         ) : null
       }
     />
@@ -88,34 +104,69 @@ export function PackTile({ name }: { name: string }) {
   );
 }
 
+function accentWidth(phase: SyncPhase): number {
+  switch (phase) {
+    case "ready_on_other_devices":
+    case "conflict":
+    case "crash_pending":
+    case "unavailable":
+      return 100;
+    case "cloud_published":
+      return 82;
+    case "cloud_ahead":
+    case "restoring":
+      return 70;
+    case "upload_pending":
+      return 52;
+    case "local_snapshot_complete":
+      return 34;
+    default:
+      return 18;
+  }
+}
+
 export function InstanceCard({ inst }: { inst: InstanceStatus }) {
+  const store = useStore();
   const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | null>(null);
   const jobs = useRunningJobs(inst.id);
   const sync = useSyncNow(inst, () => setDialog("conflict"));
   const play = usePlay(inst);
   const upload = useUploadNow(inst);
+  const resetSync = useAction(async () => {
+    await store.call("instances.disable", { instance: inst.id });
+    await Promise.all([store.refreshInstances(), store.refreshDiscovered()]);
+    store.toast("info", "Removed old sync link. Start syncing it again under your current cloud below.", inst.name);
+  });
+  const mismatchAction = (err: ApiError | null) =>
+    err && err.code === "config" && err.message.includes("synced with a different storage") ? (
+      <Button size="sm" variant="primary" busy={resetSync.busy} onClick={() => void resetSync.run()}>
+        Remove old sync link
+      </Button>
+    ) : null;
   const info = phaseInfo(inst.phase);
-  const busy = jobs.length > 0 || sync.busy || play.busy || upload.busy;
+  const busy = jobs.length > 0 || sync.busy || play.busy || upload.busy || resetSync.busy;
   const playing = jobs.find((j) => j.method === "launch.start");
   const attention = inst.phase === "conflict" || inst.phase === "crash_pending" || inst.phase === "unavailable";
 
   return (
     <article className={`card instance-card ${attention ? "attention" : ""}`} aria-label={inst.name} data-phase={inst.phase}>
-      <div className="row" style={{ alignItems: "flex-start", gap: 14 }}>
+      <div className="row" style={{ alignItems: "center", gap: 10 }}>
         <PackTile name={inst.name} />
-        <div className="grow">
-          <a className="instance-title" href={href({ name: "instance", id: inst.id, tab: null })}>
-            {inst.name}
-          </a>
-          <div className="meta">
-            {packLine(inst.pack)}
-            <span className="sep">·</span>
-            {worldsLine(inst.worlds)}
-            <span className="sep">·</span>
-            {formatBytes(inst.total_bytes)}
-          </div>
-        </div>
+        <span className="spacer" />
         <Pill tone={info.tone}>{info.label}</Pill>
+      </div>
+
+      <div className="col" style={{ gap: 4 }}>
+        <a className="instance-title" href={href({ name: "instance", id: inst.id, tab: null })}>
+          {inst.name}
+        </a>
+        <div className="meta">
+          {packLine(inst.pack)}
+          <span className="sep">·</span>
+          {worldsLine(inst.worlds)}
+          <span className="sep">·</span>
+          {formatBytes(inst.total_bytes)}
+        </div>
       </div>
 
       <p className="meta">
@@ -177,12 +228,24 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
         <JobBar key={j.id} jobId={j.id} cancellable={j.method !== "launch.start"} />
       ))}
       {sync.error ? (
-        <ErrorNote error={sync.error} instanceId={inst.id} onRetry={() => void sync.run()} onSignIn={() => navigate({ name: "settings" })} />
+        <ErrorNote
+          error={sync.error}
+          instanceId={inst.id}
+          onRetry={() => void sync.run()}
+          onSignIn={() => navigate({ name: "settings" })}
+          actions={mismatchAction(sync.error)}
+        />
       ) : null}
       {upload.error ? (
-        <ErrorNote error={upload.error} instanceId={inst.id} onRetry={() => void upload.run()} onSignIn={() => navigate({ name: "settings" })} />
+        <ErrorNote
+          error={upload.error}
+          instanceId={inst.id}
+          onRetry={() => void upload.run()}
+          onSignIn={() => navigate({ name: "settings" })}
+          actions={mismatchAction(upload.error)}
+        />
       ) : null}
-      <PlayError error={play.error} play={play} inst={inst} />
+      <PlayError error={play.error} play={play} inst={inst} extraActions={mismatchAction(play.error)} />
 
       <div className="row wrap">
         <Button
@@ -206,6 +269,10 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
         <a className="btn ghost" href={href({ name: "instance", id: inst.id, tab: null })}>
           Details
         </a>
+      </div>
+
+      <div className={`card-accent-bar ${info.tone === "neutral" ? "" : info.tone}`} aria-hidden="true">
+        <span style={{ width: `${accentWidth(inst.phase)}%` }} />
       </div>
 
       {dialog === "conflict" ? <ConflictDialog instance={inst} onClose={() => setDialog(null)} /> : null}

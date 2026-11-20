@@ -114,7 +114,7 @@ pub fn build(settings: &Settings, paths: &AppPaths, db: &Arc<Db>, creds: Arc<dyn
             *DRIVE_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(drive.stats_handle().clone());
             Ok(Provider { storage: Some(Arc::new(drive)), auth: Some(auth) })
         }
-        StorageSetting::Hosted { endpoint, account } => {
+        StorageSetting::Hosted { endpoint, account, .. } => {
             let creds = hosted_credentials(&*creds, endpoint, account)?;
             let (storage, hosted) = packsync_hosted::open_storage(&creds).map_err(Error::from)?;
             *HOSTED_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(hosted.stats());
@@ -167,7 +167,7 @@ pub fn hosted_credentials(
         .ok_or_else(|| {
             Error::Config(
                 "this computer's key for the PackSync cloud is missing from the OS credential store; \
-                 pair it again, or use the recovery key"
+                 sign in again (`packsync storage login`) or pair it again"
                     .into(),
             )
         })?;
@@ -184,8 +184,7 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
             kind: "none".into(),
             detail: "Nothing is connected yet.".into(),
             setup_hint: Some(
-                "Start with the PackSync cloud (`packsync storage start`), or join from another computer \
-                 (`packsync storage join <code>`)."
+                "Sign in with your Microsoft / Minecraft account (`packsync storage login`), or choose Google Drive, R2, or a local folder."
                     .into(),
             ),
             ..Default::default()
@@ -200,15 +199,21 @@ pub fn status(settings: &Settings, paths: &AppPaths, auth: Option<&Authenticator
                 ..Default::default()
             }
         }
-        StorageSetting::Hosted { endpoint, account } => StorageStatus {
+        StorageSetting::Hosted { endpoint, account, display_name } => StorageStatus {
             kind: "hosted".into(),
             connected: true,
             account: Some(account.clone()),
-            detail: format!(
-                "PackSync cloud, end-to-end encrypted ({}, account {}…)",
-                endpoint.split("://").nth(1).unwrap_or(endpoint),
-                &account[..account.len().min(6)]
-            ),
+            detail: match display_name.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(name) => format!(
+                    "PackSync cloud — {name} (end-to-end encrypted, {})",
+                    endpoint.split("://").nth(1).unwrap_or(endpoint)
+                ),
+                None => format!(
+                    "PackSync cloud, end-to-end encrypted ({}, account {}…)",
+                    endpoint.split("://").nth(1).unwrap_or(endpoint),
+                    &account[..account.len().min(6)]
+                ),
+            },
             ..Default::default()
         },
         StorageSetting::R2 { account_id, bucket, prefix, .. } => StorageStatus {

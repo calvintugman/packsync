@@ -63,10 +63,18 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)
     }
-    fn message(&self) -> String {
+    pub(crate) fn error_code(&self) -> Option<String> {
+        #[derive(Deserialize)]
+        struct E {
+            #[serde(default)]
+            error: String,
+        }
+        serde_json::from_slice::<E>(&self.body).ok().map(|e| e.error).filter(|s| !s.is_empty())
+    }
+    pub(crate) fn message(&self) -> String {
         #[derive(Deserialize)]
         struct E {
             #[serde(default)]
@@ -148,6 +156,14 @@ impl Http {
 
     pub fn endpoint(&self) -> &str {
         &self.endpoint
+    }
+
+    pub(crate) fn agent(&self) -> &ureq::Agent {
+        &self.agent
+    }
+
+    pub(crate) fn retry(&self) -> &RetryPolicy {
+        &self.retry
     }
 
     fn budget(bytes: u64) -> Duration {
@@ -283,7 +299,7 @@ pub(crate) fn classify(r: &Reply, what: &str) -> StorageError {
     }
 }
 
-fn net_error(e: ureq::Error) -> StorageError {
+pub(crate) fn net_error(e: ureq::Error) -> StorageError {
     match e {
         ureq::Error::Timeout(t) => StorageError::Offline(format!("request timed out ({t})")),
         ureq::Error::HostNotFound => StorageError::Offline("DNS lookup failed".into()),

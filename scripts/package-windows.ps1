@@ -59,10 +59,11 @@ Install
   Needs the Microsoft Edge WebView2 runtime (already installed on Windows 10 and 11).
 
 Getting started
-  First computer:   open PackSync, press "Start on this computer", then pick your instances.
-  Other computers:  on the first one, Settings > Storage > "Show a pairing code";
-                    on the new one, "Join from another computer" and type the code.
-  Then add a passkey (Settings > Storage) so you can get back in if you ever lose every computer.
+  First computer:   open PackSync, choose PackSync Cloud -> "Sign in with Minecraft",
+                    enter the shown code at microsoft.com/link, then pick your instances.
+  Other computers:  sign in with the same Minecraft (Microsoft) account to reconnect to
+                    your encrypted vault automatically.
+  Or switch storage in Settings > Cloud to Google Drive, Cloudflare R2, or a synced folder.
 
 Everything is encrypted on your computer before upload. Command line: packsync.exe --help
 Source: https://github.com/calvintugman/packsync    Licence: MIT (LICENSE.txt)

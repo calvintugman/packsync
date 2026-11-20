@@ -1,236 +1,140 @@
-import { useId, useState } from "react";
-import type { StorageStatus } from "../api/types";
+import { useState } from "react";
+import type { HostedLoginPrompt, StorageStatus } from "../api/types";
+import { openExternalUrl } from "../lib/external";
 import { useAction, useAppState, useStore } from "../state/context";
-import { Banner, Button, TextArea, TextInput } from "../ui/controls";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
+import { Banner, Button, Spinner } from "../ui/controls";
 import { ErrorNote } from "../ui/ErrorNote";
 import { Icon } from "../ui/Icon";
-import type { IconName } from "../ui/Icon";
-
-/** A large, card-shaped choice. Its accessible name is the title alone; the text describes it. */
-function OptionCard(props: {
-  icon: IconName;
-  title: string;
-  text: string;
-  primary?: boolean;
-  busy?: boolean;
-  onClick: () => void;
-}) {
-  const id = useId();
-  return (
-    <button
-      type="button"
-      className={`option-card ${props.primary ? "primary" : ""}`}
-      aria-labelledby={`${id}-t`}
-      aria-describedby={`${id}-d`}
-      aria-busy={props.busy || undefined}
-      disabled={props.busy}
-      onClick={props.onClick}
-    >
-      <span className="option-icon" aria-hidden="true">
-        {props.busy ? (
-          <span className="spinner" />
-        ) : (
-          <Icon name={props.icon} size={19} />
-        )}
-      </span>
-      <span className="option-title" id={`${id}-t`}>
-        {props.title}
-      </span>
-      <span className="option-text" id={`${id}-d`}>
-        {props.text}
-      </span>
-    </button>
-  );
-}
-
-type Step = "choose" | "join" | "recover";
 
 /**
- * The PackSync cloud: nothing to sign up for. The first computer starts it; every other computer joins
- * with a short code shown on one that is already in. Everything is encrypted on the computer.
+ * PackSync Cloud: Prism-style Microsoft/Minecraft sign-in. Signing in with the same Minecraft account
+ * automatically restores cloud access and encryption keys across all your computers.
  */
-export function HostedSetup({
-  onConnected,
-}: {
-  onConnected?: (s: StorageStatus) => void;
-}) {
+export function HostedSetup({ onConnected }: { onConnected?: (s: StorageStatus) => void }) {
   const store = useStore();
   const storage = useAppState((s) => s.storage);
-  const [step, setStep] = useState<Step>("choose");
-  const [code, setCode] = useState("");
-  const [recoveryText, setRecoveryText] = useState("");
-  const [shownCode, setShownCode] = useState<string | null>(null);
-  const [joinedNote, setJoinedNote] = useState(false);
-  const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
-  const [pairJobId, setPairJobId] = useState<string | null>(null);
-  const [addPasskeyJobId, setAddPasskeyJobId] = useState<string | null>(null);
-  const [recoverJobId, setRecoverJobId] = useState<string | null>(null);
+  const settings = useAppState((s) => s.settings);
+  const info = useAppState((s) => s.info);
+
+  const [prompt, setPrompt] = useState<HostedLoginPrompt | null>(null);
+  const [waitJobId, setWaitJobId] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const finish = async (status: StorageStatus, message: string) => {
-    await store.refreshSettings();
-    await store.refreshStorage();
+    await Promise.all([store.refreshInfo(), store.refreshSettings(), store.refreshStorage()]);
     store.toast("success", message);
     onConnected?.(status);
   };
 
-  const start = useAction(async () => {
-    const status = await store.runJob("storage.hosted_start", undefined);
-    await finish(status, "Your PackSync cloud is ready.");
-  });
-  const join = useAction(async () => {
-    const status = await store.runJob("storage.hosted_join", {
-      code: code.trim(),
-    });
-    await finish(status, "This computer joined your PackSync cloud.");
-  });
-  const recover = useAction(async () => {
-    const status = await store.runJob("storage.hosted_recover", {
-      key: recoveryText.trim(),
-    });
-    setRecoveryText("");
-    await finish(status, "This computer uses your PackSync cloud again.");
-  });
-  const pair = useAction(async () => {
-    setJoinedNote(false);
-    const r = await store.call("storage.hosted_pair_start");
-    setShownCode(r.code);
+  const signIn = useAction(async () => {
+    setCopied(false);
+    const loginPrompt = await store.call("storage.hosted_login_start", { open_browser: false });
+    setPrompt(loginPrompt);
     try {
-      await store.runJob("storage.hosted_pair_wait", undefined, { onStart: setPairJobId });
-      setJoinedNote(true);
-      store.toast("success", "The other computer joined.");
-    } finally {
-      setShownCode(null);
-      setPairJobId(null);
+      const status = await store.runJob("storage.hosted_login_wait", undefined, { onStart: setWaitJobId });
+      setPrompt(null);
+      setWaitJobId(null);
+      await finish(status, "Connected to PackSync Cloud.");
+    } catch (e) {
+      setPrompt(null);
+      setWaitJobId(null);
+      throw e;
     }
-  });
-  const addPasskey = useAction(async () => {
-    try {
-      await store.runJob("storage.passkey_add", undefined, { onStart: setAddPasskeyJobId });
-      store.toast(
-        "success",
-        "Passkey added. If you ever lose every computer, it gets you back in.",
-      );
-    } finally {
-      setAddPasskeyJobId(null);
-    }
-  });
-  const passkeyRecover = useAction(async () => {
-    try {
-      const status = await store.runJob("storage.passkey_recover", undefined, { onStart: setRecoverJobId });
-      await finish(status, "You're back in your PackSync cloud.");
-    } finally {
-      setRecoverJobId(null);
-    }
-  });
-  const [showRecovery, setShowRecovery] = useState(false);
-  const showKey = useAction(async () => {
-    const r = await store.call("storage.hosted_recovery_key");
-    setRecoveryKey(r.key);
   });
 
-  if (storage?.kind === "hosted") {
+  const cancelSignIn = async () => {
+    const id = waitJobId;
+    setPrompt(null);
+    setWaitJobId(null);
+    if (id) await store.cancelJob(id).catch(() => {});
+  };
+
+  const copyCode = async () => {
+    if (!prompt) return;
+    try {
+      await navigator.clipboard?.writeText(prompt.user_code);
+      setCopied(true);
+      store.toast("info", "Sign-in code copied.");
+    } catch {
+      store.toast("warn", "Could not access the clipboard; copy the code above manually.");
+    }
+  };
+
+  const deleteAccount = async () => {
+    await store.runJob("storage.hosted_delete_account", undefined);
+    await Promise.all([
+      store.refreshInfo(),
+      store.refreshSettings(),
+      store.refreshStorage(),
+      store.refreshInstances(),
+      store.refreshDiscovered(),
+    ]);
+    store.toast("info", "Your PackSync Cloud account and cloud data were deleted.");
+  };
+
+  if (storage?.kind === "hosted" && storage.connected) {
+    const hostedDisplay = settings?.storage.kind === "hosted" ? settings.storage.display_name : null;
+    const accountName = info?.minecraft_profile?.name ?? hostedDisplay ?? storage.account;
+
     return (
       <div className="col gap-lg">
-        <Banner tone="ok" title="Using the PackSync cloud">
-          {storage.detail}. Everything is encrypted on this computer before it
-          is uploaded; the service cannot read it.
+        <Banner tone="ok" title="Using PackSync Cloud">
+          <div className="col" style={{ gap: 4 }}>
+            <span>
+              {accountName ? (
+                <>
+                  Signed in as <strong>{accountName}</strong>.{" "}
+                </>
+              ) : null}
+              {storage.detail}.
+            </span>
+            <span className="muted">
+              Everything is encrypted on this computer before upload; the PackSync service cannot read your worlds.
+            </span>
+          </div>
         </Banner>
+
         <div className="card col">
-          <h3>Add another computer</h3>
+          <div className="row" style={{ gap: 8 }}>
+            <Icon name="computer" size={18} />
+            <h3>Automatic multi-computer sync</h3>
+          </div>
           <p className="muted">
-            Install PackSync on the other computer, choose{" "}
-            <strong>Join from another computer</strong>, and type the code shown
-            here. The code works once, for 10 minutes.
+            Install PackSync on any other computer and choose <strong>Sign in with Minecraft</strong> using the same
+            Microsoft account. Your cloud vault and encryption key sync automatically — no pairing codes or recovery keys
+            to type.
           </p>
-          {shownCode ? (
-            <div className="col" aria-live="polite">
-              <p className="pairing-code">{shownCode}</p>
-              <p className="faint">Waiting for the other computer…</p>
-            </div>
-          ) : null}
-          {joinedNote ? (
+        </div>
+
+        <div className="card col">
+          <h3>Account &amp; cloud data</h3>
+          <p className="muted">
+            Permanently remove your PackSync Cloud account and delete all encrypted snapshots stored on the server.
+            Instances and worlds saved on this computer stay untouched.
+          </p>
+          <div className="row">
+            <Button variant="danger" icon="trash" onClick={() => setConfirmDelete(true)}>
+              Delete cloud account &amp; data…
+            </Button>
+          </div>
+        </div>
+
+        {confirmDelete ? (
+          <ConfirmDialog
+            title="Delete PackSync Cloud account and data?"
+            confirmLabel="Delete cloud account & data"
+            danger
+            onClose={() => setConfirmDelete(false)}
+            onConfirm={deleteAccount}
+          >
             <p>
-              The other computer joined. It can now bring your instances over.
+              This permanently deletes your PackSync Cloud account and every snapshot, pack, and session stored in the
+              cloud. <strong>This cannot be undone.</strong>
             </p>
-          ) : null}
-          {pair.error ? <ErrorNote error={pair.error} /> : null}
-          <div className="row">
-            <Button
-              variant="primary"
-              icon="cloud"
-              busy={pair.busy}
-              onClick={() => void pair.run()}
-            >
-              {shownCode ? "Waiting…" : "Show a pairing code"}
-            </Button>
-            {pair.busy && pairJobId ? (
-              <Button onClick={() => void store.cancelJob(pairJobId)}>Cancel</Button>
-            ) : null}
-          </div>
-        </div>
-        <div className="card col">
-          <h3>Passkey</h3>
-          <p className="muted">
-            If you ever lose every computer, a passkey gets you back in —
-            nothing to write down. Use your phone, Windows Hello, or your
-            browser's password manager. Adding two (say, phone and computer) is
-            safest.
-          </p>
-          {addPasskey.busy ? (
-            <p className="faint">Finish in your browser…</p>
-          ) : null}
-          {addPasskey.error ? <ErrorNote error={addPasskey.error} /> : null}
-          <div className="row">
-            <Button
-              variant="primary"
-              icon="shield"
-              busy={addPasskey.busy}
-              onClick={() => void addPasskey.run()}
-            >
-              Add a passkey
-            </Button>
-            {addPasskey.busy && addPasskeyJobId ? (
-              <Button onClick={() => void store.cancelJob(addPasskeyJobId)}>Cancel</Button>
-            ) : null}
-            {!showRecovery ? (
-              <button
-                type="button"
-                className="link-btn"
-                onClick={() => setShowRecovery(true)}
-              >
-                Use a recovery key instead
-              </button>
-            ) : null}
-          </div>
-        </div>
-        {showRecovery ? (
-          <div className="card col">
-            <h3>Recovery key</h3>
-            <p className="muted">
-              For passkey apps that can't protect encrypted data: a text that
-              gets you back in. Save it in a password manager or print it.
-              Anyone who has it can read your PackSync data.
-            </p>
-            {recoveryKey ? (
-              <TextArea
-                label="Your recovery key"
-                value={recoveryKey}
-                readOnly
-                rows={3}
-                onFocus={(e) => e.currentTarget.select()}
-              />
-            ) : null}
-            {showKey.error ? <ErrorNote error={showKey.error} /> : null}
-            <div className="row">
-              {recoveryKey ? (
-                <Button onClick={() => setRecoveryKey(null)}>Hide it</Button>
-              ) : (
-                <Button busy={showKey.busy} onClick={() => void showKey.run()}>
-                  Show the recovery key
-                </Button>
-              )}
-            </div>
-          </div>
+            <p className="muted">Local Prism Launcher instances and worlds on this computer are not deleted.</p>
+          </ConfirmDialog>
         ) : null}
       </div>
     );
@@ -238,120 +142,57 @@ export function HostedSetup({
 
   return (
     <div className="col gap-lg">
-      <p className="muted">
-        <Icon name="shield" size={14} /> No account to make. Your worlds are
-        encrypted on your computer before upload: the PackSync service stores
-        them but cannot read them.
-      </p>
+      <div className="minecraft-signin-card">
+        <div className="row" style={{ gap: 10 }}>
+          <Icon name="shield" size={18} />
+          <strong>End-to-end encrypted PackSync Cloud</strong>
+        </div>
+        <p className="muted">
+          Sign in with your Microsoft / Minecraft account, just like Prism Launcher. Signing in with the same account on
+          any computer unlocks the same private cloud automatically.
+        </p>
 
-      {step === "choose" ? (
-        <div className="col gap-lg">
-          <div className="option-grid">
-            <OptionCard
-              primary
-              icon="cloud"
-              title="Start on this computer"
-              text="Your first computer. Your private, encrypted PackSync cloud is ready in a second."
-              busy={start.busy}
-              onClick={() => void start.run()}
-            />
-            <OptionCard
-              icon="computer"
-              title="Join from another computer"
-              text="Already using PackSync elsewhere? Type the code that computer shows."
-              onClick={() => setStep("join")}
-            />
+        {!prompt ? (
+          <div className="row wrap">
+            <Button variant="primary" icon="user" busy={signIn.busy} onClick={() => void signIn.run()}>
+              Sign in with Minecraft
+            </Button>
           </div>
-          {start.error ? <ErrorNote error={start.error} /> : null}
-          {passkeyRecover.busy ? (
-            <div className="row">
-              <p className="faint">Finish in your browser…</p>
-              {recoverJobId ? (
-                <Button size="sm" onClick={() => void store.cancelJob(recoverJobId)}>Cancel</Button>
-              ) : null}
+        ) : (
+          <div className="col" aria-live="polite" style={{ gap: 12 }}>
+            <p className="muted">Enter this code in your browser at Microsoft to finish signing in:</p>
+            <p className="pairing-code" data-testid="device-code">
+              {prompt.user_code}
+            </p>
+            <div className="row wrap">
+              <Button icon="copy" onClick={() => void copyCode()}>
+                {copied ? "Copied" : "Copy code"}
+              </Button>
+              <Button variant="primary" icon="external" onClick={() => void openExternalUrl(store, prompt.verification_uri)}>
+                Open microsoft.com/link
+              </Button>
+              <Button onClick={() => void cancelSignIn()}>Cancel</Button>
+              <button
+                type="button"
+                className="link-btn"
+                style={{ marginLeft: "auto" }}
+                onClick={() => void openExternalUrl(store, prompt.privacy_url)}
+              >
+                Privacy Policy &amp; Terms
+              </button>
             </div>
-          ) : null}
-          {passkeyRecover.error ? (
-            <ErrorNote error={passkeyRecover.error} />
-          ) : null}
-          <p className="faint">
-            Lost every computer?{" "}
-            <button
-              type="button"
-              className="link-btn"
-              disabled={passkeyRecover.busy}
-              onClick={() => void passkeyRecover.run()}
-            >
-              Sign in with a passkey
-            </button>{" "}
-            or{" "}
-            <button
-              type="button"
-              className="link-btn"
-              onClick={() => setStep("recover")}
-            >
-              use a recovery key
-            </button>
-          </p>
-        </div>
-      ) : null}
-
-      {step === "join" ? (
-        <div className="col">
-          <p className="muted">
-            On a computer that already uses PackSync, open Settings → Storage
-            and choose <strong>Show a pairing code</strong>.
-          </p>
-          <TextInput
-            label="Pairing code"
-            value={code}
-            onChange={(e) => setCode(e.currentTarget.value)}
-            placeholder="4821-K7QM-X2PD"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          {join.busy ? (
-            <p className="faint">Connecting to the other computer…</p>
-          ) : null}
-          {join.error ? <ErrorNote error={join.error} /> : null}
-          <div className="row">
-            <Button
-              variant="primary"
-              busy={join.busy}
-              disabled={code.replace(/[\s-]/g, "").length !== 12}
-              onClick={() => void join.run()}
-            >
-              Join
-            </Button>
-            <Button onClick={() => setStep("choose")}>Back</Button>
+            <div className="row faint" style={{ gap: 8, fontSize: 12.5 }}>
+              <Spinner />
+              <span>
+                Waiting for Microsoft sign-in to complete… (expires in {Math.max(1, Math.round(prompt.expires_in / 60))}{" "}
+                min)
+              </span>
+            </div>
           </div>
-        </div>
-      ) : null}
+        )}
+      </div>
 
-      {step === "recover" ? (
-        <div className="col">
-          <TextArea
-            label="Recovery key"
-            value={recoveryText}
-            onChange={(e) => setRecoveryText(e.currentTarget.value)}
-            placeholder="packsync1-…"
-            rows={3}
-            spellCheck={false}
-          />
-          {recover.error ? <ErrorNote error={recover.error} /> : null}
-          <div className="row">
-            <Button
-              variant="primary"
-              busy={recover.busy}
-              disabled={!recoveryText.trim().startsWith("packsync1-")}
-              onClick={() => void recover.run()}
-            >
-              Use this recovery key
-            </Button>
-            <Button onClick={() => setStep("choose")}>Back</Button>
-          </div>
-        </div>
-      ) : null}
+      {signIn.error ? <ErrorNote error={signIn.error} /> : null}
     </div>
   );
 }

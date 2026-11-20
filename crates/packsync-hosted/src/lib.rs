@@ -1,11 +1,12 @@
-//! PackSync's hosted storage: nothing to set up for the person using it.
+//! PackSync's hosted storage: end-to-end encryption over the PackSync cloud service.
 //!
-//! * The first computer creates an account on the service ([`create_account`]): an ID, a random token
-//!   and a random encryption key, all kept in the computer's credential store.
+//! * Sign in with a Microsoft / Minecraft account ([`msauth`]) to receive an account, a per-device
+//!   session token, and the account's server-wrapped encryption key. Every device signed in to the
+//!   same Microsoft account receives the same account ID and key automatically.
 //! * Everything is encrypted on the computer before upload ([`crypto`]); the service stores bytes it
 //!   cannot read.
-//! * Another computer joins with a short pairing code ([`pairing`]), or with the recovery key
-//!   ([`Credentials::recovery_key`]) when no paired computer is at hand.
+//! * Anonymous accounts ([`create_account`]) and pairing ([`pairing`]) remain available when enabled
+//!   on a self-hosted service.
 //!
 //! The service is a Cloudflare Worker in `services/hosted`; [`mock`] is an in-process stand-in for tests.
 
@@ -13,8 +14,8 @@ pub mod client;
 pub mod crypto;
 #[cfg(feature = "mock")]
 pub mod mock;
+pub mod msauth;
 pub mod pairing;
-pub mod passkey;
 
 use std::sync::Arc;
 
