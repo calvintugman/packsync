@@ -23,15 +23,16 @@ impl Default for KeyringCredentialStore {
 /// What to do when the store cannot be used, per platform.
 fn platform_hint() -> &'static str {
     if cfg!(target_os = "macos") {
-        "PackSync keeps its Google sign-in in the macOS Keychain: unlock the login keychain and allow \
-         PackSync to access it, then connect again."
+        "PackSync keeps its sign-ins and keys in the macOS Keychain: unlock the login keychain and \
+         allow PackSync to access it, then try again."
     } else if cfg!(target_os = "windows") {
-        "PackSync keeps its Google sign-in in the Windows Credential Manager: make sure it is available \
-         for your user account, then connect again."
+        "PackSync keeps its sign-ins and keys in the Windows Credential Manager: make sure it is \
+         available for your user account, then try again."
     } else if cfg!(unix) {
-        "PackSync keeps its Google sign-in in the Secret Service: install or start a provider (GNOME \
-         Keyring, KDE Wallet 5.97+, or KeePassXC with Secret Service integration), unlock it, then \
-         connect again. PackSync never stores tokens in plain files."
+        "PackSync keeps its sign-ins and keys (PackSync Cloud, Google Drive, R2) in the Secret Service: \
+         make sure a provider (GNOME Keyring, KDE Wallet 5.97+, or KeePassXC with Secret Service \
+         integration) is running and owns `org.freedesktop.secrets` on the session bus, unlock it, \
+         then try again. PackSync never stores tokens in plain files."
     } else {
         "This platform has no supported secure credential store; PackSync never stores tokens in plain files."
     }
@@ -137,7 +138,8 @@ mod tests {
             match map_err(e) {
                 CredentialError::Unavailable(m) => {
                     assert!(m.contains("ServiceUnknown"), "{m}");
-                    assert!(m.contains("connect again"), "{m}");
+                    assert!(m.contains("try again"), "{m}");
+                    assert!(!m.contains("Google sign-in"), "{m}");
                 }
                 other => panic!("expected Unavailable, got {other:?}"),
             }
