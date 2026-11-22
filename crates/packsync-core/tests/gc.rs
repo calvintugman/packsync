@@ -59,7 +59,7 @@ fn age_everything(w: &TestWorld, hours: u64) {
     let t = std::time::SystemTime::now() - std::time::Duration::from_secs(hours * 3600);
     for sub in ["packs", "index"] {
         for f in files_under(&w.remote_dir.join(sub)) {
-            filetime::set_file_mtime(&f, filetime::FileTime::from_system_time(t)).unwrap();
+            packsync_core::fsutil::set_mtime(&f, t).unwrap();
         }
     }
 }
@@ -114,7 +114,7 @@ fn only_old_unreferenced_objects_made_by_packsync_are_removed() {
     // the young one really is young; the others are old
     for k in [&old_orphan, &untagged, &stray, &stray_index] {
         let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
-        filetime::set_file_mtime(w.remote_dir.join(k), filetime::FileTime::from_system_time(t)).unwrap();
+        packsync_core::fsutil::set_mtime(w.remote_dir.join(k), t).unwrap();
     }
 
     let plan = a.engine.gc_plan(&GcParams::default(), &a.ctx()).unwrap();
@@ -166,13 +166,21 @@ fn a_stale_preview_cannot_be_run() {
     age_everything(&w, 100);
     let junk = b"orphan one".to_vec();
     let one = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, true);
-    filetime::set_file_mtime(w.remote_dir.join(&one), filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+    packsync_core::fsutil::set_mtime(
+        w.remote_dir.join(&one),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+    )
+    .unwrap();
     let plan = a.engine.gc_plan(&GcParams::default(), &a.ctx()).unwrap();
     assert_eq!(plan.delete.len(), 1);
     // the cloud changes between preview and run
     let junk2 = b"orphan two appeared meanwhile".to_vec();
     let two = plant(&w, "packs/", Some(Hash::of(&junk2)), "pack", &junk2, true);
-    filetime::set_file_mtime(w.remote_dir.join(&two), filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+    packsync_core::fsutil::set_mtime(
+        w.remote_dir.join(&two),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+    )
+    .unwrap();
     let err = a.engine.gc_run(&plan.id, &GcParams::default(), &a.ctx()).unwrap_err();
     assert!(matches!(err, Error::Conflict(_)), "{err}");
     assert!(exists(&w, &one) && exists(&w, &two), "nothing was deleted");
@@ -453,7 +461,11 @@ fn an_unreadable_snapshot_stops_the_cleanup_before_anything_is_deleted() {
     age_everything(&w, 100);
     let junk = b"orphan".to_vec();
     let orphan = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, true);
-    filetime::set_file_mtime(w.remote_dir.join(&orphan), filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+    packsync_core::fsutil::set_mtime(
+        w.remote_dir.join(&orphan),
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+    )
+    .unwrap();
     // damage one snapshot object in the cloud (and forget our cached copy of it)
     let commits = files_under(&w.remote_dir.join("instances").join(en.instance.to_string()).join("commits"));
     let victim = commits.iter().find(|p| p.extension().is_some_and(|e| e == "snap")).unwrap().clone();
@@ -496,7 +508,7 @@ fn a_cleanup_killed_at_any_step_leaves_everything_restorable_and_can_simply_be_r
         let junk = format!("an abandoned upload {point}").into_bytes();
         let orphan = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, true);
         let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
-        filetime::set_file_mtime(w.remote_dir.join(&orphan), filetime::FileTime::from_system_time(t)).unwrap();
+        packsync_core::fsutil::set_mtime(w.remote_dir.join(&orphan), t).unwrap();
 
         let plan = a.engine.gc_plan(&params, &a.ctx()).unwrap();
         assert!(!plan.delete.is_empty() && !plan.expire.is_empty(), "{point}: nothing to do: {plan:#?}");
@@ -581,7 +593,7 @@ fn cleanup_works_on_storage_without_tags() {
     let junk = b"left behind by an abandoned upload".to_vec();
     let orphan = plant(&w, "packs/", Some(Hash::of(&junk)), "pack", &junk, false);
     let t = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
-    filetime::set_file_mtime(w.remote_dir.join(&orphan), filetime::FileTime::from_system_time(t)).unwrap();
+    packsync_core::fsutil::set_mtime(w.remote_dir.join(&orphan), t).unwrap();
 
     let plan = a.engine.gc_plan(&GcParams::default(), &a.ctx()).unwrap();
     assert!(plan.delete.iter().any(|d| d.key == orphan), "{plan:#?}");

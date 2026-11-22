@@ -351,7 +351,7 @@ fn a_clean_exit_signal_nobody_collected_closes_the_session_as_clean_later() {
     assert_eq!(a.app.close_signalled_sessions(&a.ctx()), 0);
     assert_eq!(a.app.engine().db().sessions_open(inst).unwrap().len(), 1);
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-    filetime::set_file_mtime(&signal, filetime::FileTime::from_system_time(old)).unwrap();
+    packsync_core::fsutil::set_mtime(&signal, old).unwrap();
     assert_eq!(a.app.close_signalled_sessions(&a.ctx()), 1);
     assert!(a.app.engine().db().sessions_open(inst).unwrap().is_empty());
     let st = a.app.engine().instance(inst).unwrap();

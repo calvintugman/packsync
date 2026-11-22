@@ -203,7 +203,11 @@ fn cleanup_shows_a_plan_first_and_only_runs_exactly_that_plan() {
     .unwrap();
     st.put("packs/mine.txt", PutSource::Bytes(b"not PackSync's"), &PutOptions::create_only(None), &ctx).unwrap();
     for f in [key.as_str(), "packs/mine.txt"] {
-        filetime::set_file_mtime(w.cloud.join(f), filetime::FileTime::from_unix_time(1_000_000, 0)).unwrap();
+        packsync_core::fsutil::set_mtime(
+            w.cloud.join(f),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000),
+        )
+        .unwrap();
     }
     // plan: informative and harmless
     let plan = a.ok(&["gc", "plan"]);

@@ -335,7 +335,7 @@ fn catching_up_survives_a_cleanup_that_merged_the_named_index() {
     // make every index old enough for the cleanup to consolidate them, and run it
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
     for entry in fs::read_dir(w.remote_dir.join("index")).unwrap() {
-        filetime::set_file_mtime(entry.unwrap().path(), filetime::FileTime::from_system_time(old)).unwrap();
+        packsync_core::fsutil::set_mtime(entry.unwrap().path(), old).unwrap();
     }
     let params = packsync_core::gc::GcParams::default();
     let plan = a.engine.gc_plan(&params, &a.ctx()).unwrap();
@@ -407,7 +407,7 @@ fn a_cleanup_elsewhere_never_lets_the_fast_path_publish_missing_data() {
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(100 * 3600);
     for d in ["index", "packs"] {
         for entry in fs::read_dir(w.remote_dir.join(d)).unwrap() {
-            filetime::set_file_mtime(entry.unwrap().path(), filetime::FileTime::from_system_time(old)).unwrap();
+            packsync_core::fsutil::set_mtime(entry.unwrap().path(), old).unwrap();
         }
     }
     let retention = packsync_core::gc::RetentionPolicy { keep_snapshots: 1, keep_days: 0, keep_crash_days: 0 };
