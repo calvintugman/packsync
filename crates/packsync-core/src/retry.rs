@@ -56,6 +56,9 @@ pub struct RetryPolicy {
 
 /// Longest pause between attempts on an unreachable network.
 const OFFLINE_MAX_DELAY: Duration = Duration::from_secs(1);
+/// Longest server-requested `Retry-After` we will sleep through during an active operation.
+/// Longer pauses (such as an hourly/daily cap) fail immediately instead of stalling the upload.
+const MAX_RETRY_AFTER_SLEEP: Duration = Duration::from_secs(60);
 
 impl RetryPolicy {
     /// Provider-level policy: a handful of quick retries (Google recommends truncated exponential
@@ -85,7 +88,7 @@ impl RetryPolicy {
 
     /// Whether `e`, after the given (0-based) failed attempt, deserves another one.
     pub fn may_retry(&self, e: &StorageError, attempt: u32) -> bool {
-        if matches!(e, StorageError::RateLimited { retry_after: Some(ra) } if *ra > self.max_delay) {
+        if matches!(e, StorageError::RateLimited { retry_after: Some(ra) } if *ra > MAX_RETRY_AFTER_SLEEP) {
             return false;
         }
         let limit = match e {
