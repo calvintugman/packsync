@@ -16,6 +16,6 @@ pkgbase = packsync-bin
 	conflicts = packsync
 	options = !strip
 	source = packsync-bin-0.2.1.tar.gz::https://github.com/calvintugman/packsync/releases/download/v0.2.1/packsync-0.2.1-linux-x86_64.tar.gz
-	sha256sums = SKIP
+	sha256sums = 3432fb0a37162cf79d9ab9ff7580db3da3a7dc3219909032a6df8a995d012888
 
 pkgname = packsync-bin

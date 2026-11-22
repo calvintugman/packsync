@@ -12,7 +12,7 @@ provides=('packsync')
 conflicts=('packsync')
 options=('!strip')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/packsync-${pkgver}-linux-x86_64.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('3432fb0a37162cf79d9ab9ff7580db3da3a7dc3219909032a6df8a995d012888')
 
 package() {
   local src="${srcdir}/packsync-${pkgver}-linux-x86_64"
