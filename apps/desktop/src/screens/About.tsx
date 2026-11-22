@@ -46,7 +46,7 @@ export function AboutScreen() {
 
         <h1 className="about-handle">calvintugman</h1>
 
-        <div className="about-badges" aria-label="Profile badges">
+        <div className="about-badges" aria-hidden="true">
           <Icon name="code" size={16} />
           <Icon name="sparkles" size={16} />
           <Icon name="star" size={16} />
