@@ -133,11 +133,43 @@ jobs:
         with:
           merge-multiple: true
           path: dist-release
-      - name: Generate SHA256SUMS
+      - name: Generate SHA256SUMS and AUR package files
         run: |
           cd dist-release
           sha256sum packsync-*-linux-x86_64.tar.gz packsync-*-windows-x86_64.zip packsync_*_amd64.deb > SHA256SUMS
           cat SHA256SUMS
+          cd ..
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          ver = json.loads(Path("apps/desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8"))["version"]
+          tar_name = f"packsync-{ver}-linux-x86_64.tar.gz"
+          sha = ""
+          for line in Path("dist-release/SHA256SUMS").read_text(encoding="utf-8").splitlines():
+              parts = line.split()
+              if len(parts) == 2 and parts[1] == tar_name:
+                  sha = parts[0]
+                  break
+          assert sha, f"missing sha256 for {tar_name}"
+
+          pkgbuild = Path("packaging/aur/PKGBUILD").read_text(encoding="utf-8")
+          pkgbuild = re.sub(r"^pkgver=.*$", f"pkgver={ver}", pkgbuild, flags=re.M)
+          pkgbuild = re.sub(r"^sha256sums=\('[^']*'\)$", f"sha256sums=('{sha}')", pkgbuild, flags=re.M)
+          Path("dist-release/PKGBUILD").write_text(pkgbuild, encoding="utf-8")
+
+          srcinfo = Path("packaging/aur/.SRCINFO").read_text(encoding="utf-8")
+          srcinfo = re.sub(r"^\tpkgver = .*$", f"\tpkgver = {ver}", srcinfo, flags=re.M)
+          srcinfo = re.sub(
+              r"^\tsource = .*$",
+              f"\tsource = packsync-bin-{ver}.tar.gz::https://github.com/calvintugman/packsync/releases/download/v{ver}/packsync-{ver}-linux-x86_64.tar.gz",
+              srcinfo,
+              flags=re.M,
+          )
+          srcinfo = re.sub(r"^\tsha256sums = .*$", f"\tsha256sums = {sha}", srcinfo, flags=re.M)
+          Path("dist-release/SRCINFO").write_text(srcinfo, encoding="utf-8")
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: packsync-release-bundle

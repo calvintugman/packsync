@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -1753,7 +1753,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "fastrand",
@@ -1769,7 +1769,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -1831,7 +1831,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-drive"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "clap",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-e2e"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "packsync-app",
@@ -1874,11 +1874,11 @@ dependencies = [
 
 [[package]]
 name = "packsync-fake-prism"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "packsync-hosted"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "blake3",
@@ -1902,7 +1902,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-prism"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dunce",
  "fastrand",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-s3"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "hex",

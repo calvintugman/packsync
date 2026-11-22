@@ -26,7 +26,7 @@ PackSync Cloud is designed to avoid collecting personal profile data. **No email
 
 ## 4. Quotas, rate limits & acceptable use
 
-- **Default limits:** **5 GiB** storage per account, **10,000 objects** per account, **3,000 write/list operations per day**, **25,000 read operations per day**, **200 GiB** total service storage ceiling, **20 sign-in attempts per hour** per network, and **2 new accounts per day** per network (**40 per day** globally).
+- **Default limits:** **10 GiB** storage per account, **10,000 objects** per account, **3,000 write/list operations per day**, **25,000 read operations per day**, **200 GiB** total service storage ceiling, and **20 sign-in attempts per hour** per network (with no daily new-user cap).
 - **Acceptable use:** Automated abuse, non-PackSync bulk file hosting, or attempts to bypass quotas or rate limits may result in immediate account removal.
 
 ## 5. No warranty (Terms of Use)

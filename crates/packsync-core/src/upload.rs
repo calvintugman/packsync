@@ -138,6 +138,22 @@ pub fn backoff_ms(attempts: u32) -> i64 {
     (capped as f64 * (0.75 + 0.5 * fastrand::f64())) as i64
 }
 
+fn format_bytes(n: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    let v = n as f64;
+    if v >= GIB {
+        format!("{:.2} GB", v / GIB)
+    } else if v >= MIB {
+        format!("{:.1} MB", v / MIB)
+    } else if v >= KIB {
+        format!("{:.1} KB", v / KIB)
+    } else {
+        format!("{n} B")
+    }
+}
+
 impl Uploader<'_> {
     /// Publish one snapshot. See the module docs for the protocol.
     /// The fast path of a publication, for a computer that knows the cloud has not moved since its base
@@ -174,6 +190,8 @@ impl Uploader<'_> {
         // same operation, and creating it already refused any file whose data is neither in its own packs
         // nor known to be in the cloud (`required_packs` in snapshot.rs); cloud data reported lost turns
         // the fast path off. The full path checks again because time passes between saving and uploading.
+        let none = HashMap::new();
+        self.check_upload_fits(inst, id, &meta.packs, &none, stored.len() as u64, ctx)?;
         db.snapshot_set_state(inst, id, SnapshotState::Uploading)?;
         let mut report = UploadReport {
             snapshot: id,
@@ -185,23 +203,40 @@ impl Uploader<'_> {
             index: None,
         };
         ctx.mark(format!("fast publish: {} new packs and their index", meta.packs.len()));
-        let none = HashMap::new();
+        let batch_ctx = ctx.child();
         let (packs_res, index_res, unmoved) = std::thread::scope(|s| {
             let index = (!meta.packs.is_empty())
-                .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), ctx)));
-            let unmoved = s.spawn(|| no_cleanup(ctx));
-            let packs = self.upload_packs(id, &meta.packs, &none, &mut report, ctx);
+                .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), &batch_ctx)));
+            let unmoved = s.spawn(|| no_cleanup(&batch_ctx));
+            let packs = self.upload_packs(id, &meta.packs, &none, &mut report, ctx, &batch_ctx);
             let index = index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
             (packs, index, unmoved.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
         });
-        let verified = packs_res?;
+        let verified = match packs_res {
+            Ok(v) => v,
+            Err(e) => {
+                if e.code() == crate::error::ErrorCode::QuotaExceeded {
+                    let _ = db.snapshot_set_state(inst, id, SnapshotState::LocalComplete);
+                }
+                return Err(e);
+            }
+        };
         if !unmoved? {
             // the full path publishes it, looking every dependency up
             db.snapshot_set_state(inst, id, SnapshotState::LocalComplete)?;
             return Ok(None);
         }
         crate::failpoint!("upload.after_packs")?;
-        if let Some(index_id) = index_res.transpose()? {
+        let index_id = match index_res.transpose() {
+            Ok(v) => v,
+            Err(e) => {
+                if e.code() == crate::error::ErrorCode::QuotaExceeded {
+                    let _ = db.snapshot_set_state(inst, id, SnapshotState::LocalComplete);
+                }
+                return Err(e);
+            }
+        };
+        if let Some(index_id) = index_id {
             self.remote.note_uploaded_index(index_id)?;
             report.index = Some(index_id);
         }
@@ -306,20 +341,41 @@ impl Uploader<'_> {
             }
             crate::failpoint!("upload.before_packs")?;
 
+            // ---- 2b. preflight size/quota check: abort cleanly instead of stalling mid-upload -----------------
+            self.check_upload_fits(inst, id, &meta.packs, &sync.listed, stored.len() as u64, ctx)?;
+
             // ---- 3 + 4. packs, and the index that describes them, side by side --------------------------------
             // Their order does not matter: a reader only uses an index entry for a pack the cloud lists with
             // the recorded size, so an index that arrives first is simply not used yet. Both come before the
             // manifest, which is what makes them visible.
             ctx.mark(format!("upload: {} new packs and their index", meta.packs.len()));
+            let batch_ctx = ctx.child();
             let (packs_res, index_res) = std::thread::scope(|s| {
                 let index = (!meta.packs.is_empty())
-                    .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), ctx)));
-                let packs = self.upload_packs(id, &meta.packs, &sync.listed, &mut report, ctx);
+                    .then(|| s.spawn(|| self.remote.put_index(&crate::snapshot::staged_index_doc(&meta), &batch_ctx)));
+                let packs = self.upload_packs(id, &meta.packs, &sync.listed, &mut report, ctx, &batch_ctx);
                 (packs, index.map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
             });
-            let verified = packs_res?;
+            let verified = match packs_res {
+                Ok(v) => v,
+                Err(e) => {
+                    if e.code() == crate::error::ErrorCode::QuotaExceeded {
+                        let _ = db.snapshot_set_state(inst, id, SnapshotState::LocalComplete);
+                    }
+                    return Err(e);
+                }
+            };
             crate::failpoint!("upload.after_packs")?;
-            if let Some(index_id) = index_res.transpose()? {
+            let index_id = match index_res.transpose() {
+                Ok(v) => v,
+                Err(e) => {
+                    if e.code() == crate::error::ErrorCode::QuotaExceeded {
+                        let _ = db.snapshot_set_state(inst, id, SnapshotState::LocalComplete);
+                    }
+                    return Err(e);
+                }
+            };
+            if let Some(index_id) = index_id {
                 // every pack it lists was uploaded or found present: nothing to learn from it
                 self.remote.note_uploaded_index(index_id)?;
             }
@@ -467,6 +523,87 @@ impl Uploader<'_> {
             .collect()
     }
 
+    /// Preflight check: if the world's staged data cannot fit within the provider's quota or single-object
+    /// limit, cancel the upload cleanly before transferring packs so the client never stalls mid-upload.
+    fn check_upload_fits(
+        &self,
+        inst: InstanceId,
+        id: SnapshotId,
+        packs: &[IndexPack],
+        listed: &HashMap<Hash, u64>,
+        manifest_bytes: u64,
+        ctx: &OpCtx,
+    ) -> Result<()> {
+        let abort_quota = |msg: String| -> Error {
+            let err = Error::Storage(StorageError::QuotaExceeded(msg));
+            if let Some(first) = packs.iter().find(|p| listed.get(&p.id) != Some(&p.size)) {
+                let _ = self.db.staged_record_permanent_failure(
+                    first.id,
+                    err.code().as_str(),
+                    &crate::redact::redact(&err.to_string()),
+                );
+            }
+            let _ = self.db.snapshot_set_state(inst, id, SnapshotState::LocalComplete);
+            err
+        };
+
+        let caps = self.remote.storage.capabilities();
+        if let Some(max_obj) = caps.max_object_size {
+            if manifest_bytes > max_obj {
+                return Err(abort_quota(format!(
+                    "this world's snapshot metadata ({}) exceeds the server's {} per-file limit and could not be uploaded to our servers",
+                    format_bytes(manifest_bytes),
+                    format_bytes(max_obj)
+                )));
+            }
+            for p in packs {
+                if listed.get(&p.id) != Some(&p.size) && p.size > max_obj {
+                    return Err(abort_quota(format!(
+                        "this world has a data pack ({}) larger than the server's {} per-file limit and could not be uploaded to our servers",
+                        format_bytes(p.size),
+                        format_bytes(max_obj)
+                    )));
+                }
+            }
+        }
+
+        let needed: u64 = packs
+            .iter()
+            .filter(|p| listed.get(&p.id) != Some(&p.size))
+            .map(|p| p.size)
+            .fold(manifest_bytes, u64::saturating_add);
+        if needed == 0 {
+            return Ok(());
+        }
+
+        match self.remote.storage.quota(ctx) {
+            Ok(Some(crate::storage::Quota { used, total: Some(total) })) => {
+                let remaining = total.saturating_sub(used);
+                if needed > remaining {
+                    let msg = if needed > total {
+                        format!(
+                            "this world is too large and could not be uploaded to our servers ({} needed, server limit is {})",
+                            format_bytes(needed),
+                            format_bytes(total)
+                        )
+                    } else {
+                        format!(
+                            "this world is too large for your remaining cloud space and could not be uploaded to our servers ({} needed, {} of {} remaining)",
+                            format_bytes(needed),
+                            format_bytes(remaining),
+                            format_bytes(total)
+                        )
+                    };
+                    return Err(abort_quota(msg));
+                }
+                Ok(())
+            }
+            Err(StorageError::QuotaExceeded(m)) => Err(abort_quota(m)),
+            Err(StorageError::Cancelled) => Err(Error::Cancelled),
+            _ => Ok(()),
+        }
+    }
+
     fn upload_packs(
         &self,
         id: SnapshotId,
@@ -474,6 +611,7 @@ impl Uploader<'_> {
         listed: &HashMap<Hash, u64>,
         report: &mut UploadReport,
         ctx: &OpCtx,
+        batch_ctx: &OpCtx,
     ) -> Result<HashMap<Hash, u64>> {
         let dir = snapshot_staging_dir(self.state_dir, id);
         let total: u64 = packs.iter().map(|p| p.size).sum();
@@ -496,7 +634,7 @@ impl Uploader<'_> {
                 s.spawn(move || {
                     let (done, uploaded, present, bytes, first_err, dir, verified) = refs;
                     while let Ok(p) = rx.recv() {
-                        if first_err.lock().is_some() || ctx.is_cancelled() {
+                        if first_err.lock().is_some() || batch_ctx.is_cancelled() {
                             return;
                         }
                         let res: Result<bool> = (|| {
@@ -506,7 +644,7 @@ impl Uploader<'_> {
                             // provider (Drive keeps the session and the pre-generated file ID), so looking it
                             // up first would only cost a request per new pack.
                             if listed.get(&p.id) == Some(&p.size)
-                                && let Some(info) = self.remote.stat_pack(p.id, ctx)?
+                                && let Some(info) = self.remote.stat_pack(p.id, batch_ctx)?
                                 && info.size == p.size
                             {
                                 self.remote.note_uploaded_pack(p, &info)?;
@@ -514,7 +652,7 @@ impl Uploader<'_> {
                                 return Ok(false);
                             }
                             let path = dir.join(format!("{}.pack", p.id.to_hex()));
-                            let info = self.remote.put_pack(&path, p.id, p.size, ctx)?;
+                            let info = self.remote.put_pack(&path, p.id, p.size, batch_ctx)?;
                             self.remote.note_uploaded_pack(p, &info)?;
                             verified.lock().insert(p.id, info.size);
                             Ok(true)
@@ -540,25 +678,38 @@ impl Uploader<'_> {
                                 );
                                 if let Err(e) = crate::failpoint!("upload.after_pack") {
                                     first_err.lock().get_or_insert(e);
+                                    batch_ctx.cancel.cancel();
                                     return;
                                 }
                             }
                             Err(e) => {
+                                if e.is_cancelled() && !ctx.is_cancelled() && first_err.lock().is_some() {
+                                    return;
+                                }
                                 if !crate::failpoint::is_crash(&e) && !e.is_cancelled() {
-                                    let attempts = self
-                                        .db
-                                        .staged_for(id)
-                                        .ok()
-                                        .and_then(|v| v.iter().find(|s| s.id == p.id).map(|s| s.attempts))
-                                        .unwrap_or(0);
-                                    let _ = self.db.staged_record_failure(
-                                        p.id,
-                                        e.code().as_str(),
-                                        &crate::redact::redact(&e.to_string()),
-                                        now_ms() + backoff_ms(attempts),
-                                    );
+                                    if e.code() == crate::error::ErrorCode::QuotaExceeded {
+                                        let _ = self.db.staged_record_permanent_failure(
+                                            p.id,
+                                            e.code().as_str(),
+                                            &crate::redact::redact(&e.to_string()),
+                                        );
+                                    } else {
+                                        let attempts = self
+                                            .db
+                                            .staged_for(id)
+                                            .ok()
+                                            .and_then(|v| v.iter().find(|s| s.id == p.id).map(|s| s.attempts))
+                                            .unwrap_or(0);
+                                        let _ = self.db.staged_record_failure(
+                                            p.id,
+                                            e.code().as_str(),
+                                            &crate::redact::redact(&e.to_string()),
+                                            now_ms() + backoff_ms(attempts),
+                                        );
+                                    }
                                 }
                                 first_err.lock().get_or_insert(e);
+                                batch_ctx.cancel.cancel();
                                 return;
                             }
                         }

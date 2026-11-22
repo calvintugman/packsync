@@ -79,10 +79,22 @@ const ACTIONS: Record<string, ErrorDescription["action"]> = {
   config: "open_settings",
 };
 
+const SERVER_LIMIT_RE = /our servers|server limit|too large/i;
+
+export function isWorldTooLargeError(e: unknown, storageKind?: string): boolean {
+  const a = ApiError.from(e);
+  if (a.code !== "quota_exceeded") return false;
+  return storageKind === "hosted" || SERVER_LIMIT_RE.test(a.message);
+}
+
 export function describeError(e: unknown): ErrorDescription {
   const a = ApiError.from(e);
+  const title =
+    a.code === "quota_exceeded" && SERVER_LIMIT_RE.test(a.message)
+      ? "World couldn't be uploaded to our servers"
+      : (TITLES[a.code] ?? "Something went wrong");
   return {
-    title: TITLES[a.code] ?? "Something went wrong",
+    title,
     message: a.message,
     advice: a.advice,
     action: ACTIONS[a.code],

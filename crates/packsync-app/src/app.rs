@@ -201,6 +201,16 @@ impl App {
             if st.pending_snapshots == 0 || st.next_retry_ms.is_some_and(|t| t > now) {
                 continue;
             }
+            let quota_blocked = self.engine.db().snapshots(inst.id).ok().is_some_and(|snaps| {
+                snaps.into_iter().filter(|s| !s.state.is_in_cloud()).any(|s| {
+                    self.engine.db().staged_for(s.id).ok().is_some_and(|ps| {
+                        ps.iter().any(|p| !p.uploaded && p.last_error_code.as_deref() == Some("quota_exceeded"))
+                    })
+                })
+            });
+            if quota_blocked {
+                continue;
+            }
             let (app, id) = (self.clone(), inst.id);
             let job = self.jobs.start("instance.upload", Some(id), move |ctx| {
                 let r = app.engine.upload_pending(id, false, ctx);

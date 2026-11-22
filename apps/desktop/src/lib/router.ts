@@ -1,13 +1,19 @@
 import { useSyncExternalStore } from "react";
 
+export type StorageProviderTab = "cloud" | "google" | "local" | "r2";
+
 export type Route =
   | { name: "instances" }
   | { name: "instance"; id: string; tab: string | null }
   | { name: "cloud" }
   | { name: "activity" }
   | { name: "about" }
-  | { name: "settings" }
+  | { name: "settings"; provider?: StorageProviderTab }
   | { name: "setup" };
+
+function parseProvider(raw: string | undefined): StorageProviderTab | undefined {
+  return raw === "cloud" || raw === "google" || raw === "local" || raw === "r2" ? raw : undefined;
+}
 
 /** Hash routes work with any static file server and with the Tauri asset protocol. */
 export function parseRoute(hash: string): Route {
@@ -22,8 +28,10 @@ export function parseRoute(hash: string): Route {
       return { name: "activity" };
     case "about":
       return { name: "about" };
-    case "settings":
-      return { name: "settings" };
+    case "settings": {
+      const provider = parseProvider(second);
+      return provider ? { name: "settings", provider } : { name: "settings" };
+    }
     case "setup":
       return { name: "setup" };
     default:
@@ -37,6 +45,8 @@ export function href(r: Route): string {
       return "#/";
     case "instance":
       return `#/instance/${encodeURIComponent(r.id)}${r.tab ? `/${r.tab}` : ""}`;
+    case "settings":
+      return r.provider ? `#/settings/${r.provider}` : "#/settings";
     default:
       return `#/${r.name}`;
   }

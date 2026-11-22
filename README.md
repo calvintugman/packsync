@@ -19,7 +19,7 @@ Sync your [Prism Launcher](https://prismlauncher.org/) Minecraft modpacks across
 Download the latest build from [Releases](https://github.com/calvintugman/packsync/releases):
 
 - **Windows:** Extract the `.zip` into a permanent folder and run `packsync-desktop.exe`. *(Builds are currently unsigned, so Windows SmartScreen will show a warning on first launch.)*
-- **Linux:** Extract the `.tar.gz` and run `./install.sh`, or install the `.deb` package. Requires WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian/Ubuntu, `webkit2gtk-4.1` on Arch).
+- **Linux:** Extract the `.tar.gz` and run `./install.sh`, install the `.deb` package, or install from the AUR (`packsync-bin`, `PKGBUILD` in `packaging/aur/`). Requires WebKitGTK 4.1 (`libwebkit2gtk-4.1-0` on Debian/Ubuntu, `webkit2gtk-4.1` on Arch).
 
 ## Getting Started
 
@@ -29,7 +29,7 @@ Download the latest build from [Releases](https://github.com/calvintugman/packsy
 
 ## Storage & Privacy
 
-- **PackSync Cloud** encrypts your files locally (`XChaCha20-Poly1305`) before upload and runs on Cloudflare Workers, R2, and D1. Default limits are 5 GiB per account, 10,000 objects, and daily operation caps, with automatic cleanup for abandoned accounts. You can delete your cloud account and all stored data anytime from **Settings** or `packsync storage delete-account`.
+- **PackSync Cloud** encrypts your files locally (`XChaCha20-Poly1305`) before upload and runs on Cloudflare Workers, R2, and D1. Default limits are 10 GiB per account, 10,000 objects, and daily operation caps, with automatic cleanup for abandoned accounts. You can delete your cloud account and all stored data anytime from **Settings** or `packsync storage delete-account`.
 - See [PRIVACY.md](PRIVACY.md) for what the hosted service stores and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ## Building from Source

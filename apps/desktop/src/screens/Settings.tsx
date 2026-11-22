@@ -6,6 +6,7 @@ import { StorageSetup } from "../components/StorageSetup";
 import { GcDialog } from "../dialogs/GcDialog";
 import { formatBytes } from "../lib/format";
 import { href } from "../lib/router";
+import type { StorageProviderTab } from "../lib/router";
 import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Checkbox, Choice, Kv, Pill, TextInput } from "../ui/controls";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
@@ -56,10 +57,10 @@ function ThisComputer() {
   );
 }
 
-function CloudSection() {
+function CloudSection({ initialProvider }: { initialProvider?: StorageProviderTab }) {
   const store = useStore();
   const storage = useAppState((s) => s.storage);
-  const [changing, setChanging] = useState(false);
+  const [changing, setChanging] = useState(Boolean(initialProvider));
   const [disconnect, setDisconnect] = useState(false);
   const [revoke, setRevoke] = useState(true);
   const [test, setTest] = useState<StorageTest | null>(null);
@@ -100,7 +101,7 @@ function CloudSection() {
           </Button>
         ) : null}
       </div>
-      {changing ? <StorageSetup onConnected={() => setChanging(false)} /> : null}
+      {changing ? <StorageSetup initialMode={initialProvider} onConnected={() => setChanging(false)} /> : null}
       {!changing && storage?.kind === "hosted" && storage.connected ? <HostedSetup /> : null}
       {disconnect ? (
         <ConfirmDialog
@@ -409,7 +410,7 @@ function DiagnosticsSection() {
   );
 }
 
-export function SettingsScreen() {
+export function SettingsScreen({ provider }: { provider?: StorageProviderTab } = {}) {
   const settings = useAppState((s) => s.settings);
   const info = useAppState((s) => s.info);
   return (
@@ -418,7 +419,7 @@ export function SettingsScreen() {
         <h1>Settings</h1>
       </div>
       <ThisComputer />
-      <CloudSection />
+      <CloudSection key={provider ?? "default"} initialProvider={provider} />
       {settings ? (
         <LauncherSection
           key={`${settings.prism_executable}|${settings.prism_data_dirs.join()}`}

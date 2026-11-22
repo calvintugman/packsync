@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
-import type { ApiError } from "../api/errors";
+import { ApiError, isWorldTooLargeError } from "../api/errors";
 import type { InstanceStatus, SyncPhase } from "../api/types";
 import { describeLaunch, describeSync, describeUpload } from "../lib/describe";
 import { formatBytes, formatRelative, packLine, plural, sentence, worldsLine } from "../lib/format";
@@ -9,7 +9,8 @@ import { href, navigate } from "../lib/router";
 import { ConflictDialog } from "../dialogs/ConflictDialog";
 import { CrashDialog } from "../dialogs/CrashDialog";
 import { UnknownDialog } from "../dialogs/UnknownDialog";
-import { useAction, useStore } from "../state/context";
+import { UploadTooLargeDialog } from "../dialogs/UploadTooLargeDialog";
+import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Pill } from "../ui/controls";
 import { ErrorNote } from "../ui/ErrorNote";
 import { Stepper } from "../ui/Stepper";
@@ -17,18 +18,30 @@ import { useRunningJobs } from "./hooks";
 import { JobBar } from "./JobBar";
 
 /** Run "Sync now" and report the outcome; shared by the card and the detail page. */
-export function useSyncNow(inst: { id: string; name: string }, openConflict: () => void) {
+export function useSyncNow(
+  inst: { id: string; name: string },
+  openConflict: () => void,
+  onTooLarge?: (message: string) => void,
+) {
   const store = useStore();
   return useAction(async () => {
-    const r = await store.runJob("instance.sync", { instance: inst.id });
-    const o = describeSync(r);
-    if (r.reconcile.outcome === "conflict") {
-      openConflict(); // the dialog says it all; a toast on top of it would only be in the way
-    } else {
-      store.toast(o.tone === "danger" ? "error" : o.tone === "warn" ? "warn" : "success", o.text, inst.name);
+    try {
+      const r = await store.runJob("instance.sync", { instance: inst.id });
+      const o = describeSync(r);
+      if (r.reconcile.outcome === "conflict") {
+        openConflict(); // the dialog says it all; a toast on top of it would only be in the way
+      } else {
+        store.toast(o.tone === "danger" ? "error" : o.tone === "warn" ? "warn" : "success", o.text, inst.name);
+      }
+      await store.refreshInstances();
+      return r;
+    } catch (e) {
+      const err = ApiError.from(e);
+      if (isWorldTooLargeError(err, store.getState().storage?.kind)) {
+        onTooLarge?.(err.message);
+      }
+      throw err;
     }
-    await store.refreshInstances();
-    return r;
   });
 }
 
@@ -81,13 +94,21 @@ export function PlayError({
 }
 
 /** Upload what is waiting now, even if an earlier failure put a back-off in place: the person asked. */
-export function useUploadNow(inst: { id: string; name: string }) {
+export function useUploadNow(inst: { id: string; name: string }, onTooLarge?: (message: string) => void) {
   const store = useStore();
   return useAction(async () => {
-    const r = await store.runJob("instance.upload", { instance: inst.id, force: true });
-    const o = describeUpload(r);
-    store.toast(o.tone === "warn" ? "warn" : "success", o.text, inst.name);
-    await store.refreshInstances();
+    try {
+      const r = await store.runJob("instance.upload", { instance: inst.id, force: true });
+      const o = describeUpload(r);
+      store.toast(o.tone === "warn" ? "warn" : "success", o.text, inst.name);
+      await store.refreshInstances();
+    } catch (e) {
+      const err = ApiError.from(e);
+      if (isWorldTooLargeError(err, store.getState().storage?.kind)) {
+        onTooLarge?.(err.message);
+      }
+      throw err;
+    }
   });
 }
 
@@ -127,22 +148,45 @@ function accentWidth(phase: SyncPhase): number {
 
 export function InstanceCard({ inst }: { inst: InstanceStatus }) {
   const store = useStore();
-  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | null>(null);
+  const storage = useAppState((s) => s.storage);
+  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | "too_large" | null>(null);
+  const [tooLargeDetail, setTooLargeDetail] = useState<string | null>(null);
+  const openTooLarge = (detail?: string | null) => {
+    setTooLargeDetail(detail ?? null);
+    setDialog("too_large");
+  };
   const jobs = useRunningJobs(inst.id);
-  const sync = useSyncNow(inst, () => setDialog("conflict"));
+  const sync = useSyncNow(inst, () => setDialog("conflict"), openTooLarge);
   const play = usePlay(inst);
-  const upload = useUploadNow(inst);
+  const upload = useUploadNow(inst, openTooLarge);
   const resetSync = useAction(async () => {
     await store.call("instances.disable", { instance: inst.id });
     await Promise.all([store.refreshInstances(), store.refreshDiscovered()]);
     store.toast("info", "Removed old sync link. Start syncing it again under your current cloud below.", inst.name);
   });
-  const mismatchAction = (err: ApiError | null) =>
-    err && err.code === "config" && err.message.includes("synced with a different storage") ? (
-      <Button size="sm" variant="primary" busy={resetSync.busy} onClick={() => void resetSync.run()}>
-        Remove old sync link
-      </Button>
-    ) : null;
+  const errorActions = (err: ApiError | null) => {
+    if (!err) return null;
+    if (err.code === "config" && err.message.includes("synced with a different storage")) {
+      return (
+        <Button size="sm" variant="primary" busy={resetSync.busy} onClick={() => void resetSync.run()}>
+          Remove old sync link
+        </Button>
+      );
+    }
+    if (err.code === "quota_exceeded") {
+      return (
+        <Button size="sm" variant="primary" onClick={() => openTooLarge(err.message)}>
+          Upload options…
+        </Button>
+      );
+    }
+    return null;
+  };
+  const lastErrorTooLarge = Boolean(
+    inst.last_error &&
+      (/our servers|server limit|too large/i.test(inst.last_error) ||
+        (storage?.kind === "hosted" && /quota|full/i.test(inst.last_error))),
+  );
   const info = phaseInfo(inst.phase);
   const busy = jobs.length > 0 || sync.busy || play.busy || upload.busy || resetSync.busy;
   const playing = jobs.find((j) => j.method === "launch.start");
@@ -202,7 +246,17 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
       ) : null}
 
       {(inst.phase === "upload_pending" || inst.phase === "local_snapshot_complete") && inst.last_error && !sync.error && !upload.error ? (
-        <Banner tone="warn" title="The last upload did not finish">
+        <Banner
+          tone="warn"
+          title={lastErrorTooLarge ? "World couldn't be uploaded to our servers" : "The last upload did not finish"}
+          actions={
+            lastErrorTooLarge ? (
+              <Button size="sm" variant="primary" onClick={() => openTooLarge(inst.last_error)}>
+                Upload options…
+              </Button>
+            ) : undefined
+          }
+        >
           {sentence(inst.last_error)}
           {inst.next_retry_ms ? ` It will retry ${formatRelative(inst.next_retry_ms)}.` : ""}
         </Banner>
@@ -233,7 +287,7 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
           instanceId={inst.id}
           onRetry={() => void sync.run()}
           onSignIn={() => navigate({ name: "settings" })}
-          actions={mismatchAction(sync.error)}
+          actions={errorActions(sync.error)}
         />
       ) : null}
       {upload.error ? (
@@ -242,10 +296,10 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
           instanceId={inst.id}
           onRetry={() => void upload.run()}
           onSignIn={() => navigate({ name: "settings" })}
-          actions={mismatchAction(upload.error)}
+          actions={errorActions(upload.error)}
         />
       ) : null}
-      <PlayError error={play.error} play={play} inst={inst} extraActions={mismatchAction(play.error)} />
+      <PlayError error={play.error} play={play} inst={inst} extraActions={errorActions(play.error)} />
 
       <div className="row wrap">
         <Button
@@ -278,6 +332,9 @@ export function InstanceCard({ inst }: { inst: InstanceStatus }) {
       {dialog === "conflict" ? <ConflictDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "crash" ? <CrashDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "unknown" ? <UnknownDialog inst={inst} onClose={() => setDialog(null)} /> : null}
+      {dialog === "too_large" ? (
+        <UploadTooLargeDialog instanceName={inst.name} detail={tooLargeDetail} onClose={() => setDialog(null)} />
+      ) : null}
     </article>
   );
 }

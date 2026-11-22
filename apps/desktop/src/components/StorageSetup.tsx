@@ -27,13 +27,19 @@ function initialMode(kind: string | undefined): Mode {
  * Choose where the worlds live: PackSync Cloud (Minecraft sign-in) first, plus clean switcher options for
  * Google Drive, a synced folder on this computer, or Cloudflare R2.
  */
-export function StorageSetup({ onConnected }: { onConnected?: (s: StorageStatus) => void }) {
+export function StorageSetup({
+  onConnected,
+  initialMode: requestedMode,
+}: {
+  onConnected?: (s: StorageStatus) => void;
+  initialMode?: Mode;
+}) {
   const store = useStore();
   const storage = useAppState((s) => s.storage);
   const settings = useAppState((s) => s.settings);
   const info = useAppState((s) => s.info);
 
-  const [mode, setMode] = useState<Mode>(() => initialMode(storage?.kind));
+  const [mode, setMode] = useState<Mode>(() => requestedMode ?? initialMode(storage?.kind));
   const [space, setSpace] = useState<Space>(storage?.space === "app_data" ? "app_data" : "visible_folder");
   const [clientFile, setClientFile] = useState(settings?.google_client_file ?? "");
   const [needsClient, setNeedsClient] = useState(false);

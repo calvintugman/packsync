@@ -80,7 +80,7 @@ export function settings(over: Partial<Settings> = {}): Settings {
 
 export function appInfo(over: Partial<AppInfo> = {}): AppInfo {
   return {
-    version: "0.2.0",
+    version: "0.2.1",
     os: "linux",
     arch: "x86_64",
     paths: { config: "/home/me/.config/packsync", state: "/home/me/.local/state/packsync" },

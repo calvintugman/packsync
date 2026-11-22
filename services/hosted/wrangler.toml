@@ -19,14 +19,10 @@ database_name = "packsync-hosted"
 database_id = "432232b2-d537-4696-a68c-af0286074698"
 
 [vars]
-# space each account may use (bytes): 5 GiB
-ACCOUNT_QUOTA_BYTES = "5368709120"
+# space each account may use (bytes): 10 GiB
+ACCOUNT_QUOTA_BYTES = "10737418240"
 # space all accounts together may use (bytes): 200 GiB. Uploads beyond it are refused.
 TOTAL_QUOTA_BYTES = "214748364800"
-# new accounts per network address per day
-REGISTRATIONS_PER_DAY = "2"
-# new accounts across the entire service per day
-GLOBAL_REGISTRATIONS_PER_DAY = "40"
 # largest single upload (bytes); Workers accept request bodies up to 100 MB
 MAX_OBJECT_BYTES = "90000000"
 # maximum stored objects per account

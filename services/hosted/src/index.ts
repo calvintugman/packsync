@@ -38,7 +38,7 @@ export interface Env {
   DB: D1Database;
   ACCOUNT_QUOTA_BYTES: string;
   TOTAL_QUOTA_BYTES: string;
-  REGISTRATIONS_PER_DAY: string;
+  REGISTRATIONS_PER_DAY?: string;
   GLOBAL_REGISTRATIONS_PER_DAY?: string;
   MAX_OBJECT_BYTES: string;
   MAX_OBJECTS_PER_ACCOUNT?: string;
@@ -104,6 +104,16 @@ function num(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+function optionalLimit(v: string | undefined): number | null {
+  if (v === undefined || v.trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function defaultAccountQuota(env: Env): number {
+  return num(env.ACCOUNT_QUOTA_BYTES, 10 * 2 ** 30);
+}
+
 function randomId(bytes: number, alphabet = "abcdefghijklmnopqrstuvwxyz234567"): string {
   const b = crypto.getRandomValues(new Uint8Array(bytes));
   return Array.from(b, (x) => alphabet[x % alphabet.length]).join("");
@@ -161,20 +171,24 @@ async function takeRateSlot(env: Env, bucket: string, limit: number): Promise<bo
 }
 
 async function enforceRegistrationLimits(req: Request, env: Env): Promise<void> {
-  const subnet = clientSubnet(req);
-  const ipHash = await sha256Hex(`packsync-registration:${subnet}`);
-  const perSubnetLimit = num(env.REGISTRATIONS_PER_DAY, 2);
-  if (!(await takeRateSlot(env, ipHash, perSubnetLimit))) {
-    fail(429, "too_many_accounts", "too many new accounts from this network today; try again tomorrow", {
-      "retry-after": "3600",
-    });
+  const perSubnetLimit = optionalLimit(env.REGISTRATIONS_PER_DAY);
+  if (perSubnetLimit !== null) {
+    const subnet = clientSubnet(req);
+    const ipHash = await sha256Hex(`packsync-registration:${subnet}`);
+    if (!(await takeRateSlot(env, ipHash, perSubnetLimit))) {
+      fail(429, "too_many_accounts", "too many new accounts from this network today; try again tomorrow", {
+        "retry-after": "3600",
+      });
+    }
   }
-  const globalKey = await sha256Hex("packsync-global-registration");
-  const globalLimit = num(env.GLOBAL_REGISTRATIONS_PER_DAY, 40);
-  if (!(await takeRateSlot(env, globalKey, globalLimit))) {
-    fail(429, "too_many_accounts", "daily account registration limit reached; try again tomorrow", {
-      "retry-after": "3600",
-    });
+  const globalLimit = optionalLimit(env.GLOBAL_REGISTRATIONS_PER_DAY);
+  if (globalLimit !== null) {
+    const globalKey = await sha256Hex("packsync-global-registration");
+    if (!(await takeRateSlot(env, globalKey, globalLimit))) {
+      fail(429, "too_many_accounts", "daily account registration limit reached; try again tomorrow", {
+        "retry-after": "3600",
+      });
+    }
   }
 }
 
@@ -248,9 +262,18 @@ async function authenticate(req: Request, env: Env): Promise<Account> {
     sessionLastSeen = sess.last_seen_ms;
   }
 
+  const effectiveQuota = Math.max(row.quota, defaultAccountQuota(env));
   const now = Date.now();
   const updates: D1PreparedStatement[] = [];
-  if (now - row.last_seen_ms > DAY_MS) {
+  if (row.quota < effectiveQuota) {
+    updates.push(
+      env.DB.prepare("UPDATE accounts SET quota = MAX(quota, ?2), last_seen_ms = ?3 WHERE id = ?1").bind(
+        row.id,
+        effectiveQuota,
+        now,
+      ),
+    );
+  } else if (now - row.last_seen_ms > DAY_MS) {
     updates.push(env.DB.prepare("UPDATE accounts SET last_seen_ms = ?2 WHERE id = ?1").bind(row.id, now));
   }
   if (matchedSession && now - sessionLastSeen > DAY_MS) {
@@ -265,7 +288,7 @@ async function authenticate(req: Request, env: Env): Promise<Account> {
   if (updates.length === 1) await updates[0].run();
   else if (updates.length > 1) await env.DB.batch(updates);
 
-  return { id: row.id, used: row.used, quota: row.quota };
+  return { id: row.id, used: row.used, quota: effectiveQuota };
 }
 
 // ------------------------------------------------------------------------------- Microsoft auth
@@ -523,9 +546,14 @@ async function authMicrosoft(req: Request, env: Env): Promise<Response> {
     if (!existing.wrapped_key) {
       fail(500, "vault_error", "account is missing a wrapped encryption key");
     }
+    const effectiveQuota = Math.max(existing.quota, defaultAccountQuota(env));
     const masterKey = await unwrapMasterKey(vaultSecret, existing.id, existing.wrapped_key);
     await env.DB.batch([
-      env.DB.prepare("UPDATE accounts SET last_seen_ms = ?2 WHERE id = ?1").bind(existing.id, now),
+      env.DB.prepare("UPDATE accounts SET last_seen_ms = ?2, quota = MAX(quota, ?3) WHERE id = ?1").bind(
+        existing.id,
+        now,
+        effectiveQuota,
+      ),
       env.DB.prepare(
         "INSERT INTO sessions (account, token_hash, created_ms, last_seen_ms) VALUES (?1, ?2, ?3, ?3)",
       ).bind(existing.id, tokenHash, now),
@@ -545,7 +573,7 @@ async function authMicrosoft(req: Request, env: Env): Promise<Response> {
         account: existing.id,
         token,
         master_key: b64url(masterKey),
-        quota: existing.quota,
+        quota: effectiveQuota,
         display_name: displayName,
         created: false,
       },
@@ -559,7 +587,7 @@ async function authMicrosoft(req: Request, env: Env): Promise<Response> {
   const id = randomId(26);
   const masterKey = crypto.getRandomValues(new Uint8Array(32));
   const wrappedKey = await wrapMasterKey(vaultSecret, id, masterKey);
-  const quota = num(env.ACCOUNT_QUOTA_BYTES, 5 * 2 ** 30);
+  const quota = defaultAccountQuota(env);
 
   try {
     await env.DB.batch([
@@ -606,7 +634,7 @@ async function createAccount(req: Request, env: Env): Promise<Response> {
 
   const id = randomId(26);
   const token = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const quota = num(env.ACCOUNT_QUOTA_BYTES, 5 * 2 ** 30);
+  const quota = defaultAccountQuota(env);
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare(
@@ -727,14 +755,22 @@ async function reserveSpace(env: Env, acct: Account, reserved: number): Promise<
   if ((total?.t ?? 0) + reserved > num(env.TOTAL_QUOTA_BYTES, 200 * 2 ** 30)) {
     fail(507, "service_full", "the PackSync service is full; ask whoever runs it for more space");
   }
-  const r = await env.DB.prepare("UPDATE accounts SET used = used + ?2 WHERE id = ?1 AND used + ?2 <= quota")
-    .bind(acct.id, reserved)
+  const effectiveQuota = Math.max(acct.quota, defaultAccountQuota(env));
+  const r = await env.DB.prepare(
+    "UPDATE accounts SET used = used + ?2, quota = MAX(quota, ?3) WHERE id = ?1 AND used + ?2 <= MAX(quota, ?3)",
+  )
+    .bind(acct.id, reserved, effectiveQuota)
     .run();
   if (r.meta.changes === 0) {
     const cur = await env.DB.prepare("SELECT used, quota FROM accounts WHERE id = ?1")
       .bind(acct.id)
       .first<{ used: number; quota: number }>();
-    fail(507, "quota", `this account's space is full (${cur?.used ?? acct.used} of ${cur?.quota ?? acct.quota} bytes used)`);
+    const quota = Math.max(cur?.quota ?? acct.quota, effectiveQuota);
+    fail(
+      507,
+      "quota",
+      `this account's space is full and the world could not be uploaded to our servers (${cur?.used ?? acct.used} of ${quota} bytes used)`,
+    );
   }
 }
 

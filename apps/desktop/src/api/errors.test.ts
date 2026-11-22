@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError, describeError, isTransient } from "./errors";
+import { ApiError, describeError, isTransient, isWorldTooLargeError } from "./errors";
 
 describe("ApiError.from", () => {
   it("takes the engine's error view", () => {
@@ -27,8 +27,17 @@ describe("describeError", () => {
   it("gives each important code a title a person understands", () => {
     expect(describeError({ code: "offline", message: "m" }).title).toBe("Can't reach the cloud");
     expect(describeError({ code: "quota_exceeded", message: "m" }).title).toBe("Google Drive is full");
+    expect(
+      describeError({ code: "quota_exceeded", message: "this world is too large and could not be uploaded to our servers" }).title,
+    ).toBe("World couldn't be uploaded to our servers");
     expect(describeError({ code: "no_space", message: "m" }).title).toBe("Not enough disk space");
     expect(describeError({ code: "weird_new_code", message: "m" }).title).toBe("Something went wrong");
+  });
+  it("recognizes oversized world errors on hosted storage or server-limit messages", () => {
+    expect(isWorldTooLargeError({ code: "quota_exceeded", message: "full" }, "hosted")).toBe(true);
+    expect(isWorldTooLargeError({ code: "quota_exceeded", message: "this world is too large for our servers" }, "local")).toBe(true);
+    expect(isWorldTooLargeError({ code: "quota_exceeded", message: "your Google Drive is full" }, "google")).toBe(false);
+    expect(isWorldTooLargeError({ code: "offline", message: "our servers" }, "hosted")).toBe(false);
   });
   it("offers the next step where there is one", () => {
     expect(describeError({ code: "auth_required", message: "m" }).action).toBe("sign_in");

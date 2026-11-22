@@ -125,4 +125,39 @@ describe("InstanceCard", () => {
     expect(t.calls.filter((c) => c.method === "launch.start")[1]?.params).toEqual({ instance: inst.id, options: { skip_sync: true } });
     await waitFor(() => expect(store.getState().toasts.some((x) => x.message.includes("Played offline"))).toBe(true));
   });
+
+  it("cancels and opens the upload alternatives dialog when a world is too large for our servers", async () => {
+    const u = userEvent.setup();
+    const inst = instance();
+    const t = baseTransport({
+      instances: [inst],
+      storage: {
+        kind: "hosted",
+        connected: true,
+        detail: "PackSync cloud, end-to-end encrypted",
+        account: "acct_abc",
+        space: null,
+        needs_reconnect: false,
+        oauth_client_configured: false,
+        oauth_client_source: null,
+        credential_store: null,
+        problem: null,
+        setup_hint: null,
+      },
+    });
+    t.on("instance.sync", () => {
+      throw Object.assign(new Error("x"), {
+        code: "quota_exceeded",
+        message: "this world is too large and could not be uploaded to our servers (12.00 GB needed, server limit is 10.00 GB)",
+        advice: "Your cloud storage is full or this world is too large for our servers.",
+        exit_code: 20,
+      });
+    });
+    await renderWithStore(<InstanceCard inst={inst} />, t);
+    await u.click(screen.getByRole("button", { name: "Sync now" }));
+    const dialog = await screen.findByRole("dialog", { name: "World couldn't be uploaded to our servers" });
+    expect(within(dialog).getByRole("button", { name: "Set up Google Drive" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Set up Cloudflare R2" })).toBeInTheDocument();
+    expect(within(dialog).getAllByText("Medium difficulty")).toHaveLength(2);
+  });
 });

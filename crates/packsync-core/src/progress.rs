@@ -11,17 +11,25 @@ use crate::ids::{InstanceId, JobId};
 
 /// Cooperative cancellation flag. Cheap to clone; all clones share state.
 #[derive(Clone, Default, Debug)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken {
+    flag: Arc<AtomicBool>,
+    parent: Option<Arc<CancelToken>>,
+}
 
 impl CancelToken {
     pub fn new() -> Self {
         Self::default()
     }
+    /// A child token that cancels when either itself or its parent is cancelled.
+    /// Cancelling the child does not cancel the parent.
+    pub fn child(&self) -> Self {
+        Self { flag: Arc::new(AtomicBool::new(false)), parent: Some(Arc::new(self.clone())) }
+    }
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.flag.store(true, Ordering::SeqCst);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.flag.load(Ordering::SeqCst) || self.parent.as_ref().is_some_and(|p| p.is_cancelled())
     }
 }
 
@@ -208,6 +216,13 @@ impl OpCtx {
     pub fn with_trace(mut self, trace: Arc<Trace>) -> Self {
         self.trace = Some(trace);
         self
+    }
+    /// A child context with its own cancel token (cancelling the parent cancels the child,
+    /// but cancelling the child does not cancel the parent).
+    pub fn child(&self) -> Self {
+        let mut c = self.clone();
+        c.cancel = self.cancel.child();
+        c
     }
     /// Start a named step of the trace (no-op without `--explain`). Phase changes are steps too.
     pub fn mark(&self, step: impl Into<String>) {

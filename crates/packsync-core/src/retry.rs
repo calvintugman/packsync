@@ -85,6 +85,9 @@ impl RetryPolicy {
 
     /// Whether `e`, after the given (0-based) failed attempt, deserves another one.
     pub fn may_retry(&self, e: &StorageError, attempt: u32) -> bool {
+        if matches!(e, StorageError::RateLimited { retry_after: Some(ra) } if *ra > self.max_delay) {
+            return false;
+        }
         let limit = match e {
             StorageError::Offline(_) => self.offline_attempts.min(self.max_attempts),
             _ => self.max_attempts,
@@ -237,5 +240,18 @@ mod tests {
         ctx.cancel.cancel();
         let r: StorageResult<()> = RetryPolicy::network().run(&RecordingSleeper::default(), &ctx, "t", |_| Ok(()));
         assert!(matches!(r, Err(StorageError::Cancelled)));
+    }
+
+    #[test]
+    fn long_retry_after_fails_immediately_instead_of_stalling() {
+        let sleeper = RecordingSleeper::default();
+        let calls = AtomicU32::new(0);
+        let r: StorageResult<()> = RetryPolicy::network().run(&sleeper, &OpCtx::detached(), "t", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(StorageError::RateLimited { retry_after: Some(Duration::from_secs(3600)) })
+        });
+        assert!(matches!(r, Err(StorageError::RateLimited { .. })));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(sleeper.slept.lock().is_empty());
     }
 }

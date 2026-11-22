@@ -293,7 +293,7 @@ pub(crate) fn classify(r: &Reply, what: &str) -> StorageError {
         403 => StorageError::Permission(detail),
         404 => StorageError::NotFound(detail),
         409 | 412 => StorageError::Conflict(detail),
-        413 => StorageError::Other(detail),
+        413 => StorageError::QuotaExceeded(r.message()),
         400 if r.message().contains("bad_digest") => StorageError::Corrupt(detail),
         _ => StorageError::Other(detail),
     }
@@ -576,7 +576,10 @@ impl Storage for HostedStorage {
             return Err(StorageError::Cancelled);
         }
         if src.len() > MAX_PUT {
-            return Err(StorageError::Other(format!("{key}: {} bytes exceed the single-upload limit", src.len())));
+            return Err(StorageError::QuotaExceeded(format!(
+                "{key}: {} bytes exceed the server's single-upload limit",
+                src.len()
+            )));
         }
         let data: Vec<u8> = match &src {
             PutSource::Bytes(b) => b.to_vec(),

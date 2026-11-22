@@ -3006,7 +3006,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3069,7 +3069,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "packsync-app",
  "packsync-core",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-drive"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "fastrand",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-hosted"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "blake3",
@@ -3128,7 +3128,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-prism"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dunce",
  "packsync-core",
@@ -3143,7 +3143,7 @@ dependencies = [
 
 [[package]]
 name = "packsync-s3"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.23.1",
  "hex",

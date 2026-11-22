@@ -1005,6 +1005,15 @@ impl Db {
             Ok(())
         })
     }
+    pub fn staged_record_permanent_failure(&self, id: Hash, code: &str, msg: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE staged_packs SET attempts=attempts+1, last_error=?2, last_error_code=?3, next_attempt_ms=NULL WHERE id=?1",
+                params![id.0.to_vec(), msg, code],
+            )?;
+            Ok(())
+        })
+    }
     pub fn staged_remove_snapshot(&self, snapshot: SnapshotId) -> Result<()> {
         self.with(|c| {
             c.execute("DELETE FROM staged_packs WHERE snapshot_id=?1", [snapshot.to_hex()])?;

@@ -4,11 +4,13 @@ import { JobBar } from "../components/JobBar";
 import { PreviewView } from "../components/PreviewView";
 import { asDecisions, proposals, UnknownChoices } from "../components/UnknownChoices";
 import type { Choices } from "../components/UnknownChoices";
-import { describeError } from "../api/errors";
+import { describeError, isWorldTooLargeError } from "../api/errors";
+import { navigate } from "../lib/router";
 import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, Checkbox, TextArea } from "../ui/controls";
 import { Dialog } from "../ui/Dialog";
 import { ErrorNote } from "../ui/ErrorNote";
+import { UploadTooLargeDialog } from "./UploadTooLargeDialog";
 
 /** Preview what an instance would sync, then start syncing it. */
 export function EnableDialog({
@@ -28,6 +30,7 @@ export function EnableDialog({
   const [jobId, setJobId] = useState<string | null>(null);
   const [withHooks, setWithHooks] = useState(true);
   const [choices, setChoices] = useState<Choices>({});
+  const [tooLarge, setTooLarge] = useState<{ instance: InstanceId; message: string } | null>(null);
 
   const load = useAction(async (overrides: string) => {
     const r = await store.runJob("instances.preview", { root, launcher: "prism", rules_overrides: overrides }, { onStart: setJobId });
@@ -40,9 +43,10 @@ export function EnableDialog({
       { path: root, launcher: "prism", rules_overrides: rules, decisions: asDecisions(choices), upload: Boolean(storage?.connected) },
       { onStart: setJobId },
     );
-    if (res.upload_error) {
+    const uploadTooLarge = Boolean(res.upload_error && isWorldTooLargeError(res.upload_error, storage?.kind));
+    if (res.upload_error && !uploadTooLarge) {
       store.toast("warn", describeError(res.upload_error).message, "Saved here, not uploaded yet");
-    } else {
+    } else if (!uploadTooLarge) {
       store.toast("success", "Syncing is on. The first snapshot is saved.");
     }
     if (withHooks) {
@@ -61,6 +65,10 @@ export function EnableDialog({
       }
     }
     await store.refreshInstances();
+    if (uploadTooLarge && res.upload_error) {
+      setTooLarge({ instance: res.outcome.instance, message: res.upload_error.message });
+      return;
+    }
     onEnabled(res.outcome.instance);
   });
 
@@ -72,6 +80,23 @@ export function EnableDialog({
   }, [load]);
 
   const busy = load.busy || enable.busy;
+  if (tooLarge) {
+    return (
+      <UploadTooLargeDialog
+        instanceName={preview?.name}
+        detail={tooLarge.message}
+        onClose={() => onEnabled(tooLarge.instance)}
+        onChooseProvider={(provider) => {
+          onClose();
+          navigate({ name: "settings", provider });
+        }}
+        onCancelUpload={() => {
+          store.toast("info", "Upload cancelled. Your local world is safe on this computer.", preview?.name);
+          onEnabled(tooLarge.instance);
+        }}
+      />
+    );
+  }
   return (
     <Dialog
       title="Start syncing this instance"

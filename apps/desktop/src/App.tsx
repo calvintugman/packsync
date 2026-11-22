@@ -94,7 +94,7 @@ function Screen({ route }: { route: Route }): ReactNode {
     case "about":
       return <AboutScreen />;
     case "settings":
-      return <SettingsScreen />;
+      return <SettingsScreen provider={route.provider} />;
     case "setup":
       return <SetupScreen />;
   }

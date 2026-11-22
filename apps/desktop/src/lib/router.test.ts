@@ -9,6 +9,8 @@ describe("routes", () => {
     expect(parseRoute("#/activity")).toEqual({ name: "activity" });
     expect(parseRoute("#/about")).toEqual({ name: "about" });
     expect(parseRoute("#/settings")).toEqual({ name: "settings" });
+    expect(parseRoute("#/settings/google")).toEqual({ name: "settings", provider: "google" });
+    expect(parseRoute("#/settings/r2")).toEqual({ name: "settings", provider: "r2" });
     expect(parseRoute("#/setup")).toEqual({ name: "setup" });
     expect(parseRoute("#/instance/abc")).toEqual({ name: "instance", id: "abc", tab: null });
     expect(parseRoute("#/instance/abc/hooks")).toEqual({ name: "instance", id: "abc", tab: "hooks" });

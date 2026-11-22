@@ -247,7 +247,7 @@ impl Error {
                 "The granted cloud permission is too narrow for this operation. Disconnect and reconnect in Settings."
             }
             QuotaExceeded => {
-                "Your cloud storage is full. Free up space, prune old snapshots with `packsync gc`, or increase quota; local data is unaffected and the upload will resume."
+                "Your cloud storage is full or this world is too large for our servers. The upload was cancelled and local data is unaffected. Free up space, prune old snapshots with `packsync gc`, or switch to your own Google Drive or Cloudflare R2 in Settings."
             }
             RateLimited => {
                 "The cloud service is rate-limiting requests. PackSync backs off automatically; try again in a few minutes."

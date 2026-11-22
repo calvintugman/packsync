@@ -1,0 +1,37 @@
+# Maintainer: Calvin Tugman <122490332+calvintugman@users.noreply.github.com>
+pkgname=packsync-bin
+pkgver=0.2.1
+pkgrel=1
+pkgdesc="Steam-Cloud-style sync for Prism Launcher modpacks (mods, configs, and worlds)"
+arch=('x86_64')
+url="https://github.com/calvintugman/packsync"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'librsvg' 'openssl' 'hicolor-icon-theme')
+optdepends=('prismlauncher: Prism Launcher integration')
+provides=('packsync')
+conflicts=('packsync')
+options=('!strip')
+source=("${pkgname}-${pkgver}.tar.gz::${url}/releases/download/v${pkgver}/packsync-${pkgver}-linux-x86_64.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  local src="${srcdir}/packsync-${pkgver}-linux-x86_64"
+  install -Dm755 "${src}/packsync" "${pkgdir}/usr/bin/packsync"
+  install -Dm755 "${src}/packsync-desktop" "${pkgdir}/usr/bin/packsync-desktop"
+  install -Dm644 "${src}/icon-128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/packsync.png"
+  install -Dm644 "${src}/icon-256.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/packsync.png"
+  install -Dm644 "${src}/LICENSE.txt" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -dm755 "${pkgdir}/usr/share/applications"
+  cat > "${pkgdir}/usr/share/applications/packsync.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=PackSync
+GenericName=Modpack sync
+Comment=Continue your Minecraft modpack on any computer
+Exec=/usr/bin/packsync-desktop
+Icon=packsync
+Terminal=false
+Categories=Game;
+Keywords=minecraft;prism;modpack;sync;
+EOF
+}

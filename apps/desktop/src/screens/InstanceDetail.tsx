@@ -6,10 +6,11 @@ import { PlayError, usePlay, useSyncNow, useUploadNow } from "../components/Inst
 import { ConflictDialog } from "../dialogs/ConflictDialog";
 import { CrashDialog } from "../dialogs/CrashDialog";
 import { UnknownDialog } from "../dialogs/UnknownDialog";
+import { UploadTooLargeDialog } from "../dialogs/UploadTooLargeDialog";
 import { formatBytes, formatDateTime, formatRelative, packLine, plural, sentence, worldName } from "../lib/format";
 import { canPlay, phaseInfo } from "../lib/phases";
 import { href, navigate } from "../lib/router";
-import { useAction, useStore } from "../state/context";
+import { useAction, useAppState, useStore } from "../state/context";
 import { Banner, Button, EmptyState, Kv, Pill } from "../ui/controls";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { ErrorNote } from "../ui/ErrorNote";
@@ -70,18 +71,24 @@ function Changes({ inst }: { inst: InstanceStatus }) {
 
 export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | null }) {
   const store = useStore();
+  const storage = useAppState((s) => s.storage);
   const inst = useInstance(id);
   const revision = useRevision(id);
   const jobs = useRunningJobs(id);
-  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | "disable" | null>(null);
-  const sync = useSyncNow({ id, name: inst?.name ?? "" }, () => setDialog("conflict"));
+  const [dialog, setDialog] = useState<"conflict" | "crash" | "unknown" | "disable" | "too_large" | null>(null);
+  const [tooLargeDetail, setTooLargeDetail] = useState<string | null>(null);
+  const openTooLarge = (detail?: string | null) => {
+    setTooLargeDetail(detail ?? null);
+    setDialog("too_large");
+  };
+  const sync = useSyncNow({ id, name: inst?.name ?? "" }, () => setDialog("conflict"), openTooLarge);
   const play = usePlay({ id, name: inst?.name ?? "" });
   const snapshot = useAction(async () => {
     const r = await store.runJob("instance.snapshot", { instance: id });
     store.toast("success", r.result.result === "created" ? "Snapshot saved." : "Nothing changed since the last snapshot.");
     await store.refreshInstances();
   });
-  const upload = useUploadNow({ id, name: inst?.name ?? "" });
+  const upload = useUploadNow({ id, name: inst?.name ?? "" }, openTooLarge);
 
   if (!inst) {
     return (
@@ -100,6 +107,17 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
   const busy = jobs.length > 0 || sync.busy || play.busy || snapshot.busy || upload.busy;
   const playing = jobs.find((j) => j.method === "launch.start");
   const activeTab = TABS.some((t) => t.id === tab) ? (tab as string) : "history";
+  const lastErrorTooLarge = Boolean(
+    inst.last_error &&
+      (/our servers|server limit|too large/i.test(inst.last_error) ||
+        (storage?.kind === "hosted" && /quota|full/i.test(inst.last_error))),
+  );
+  const quotaAction = (err: { code: string; message: string } | null) =>
+    err?.code === "quota_exceeded" ? (
+      <Button size="sm" variant="primary" onClick={() => openTooLarge(err.message)}>
+        Upload options…
+      </Button>
+    ) : null;
 
   return (
     <div className="page">
@@ -138,10 +156,26 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
       {jobs.map((j) => (
         <JobBar key={j.id} jobId={j.id} cancellable={j.method !== "launch.start"} />
       ))}
-      {sync.error ? <ErrorNote error={sync.error} instanceId={id} onRetry={() => void sync.run()} onSignIn={() => navigate({ name: "settings" })} /> : null}
-      <PlayError error={play.error} play={play} inst={{ id }} />
+      {sync.error ? (
+        <ErrorNote
+          error={sync.error}
+          instanceId={id}
+          onRetry={() => void sync.run()}
+          onSignIn={() => navigate({ name: "settings" })}
+          actions={quotaAction(sync.error)}
+        />
+      ) : null}
+      <PlayError error={play.error} play={play} inst={{ id }} extraActions={quotaAction(play.error)} />
       {snapshot.error ? <ErrorNote error={snapshot.error} instanceId={id} /> : null}
-      {upload.error ? <ErrorNote error={upload.error} instanceId={id} onRetry={() => void upload.run()} onSignIn={() => navigate({ name: "settings" })} /> : null}
+      {upload.error ? (
+        <ErrorNote
+          error={upload.error}
+          instanceId={id}
+          onRetry={() => void upload.run()}
+          onSignIn={() => navigate({ name: "settings" })}
+          actions={quotaAction(upload.error)}
+        />
+      ) : null}
 
       {inst.unknown.length > 0 ? (
         <Banner
@@ -173,7 +207,17 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
         </Banner>
       ) : null}
       {inst.last_error && !sync.error && !upload.error ? (
-        <Banner tone="warn" title="The last upload did not finish">
+        <Banner
+          tone="warn"
+          title={lastErrorTooLarge ? "World couldn't be uploaded to our servers" : "The last upload did not finish"}
+          actions={
+            lastErrorTooLarge ? (
+              <Button size="sm" variant="primary" onClick={() => openTooLarge(inst.last_error)}>
+                Upload options…
+              </Button>
+            ) : undefined
+          }
+        >
           {sentence(inst.last_error)}
           {inst.next_retry_ms ? ` It will retry ${formatRelative(inst.next_retry_ms)}.` : ""}
         </Banner>
@@ -216,6 +260,9 @@ export function InstanceDetailScreen({ id, tab }: { id: string; tab: string | nu
       {dialog === "conflict" ? <ConflictDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "crash" ? <CrashDialog instance={inst} onClose={() => setDialog(null)} /> : null}
       {dialog === "unknown" ? <UnknownDialog inst={inst} onClose={() => setDialog(null)} /> : null}
+      {dialog === "too_large" ? (
+        <UploadTooLargeDialog instanceName={inst.name} detail={tooLargeDetail} onClose={() => setDialog(null)} />
+      ) : null}
       {dialog === "disable" ? (
         <ConfirmDialog
           title={`Stop syncing ${inst.name}?`}

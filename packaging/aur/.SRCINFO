@@ -1,0 +1,21 @@
+pkgbase = packsync-bin
+	pkgdesc = Steam-Cloud-style sync for Prism Launcher modpacks (mods, configs, and worlds)
+	pkgver = 0.2.1
+	pkgrel = 1
+	url = https://github.com/calvintugman/packsync
+	arch = x86_64
+	license = MIT
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libsoup3
+	depends = librsvg
+	depends = openssl
+	depends = hicolor-icon-theme
+	optdepends = prismlauncher: Prism Launcher integration
+	provides = packsync
+	conflicts = packsync
+	options = !strip
+	source = packsync-bin-0.2.1.tar.gz::https://github.com/calvintugman/packsync/releases/download/v0.2.1/packsync-0.2.1-linux-x86_64.tar.gz
+	sha256sums = SKIP
+
+pkgname = packsync-bin

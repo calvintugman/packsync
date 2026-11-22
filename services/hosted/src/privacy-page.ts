@@ -45,7 +45,7 @@ export const PRIVACY_PAGE = `<!doctype html>
 
   <h2>4. Acceptable use &amp; service limits</h2>
   <ul>
-    <li>Default storage quota is <strong>5 GiB per account</strong>, with up to <strong>10,000 objects</strong>, <strong>3,000 writes/listings per day</strong>, and <strong>25,000 reads per day</strong>, plus an overall service storage ceiling to keep the free hosted tier sustainable.</li>
+    <li>Default storage quota is <strong>10 GiB per account</strong>, with up to <strong>10,000 objects</strong>, <strong>3,000 writes/listings per day</strong>, and <strong>25,000 reads per day</strong>, plus an overall service storage ceiling to keep the free hosted tier sustainable.</li>
     <li>Automated abuse, non-PackSync bulk hosting, or attempts to bypass rate limits or quotas may result in immediate account removal.</li>
   </ul>
 

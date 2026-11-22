@@ -1,7 +1,7 @@
 {
   "name": "packsync-hosted",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "PackSync hosted storage: a Cloudflare Worker in front of R2 (accounts, quotas, pairing).",
   "scripts": {
     "dev": "wrangler dev --local --port 8787",

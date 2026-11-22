@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+### PackSync Cloud limits & oversized world handling
+- Removed the daily user registration cap on PackSync Cloud and raised the per-account world storage limit from **5 GiB** to **10 GiB** (existing accounts automatically upgrade to 10 GiB).
+- Added a preflight size/quota check and immediate sibling-worker cancellation so worlds that exceed server limits cancel cleanly instead of stalling mid-upload (and long `Retry-After` pauses no longer hang active uploads).
+- Added an interactive **World couldn't be uploaded to our servers** dialog in the desktop app when a world is too large, offering direct setup paths for **Google Drive** (*Medium difficulty*), **Cloudflare R2** (*Medium difficulty*), or **Cancel upload**.
+
+### Packaging & releases
+- Added Arch Linux AUR packaging (`packsync-bin`) in `packaging/aur/` and automatic `PKGBUILD` / `SRCINFO` generation with release checksums in the release workflow.
+
 ## 0.2.0
 
 ### Sign-in, security and PackSync Cloud

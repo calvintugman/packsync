@@ -20,7 +20,7 @@ describe("AppStore: loading", () => {
     expect(s.instances.map((i) => i.name)).toEqual(["Skyblock Pack"]);
     expect(s.storage?.connected).toBe(true);
     expect(s.settings?.device_name).toBe("Desktop");
-    expect(s.info?.version).toBe("0.2.0");
+    expect(s.info?.version).toBe("0.2.1");
     store.stop();
   });
 
