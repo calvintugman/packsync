@@ -104,8 +104,13 @@ fn writers_in(sys: &System, root: &Path, extra_patterns: &[String], ignore_pids:
         }
         let mut reason = None;
         if let Some(cwd) = p.cwd() {
-            let c = norm(&cwd.to_string_lossy());
-            if roots.iter().any(|r| c == *r || c.starts_with(&format!("{r}/"))) {
+            // Windows reports the folder as the process was given it (`C:\Users\RUNNER~1\…`, a junction,
+            // a `subst` drive), so compare its real path too
+            let mut cwds = vec![norm(&cwd.to_string_lossy())];
+            if let Ok(c) = dunce::canonicalize(cwd) {
+                cwds.push(norm(&c.to_string_lossy()));
+            }
+            if roots.iter().any(|r| cwds.iter().any(|c| c == r || c.starts_with(&format!("{r}/")))) {
                 reason = Some(format!("working directory is inside the instance ({})", cwd.display()));
             }
         }
