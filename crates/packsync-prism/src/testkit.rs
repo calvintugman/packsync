@@ -129,14 +129,15 @@ exit $?
 
     /// Windows (and anything without `/bin/sh`): the same behaviour from one small program,
     /// `packsync-fake-prism` (crate `packsync-fake-prism`), copied in as the launcher and as `java.exe`. It
-    /// is found next to the test program's folder (`target/<profile>/`) or at `PACKSYNC_FAKE_PRISM`; build
+    /// is found in a folder above the test program (`target/<profile>/`, however deep cargo puts the test)
+    /// or at `PACKSYNC_FAKE_PRISM`; build
     /// the workspace (`cargo test --workspace`) so it exists.
     #[cfg(not(unix))]
     pub fn install(bin_dir: &Path, data_dir: &Path) -> FakePrism {
         let prog = std::env::var_os("PACKSYNC_FAKE_PRISM").map(PathBuf::from).unwrap_or_else(|| {
             let exe = std::env::current_exe().expect("the test program's path");
             let name = format!("packsync-fake-prism{}", std::env::consts::EXE_SUFFIX);
-            exe.ancestors().skip(1).take(3).map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| {
+            exe.ancestors().skip(1).map(|d| d.join(&name)).find(|p| p.is_file()).unwrap_or_else(|| {
                 panic!(
                     "{name} was not found near {}: run `cargo test --workspace` (or build -p packsync-fake-prism)",
                     exe.display()

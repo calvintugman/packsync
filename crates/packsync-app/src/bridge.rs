@@ -34,8 +34,45 @@ pub struct Bridge {
     pub token: String,
 }
 
-fn header(name: &str, value: &str) -> tiny_http::Header {
-    tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes()).expect("static header")
+/// A complete response, written by [`send`].
+struct Reply {
+    status: u16,
+    headers: Vec<(&'static str, String)>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn header(mut self, name: &'static str, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
+    }
+}
+
+/// Write `reply` by hand with `Connection: close`, so the browser opens a fresh connection for its next
+/// request. tiny_http 0.12 keeps a pool thread on each keep-alive connection for as long as it stays
+/// open, and its pool can hand two connections that arrive together to one idle thread: the second then
+/// waits, unread, until some connection closes. Closing after every reply frees the thread at once.
+/// (`tiny_http::Response` cannot do this: it ignores a `Connection` header.)
+fn send(req: tiny_http::Request, reply: Reply) {
+    let reason = match reply.status {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        _ => "",
+    };
+    let mut head = format!("HTTP/1.1 {} {reason}\r\nConnection: close\r\n", reply.status);
+    if reply.status != 204 {
+        head.push_str(&format!("Content-Length: {}\r\n", reply.body.len()));
+    }
+    for (name, value) in &reply.headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    let mut w = req.into_writer();
+    let _ = w.write_all(head.as_bytes()).and_then(|_| w.write_all(&reply.body)).and_then(|_| w.flush());
 }
 
 fn token() -> String {
@@ -65,15 +102,17 @@ pub fn start(app: Arc<App>, cfg: BridgeConfig) -> Result<Bridge> {
     Ok(bridge)
 }
 
-fn json_response(status: u16, body: &Value, cors: Option<&str>) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-    let mut r = tiny_http::Response::from_string(body.to_string()).with_status_code(status);
-    r.add_header(header("Content-Type", "application/json; charset=utf-8"));
-    r.add_header(header("Cache-Control", "no-store"));
-    r.add_header(header("X-Content-Type-Options", "nosniff"));
+fn json_response(status: u16, body: &Value, cors: Option<&str>) -> Reply {
+    let body = if status == 204 { Vec::new() } else { body.to_string().into_bytes() };
+    let mut r = Reply { status, headers: Vec::new(), body }
+        .header("Content-Type", "application/json; charset=utf-8")
+        .header("Cache-Control", "no-store")
+        .header("X-Content-Type-Options", "nosniff");
     if let Some(o) = cors {
-        r.add_header(header("Access-Control-Allow-Origin", o));
-        r.add_header(header("Access-Control-Allow-Headers", "content-type, x-packsync-token"));
-        r.add_header(header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"));
+        r = r
+            .header("Access-Control-Allow-Origin", o)
+            .header("Access-Control-Allow-Headers", "content-type, x-packsync-token")
+            .header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     }
     r
 }
@@ -90,14 +129,14 @@ fn handle(mut req: tiny_http::Request, app: &Arc<App>, tok: &str, cfg: &BridgeCo
         .unwrap_or(false);
     let cors = cfg.allow_origin.as_deref();
     if !host_ok {
-        let _ = req.respond(json_response(403, &json!({ "ok": false, "error": "unexpected Host header" }), None));
+        send(req, json_response(403, &json!({ "ok": false, "error": "unexpected Host header" }), None));
         return;
     }
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
     let method = req.method().clone();
     if method == tiny_http::Method::Options && path.starts_with("/api/") {
-        let _ = req.respond(json_response(204, &Value::Null, cors).with_status_code(204));
+        send(req, json_response(204, &Value::Null, cors));
         return;
     }
     if !path.starts_with("/api/") {
@@ -110,29 +149,29 @@ fn handle(mut req: tiny_http::Request, app: &Arc<App>, tok: &str, cfg: &BridgeCo
     let query_token = url.split_once("?token=").map(|(_, t)| t.to_string());
     let given = supplied.or(if path == "/api/events" { query_token } else { None }).unwrap_or_default();
     if !ct_eq(&given, tok) {
-        let _ = req.respond(json_response(401, &json!({ "ok": false, "error": "missing or wrong token" }), cors));
+        send(req, json_response(401, &json!({ "ok": false, "error": "missing or wrong token" }), cors));
         return;
     }
     match (method, path.as_str()) {
         (tiny_http::Method::Get, "/api/methods") => {
             let list: Vec<Value> =
                 rpc::METHODS.iter().map(|m| json!({ "name": m.name, "long": m.long, "doc": m.doc })).collect();
-            let _ = req.respond(json_response(200, &json!({ "ok": true, "result": list }), cors));
+            send(req, json_response(200, &json!({ "ok": true, "result": list }), cors));
         }
         (tiny_http::Method::Get, "/api/events") => stream_events(req, app.bus().subscribe(), cors),
         (tiny_http::Method::Post, "/api/call") | (tiny_http::Method::Post, "/api/job") => {
             let mut body = Vec::new();
             if req.as_reader().take(1 << 20).read_to_end(&mut body).is_err() {
-                let _ = req.respond(json_response(400, &json!({ "ok": false, "error": "unreadable body" }), cors));
+                send(req, json_response(400, &json!({ "ok": false, "error": "unreadable body" }), cors));
                 return;
             }
             let parsed: std::result::Result<Value, _> = serde_json::from_slice(&body);
             let Ok(v) = parsed else {
-                let _ = req.respond(json_response(400, &json!({ "ok": false, "error": "body is not JSON" }), cors));
+                send(req, json_response(400, &json!({ "ok": false, "error": "body is not JSON" }), cors));
                 return;
             };
             let Some(method_name) = v.get("method").and_then(|m| m.as_str()).map(str::to_string) else {
-                let _ = req.respond(json_response(400, &json!({ "ok": false, "error": "method is required" }), cors));
+                send(req, json_response(400, &json!({ "ok": false, "error": "method is required" }), cors));
                 return;
             };
             let params = v.get("params").cloned().unwrap_or(Value::Null);
@@ -145,10 +184,10 @@ fn handle(mut req: tiny_http::Request, app: &Arc<App>, tok: &str, cfg: &BridgeCo
                 Ok(r) => json!({ "ok": true, "result": r }),
                 Err(e) => json!({ "ok": false, "error": ErrorView::from(&e) }),
             };
-            let _ = req.respond(json_response(200, &doc, cors));
+            send(req, json_response(200, &doc, cors));
         }
         _ => {
-            let _ = req.respond(json_response(404, &json!({ "ok": false, "error": "no such endpoint" }), cors));
+            send(req, json_response(404, &json!({ "ok": false, "error": "no such endpoint" }), cors));
         }
     }
 }
@@ -197,14 +236,13 @@ fn content_type(p: &Path) -> &'static str {
 
 fn serve_static(req: tiny_http::Request, cfg: &BridgeConfig, path: &str) {
     let Some(dir) = &cfg.ui_dir else {
-        let _ =
-            req.respond(json_response(404, &json!({ "ok": false, "error": "no UI is served by this bridge" }), None));
+        send(req, json_response(404, &json!({ "ok": false, "error": "no UI is served by this bridge" }), None));
         return;
     };
     let rel = Path::new(path.trim_start_matches('/'));
     // only plain components: no `..`, no absolute paths, no drive prefixes
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
-        let _ = req.respond(json_response(400, &json!({ "ok": false, "error": "bad path" }), None));
+        send(req, json_response(400, &json!({ "ok": false, "error": "bad path" }), None));
         return;
     }
     let mut file = dir.join(rel);
@@ -216,18 +254,18 @@ fn serve_static(req: tiny_http::Request, cfg: &BridgeConfig, path: &str) {
     }
     match std::fs::read(&file) {
         Ok(bytes) => {
-            let mut r = tiny_http::Response::from_data(bytes);
-            r.add_header(header("Content-Type", content_type(&file)));
-            r.add_header(header("Cache-Control", "no-store"));
-            r.add_header(header("X-Content-Type-Options", "nosniff"));
-            r.add_header(header(
-                "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'",
-            ));
-            let _ = req.respond(r);
+            let r = Reply { status: 200, headers: Vec::new(), body: bytes }
+                .header("Content-Type", content_type(&file))
+                .header("Cache-Control", "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'",
+                );
+            send(req, r);
         }
         Err(_) => {
-            let _ = req.respond(json_response(404, &json!({ "ok": false, "error": "not found" }), None));
+            send(req, json_response(404, &json!({ "ok": false, "error": "not found" }), None));
         }
     }
 }

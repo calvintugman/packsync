@@ -287,7 +287,7 @@ fn a_computer_back_from_a_long_break_does_not_publish_data_a_cleanup_released_me
     for sub in ["packs", "index"] {
         for e in walkdir::WalkDir::new(w.remote_dir.join(sub)).into_iter().flatten().filter(|e| e.file_type().is_file())
         {
-            filetime::set_file_mtime(e.path(), filetime::FileTime::from_system_time(t)).unwrap();
+            packsync_core::fsutil::set_mtime(e.path(), t).unwrap();
         }
     }
     let params = GcParams {

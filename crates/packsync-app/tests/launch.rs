@@ -172,24 +172,30 @@ fn with_hooks_installed_the_post_exit_signal_proves_a_clean_exit_even_when_forwa
     let app = a.app.clone();
     // Prism runs the post-exit command right after the game ends: emulate it from a thread
     let hook = std::thread::spawn(move || {
-        // wait for the game to start and end, as Prism does, then run the command
+        // wait for the game to start and end, as Prism does, then run the command; give up when the
+        // launch never records a game, so the test fails instead of hanging
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let started = loop {
             let open = app.engine().db().sessions_open(inst).unwrap();
             if let Some((pid, ms)) = open.iter().find_map(|s| s.game_pid.zip(s.game_start_ms)) {
                 break (pid, ms);
+            }
+            if std::time::Instant::now() > deadline {
+                return None;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         while packsync_core::proc::pid_alive(started.0, Some(started.1)) {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        app.hook_post_exit(inst, &packsync_core::progress::OpCtx::detached())
+        Some(app.hook_post_exit(inst, &packsync_core::progress::OpCtx::detached()))
     });
     let mut opts = launch_opts();
     opts.timing.signal_wait = std::time::Duration::from_secs(5);
     let out = a.app.launch(inst, opts, &a.ctx()).unwrap();
+    assert!(out.game_started, "{out:?}");
     let hook_outcome = hook.join().unwrap();
-    assert!(matches!(hook_outcome, HookOutcome::Proceed { .. }));
+    assert!(matches!(hook_outcome, Some(HookOutcome::Proceed { .. })), "{hook_outcome:?}");
     assert!(out.clean_signal, "{out:?}");
     assert_eq!(out.end.unwrap().outcome, SessionOutcome::Clean);
     assert_eq!(a.app.engine().instance(inst).unwrap().state, InstanceState::Ok);
@@ -351,7 +357,7 @@ fn a_clean_exit_signal_nobody_collected_closes_the_session_as_clean_later() {
     assert_eq!(a.app.close_signalled_sessions(&a.ctx()), 0);
     assert_eq!(a.app.engine().db().sessions_open(inst).unwrap().len(), 1);
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
-    filetime::set_file_mtime(&signal, filetime::FileTime::from_system_time(old)).unwrap();
+    packsync_core::fsutil::set_mtime(&signal, old).unwrap();
     assert_eq!(a.app.close_signalled_sessions(&a.ctx()), 1);
     assert!(a.app.engine().db().sessions_open(inst).unwrap().is_empty());
     let st = a.app.engine().instance(inst).unwrap();

@@ -33,7 +33,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-filetime.workspace = true
 packsync-prism = { workspace = true, features = ["testkit"] }
 packsync-core = { workspace = true, features = ["testkit"] }
 

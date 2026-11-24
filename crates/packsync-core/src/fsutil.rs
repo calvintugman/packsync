@@ -365,9 +365,29 @@ pub fn available_space(path: &Path) -> io::Result<u64> {
 
 /// Set a file's modification time (milliseconds since the epoch).
 pub fn set_mtime_ms(path: &Path, ms: i64) -> io::Result<()> {
-    let secs = ms.div_euclid(1000);
-    let nanos = (ms.rem_euclid(1000) * 1_000_000) as u32;
-    filetime::set_file_mtime(long_path(path), filetime::FileTime::from_unix_time(secs, nanos))
+    let since_epoch = std::time::Duration::from_millis(ms.unsigned_abs());
+    let t = if ms >= 0 { std::time::UNIX_EPOCH + since_epoch } else { std::time::UNIX_EPOCH - since_epoch };
+    set_mtime(path, t)
+}
+
+/// Set a file's (or directory's) modification time, leaving its other timestamps alone. Follows symlinks.
+pub fn set_mtime(path: impl AsRef<Path>, t: std::time::SystemTime) -> io::Result<()> {
+    open_for_set_times(&long_path(path.as_ref()))?.set_times(fs::FileTimes::new().set_modified(t))
+}
+
+/// A handle that may change timestamps without being able to change contents.
+#[cfg(windows)]
+fn open_for_set_times(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000; // needed to open a directory
+    fs::OpenOptions::new().access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(path)
+}
+
+/// A handle that may change timestamps without being able to change contents.
+#[cfg(not(windows))]
+fn open_for_set_times(path: &Path) -> io::Result<File> {
+    File::open(path)
 }
 
 #[cfg(test)]

@@ -1766,7 +1766,9 @@ mod tests {
         let (a, b) = (Db::open(&p).unwrap(), Db::open(&p).unwrap());
         let r = inst("pack");
         a.instance_insert(&r).unwrap();
-        const N: i64 = 300;
+        // Small enough that one side finishes well inside the other's 10 s busy timeout even on a slow disk
+        // (Windows CI syncs each commit slowly); any lost update still shows as a wrong count.
+        const N: i64 = 50;
         std::thread::scope(|s| {
             s.spawn(|| {
                 for _ in 0..N {
@@ -1789,8 +1791,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("state.db");
         let (a, b) = (Db::open(&p).unwrap(), Db::open(&p).unwrap());
+        // See the note on N above: kept small so neither side can be starved past the busy timeout.
+        const N: usize = 50;
         let push = |db: &Db, who: &str| {
-            for i in 0..200 {
+            for i in 0..N {
                 db.meta_update("list", |cur| {
                     let mut v: Vec<String> = cur.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
                     v.push(format!("{who}{i}"));
@@ -1804,7 +1808,7 @@ mod tests {
             s.spawn(|| push(&b, "b"));
         });
         let v: Vec<String> = serde_json::from_str(&a.meta_get("list").unwrap().unwrap()).unwrap();
-        assert_eq!(v.len(), 400);
+        assert_eq!(v.len(), 2 * N);
     }
 
     #[test]
