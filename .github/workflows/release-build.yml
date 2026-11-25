@@ -81,7 +81,7 @@ jobs:
           tar -C dist-release -czf "dist-release/${pkg}.tar.gz" "$pkg"
           rm -rf "$stage"
           cp apps/desktop/src-tauri/target/release/bundle/deb/*.deb "dist-release/packsync_${ver}_amd64.deb"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packsync-linux-x86_64
           path: dist-release/*
@@ -114,7 +114,7 @@ jobs:
       - name: Package portable Windows zip
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/package-windows.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packsync-windows-x86_64
           path: dist-release/*.zip
@@ -170,7 +170,7 @@ jobs:
           srcinfo = re.sub(r"^\tsha256sums = .*$", f"\tsha256sums = {sha}", srcinfo, flags=re.M)
           Path("dist-release/SRCINFO").write_text(srcinfo, encoding="utf-8")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packsync-release-bundle
           path: dist-release/*
